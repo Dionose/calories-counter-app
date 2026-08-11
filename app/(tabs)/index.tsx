@@ -1,4 +1,5 @@
 // app/(tabs)/index.tsx
+import { ChevronDown, Flame } from "lucide-react-native";
 import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import TravelBorder from "../../components/TravelBorder";
@@ -6,7 +7,6 @@ import { DARK, FONTS } from "../../constants/theme";
 
 const T = DARK;
 
-// small helper for the little uppercase labels
 function Micro({ children }: { children: React.ReactNode }) {
   return <Text style={styles.micro}>{children}</Text>;
 }
@@ -40,7 +40,11 @@ export default function Home() {
           <Pressable onPress={() => setOpen(!open)} style={{ padding: 20 }}>
             <View style={styles.rowBetween}>
               <Micro>Calories remaining</Micro>
-              <Text style={styles.micro}>{open ? "▲" : "▼"}</Text>
+              <ChevronDown
+                size={16}
+                color={T.micro}
+                style={{ transform: [{ rotate: open ? "180deg" : "0deg" }] }}
+              />
             </View>
             <View style={styles.calRow}>
               <Text style={styles.calBig}>1,235</Text>
@@ -118,7 +122,7 @@ export default function Home() {
                 <View style={styles.wRow}>
                   <Text style={styles.wBig}>14</Text>
                   <Text style={styles.wUnit}>days</Text>
-                  <Text style={[styles.wTrend, { color: T.orange }]}>🔥</Text>
+                  <Flame size={16} color={T.orange} fill={T.orange} style={{ marginLeft: "auto" }} />
                 </View>
                 <Text style={[styles.wLbs, { color: T.orange }]}>Hot · keep going</Text>
               </View>
