@@ -1,138 +1,214 @@
-import { Bell, ChevronRight, CircleHelp, Crown, LogOut, Target, Utensils } from "lucide-react-native";
-import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
+// app/(tabs)/profile.tsx
+import { Bell, Check, ChevronRight, Crown, Flame, Lock, LogOut, Mic, Moon, Palette, ScanBarcode, Shield, Sun, Target, User, Vibrate, Watch, X } from "lucide-react-native";
+import React, { useState } from "react";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import TravelBorder from "../../components/TravelBorder";
+import { DARK, FONTS } from "../../constants/theme";
 
-const C = {
-  bg: "#0A0A0A",
-  card: "#141414",
-  cardHi: "#1A1A1A",
-  border: "#242424",
-  text: "#F5F5F5",
-  sub: "#8A8A8A",
-  micro: "#6A6A6A",
-  green: "#22C55E",
-  greenBg: "rgba(34,197,94,0.10)",
-  greenBorder: "rgba(34,197,94,0.35)",
-};
+const T = DARK;
 
-function Row({ icon, label, value, onPress, isLast }: any) {
+function Micro({ children }: { children: React.ReactNode }) {
+  return <Text style={styles.micro}>{children}</Text>;
+}
+
+function Toggle({ on, onPress }: { on: boolean; onPress: () => void }) {
   return (
-    <Pressable onPress={onPress} style={[styles.row, !isLast && styles.rowBorder]}>
-      <View style={styles.rowLeft}>
-        <View style={styles.rowIcon}>{icon}</View>
-        <Text style={styles.rowLabel}>{label}</Text>
+    <Pressable onPress={onPress} style={[styles.toggle, { backgroundColor: on ? T.green : T.cardHi, borderColor: on ? T.green : T.border }]}>
+      <View style={[styles.knob, { left: on ? 19 : 2 }]} />
+    </Pressable>
+  );
+}
+
+function Row({ icon: Icon, label, value, danger, toggle, toggled, onToggle, onPress }: any) {
+  return (
+    <Pressable onPress={onPress} style={styles.row}>
+      <View style={[styles.rowIcon, { backgroundColor: danger ? "rgba(239,68,68,0.1)" : T.greenBg }]}>
+        <Icon size={17} color={danger ? "#EF4444" : T.green} />
       </View>
-      <View style={styles.rowRight}>
-        {value && <Text style={styles.rowValue}>{value}</Text>}
-        <ChevronRight size={18} color={C.micro} />
+      <Text style={[styles.rowLabel, { color: danger ? "#EF4444" : T.text }]}>{label}</Text>
+      {value ? <Text style={styles.rowValue}>{value}</Text> : null}
+      {toggle ? <Toggle on={toggled} onPress={onToggle} /> : <ChevronRight size={17} color={T.micro} />}
+    </Pressable>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const items = React.Children.toArray(children);
+  return (
+    <View style={{ marginBottom: 18 }}>
+      <View style={{ marginLeft: 4, marginBottom: 8 }}><Micro>{title}</Micro></View>
+      <View style={styles.sectionCard}>
+        {items.map((child, i) => (
+          <View key={i}>
+            {i > 0 && <View style={styles.divider} />}
+            {child}
+          </View>
+        ))}
       </View>
+    </View>
+  );
+}
+
+function ThemeOption({ mode, Icon, label, active, previewBg, previewCard, previewText, accent, onPick }: any) {
+  return (
+    <Pressable style={{ flex: 1 }} onPress={() => onPick(mode)}>
+      <View style={[styles.previewOuter, { backgroundColor: active ? T.green : T.border }]}>
+        <View style={[styles.previewInner, { backgroundColor: previewBg }]}>
+          <View style={styles.previewTop}>
+            <Icon size={18} color={accent} />
+            {active && <View style={styles.previewCheck}><Check size={12} color="#fff" /></View>}
+          </View>
+          <View>
+            <View style={{ height: 8, width: "70%", borderRadius: 4, backgroundColor: previewCard, marginBottom: 6 }} />
+            <View style={{ height: 8, width: "45%", borderRadius: 4, backgroundColor: accent }} />
+          </View>
+          <View style={[styles.previewChip, { backgroundColor: previewCard }]}>
+            <Text style={{ fontSize: 11, color: previewText, fontFamily: FONTS.heading }}>1,235 cal</Text>
+          </View>
+        </View>
+      </View>
+      <Text style={[styles.previewLabel, { color: active ? T.green : T.text }]}>{label}</Text>
     </Pressable>
   );
 }
 
 export default function Profile() {
-  const [notifications, setNotifications] = useState(true);
-  const [waterReminders, setWaterReminders] = useState(false);
+  const [picker, setPicker] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [watch, setWatch] = useState(true);
+  const [reminders, setReminders] = useState(true);
+  const [haptics, setHaptics] = useState(true);
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={{ padding: 18, paddingTop: 60, paddingBottom: 40 }}>
-      <Text style={styles.h1}>Profile</Text>
+    <View style={styles.screen}>
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <Text style={styles.h1}>Profile</Text>
 
-      {/* Profile header */}
-      <View style={styles.profileCard}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>DJ</Text>
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.name}>Dion</Text>
-          <Text style={styles.email}>dion@example.com</Text>
-        </View>
-        <Pressable style={styles.editBtn}>
-          <Text style={styles.editText}>Edit</Text>
-        </Pressable>
-      </View>
-
-      {/* Subscription card */}
-      <View style={styles.proCard}>
-        <View style={styles.proHeader}>
-          <Crown size={18} color={C.green} />
-          <Text style={styles.proTitle}>Free Plan</Text>
-        </View>
-        <Text style={styles.proSub}>Upgrade to unlock unlimited photo logging, barcode scanning, and detailed insights.</Text>
-        <Pressable style={styles.proBtn}>
-          <Text style={styles.proBtnText}>Upgrade to Pro</Text>
-        </Pressable>
-      </View>
-
-      {/* Goals section */}
-      <Text style={styles.sectionLabel}>GOALS</Text>
-      <View style={styles.section}>
-        <Row icon={<Target size={18} color={C.green} />} label="Daily calorie goal" value="1,980" isLast={false} />
-        <Row icon={<Utensils size={18} color={C.green} />} label="Macro targets" value="P/C/F" isLast={true} />
-      </View>
-
-      {/* Preferences section */}
-      <Text style={styles.sectionLabel}>PREFERENCES</Text>
-      <View style={styles.section}>
-        <View style={[styles.row, styles.rowBorder]}>
-          <View style={styles.rowLeft}>
-            <View style={styles.rowIcon}><Bell size={18} color={C.green} /></View>
-            <Text style={styles.rowLabel}>Meal reminders</Text>
+        {/* header card */}
+        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
+          <View style={styles.headerCard}>
+            <View style={styles.avatar}><Text style={styles.avatarText}>DJ</Text></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>Dion</Text>
+              <View style={[styles.rowCenter, { marginTop: 3 }]}>
+                <Flame size={12} color="#FB923C" fill="#FB923C" />
+                <Text style={styles.streakText}>14-day streak · Hot</Text>
+              </View>
+            </View>
           </View>
-          <Switch
-            value={notifications}
-            onValueChange={setNotifications}
-            trackColor={{ false: "#2A2A2A", true: C.green }}
-            thumbColor="#FFFFFF"
-          />
-        </View>
-        <View style={styles.row}>
-          <View style={styles.rowLeft}>
-            <View style={styles.rowIcon}><Bell size={18} color={C.green} /></View>
-            <Text style={styles.rowLabel}>Water reminders</Text>
-          </View>
-          <Switch
-            value={waterReminders}
-            onValueChange={setWaterReminders}
-            trackColor={{ false: "#2A2A2A", true: C.green }}
-            thumbColor="#FFFFFF"
-          />
-        </View>
-      </View>
+        </TravelBorder>
 
-      {/* Account section */}
-      <Text style={styles.sectionLabel}>ACCOUNT</Text>
-      <View style={styles.section}>
-        <Row icon={<CircleHelp size={18} color={C.green} />} label="Help & support" isLast={false} />
-        <Row icon={<LogOut size={18} color={C.green} />} label="Log out" isLast={true} />
-      </View>
-    </ScrollView>
+        {/* Pro card */}
+        <View style={{ marginTop: 12, marginBottom: 20 }}>
+          <TravelBorder color="#FB923C" cardBg={T.card} borderColor={T.border} radius={18}>
+            <Pressable style={styles.proCard}>
+              <View style={styles.proIcon}><Crown size={22} color="#FB923C" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.proTitle}>Upgrade to Pro</Text>
+                <View style={styles.proSubRow}>
+                  <Text style={styles.proSub}>7 days free · Voice AI</Text>
+                  <Mic size={12} color={T.sub} />
+                  <Text style={styles.proSub}>· barcode</Text>
+                  <ScanBarcode size={12} color={T.sub} />
+                  <Text style={styles.proSub}>& more</Text>
+                </View>
+              </View>
+              <ChevronRight size={18} color={T.micro} />
+            </Pressable>
+          </TravelBorder>
+        </View>
+
+        <Section title="Appearance">
+          <Row icon={Palette} label="Theme" value={theme === "dark" ? "Dark" : "Light"} onPress={() => setPicker(true)} />
+        </Section>
+
+        <Section title="Devices">
+          <Row icon={Watch} label="Connect watch & health" toggle toggled={watch} onToggle={() => setWatch(!watch)} />
+        </Section>
+
+        <Section title="Goals">
+          <Row icon={Target} label="Goal" value="Lose weight" />
+          <Row icon={Target} label="Daily calories" value="1,980 cal" />
+          <Row icon={Target} label="Target weight" value="72 kg" />
+          <Row icon={Target} label="Units" value="kg / cm" />
+        </Section>
+
+        <Section title="Preferences">
+          <Row icon={Bell} label="Reminders" toggle toggled={reminders} onToggle={() => setReminders(!reminders)} />
+          <Row icon={Vibrate} label="Haptics" toggle toggled={haptics} onToggle={() => setHaptics(!haptics)} />
+        </Section>
+
+        <Section title="Account">
+          <Row icon={User} label="Personal info" />
+          <Row icon={Lock} label="Password" />
+          <Row icon={Shield} label="Privacy" />
+          <Row icon={LogOut} label="Log out" danger />
+        </Section>
+      </ScrollView>
+
+      {/* THEME PICKER POPUP */}
+      <Modal visible={picker} transparent animationType="fade" onRequestClose={() => setPicker(false)}>
+        <Pressable style={styles.overlay} onPress={() => setPicker(false)}>
+          <Pressable style={styles.pickerCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>Choose your theme</Text>
+              <Pressable onPress={() => setPicker(false)} style={styles.pickerClose}><X size={15} color={T.sub} /></Pressable>
+            </View>
+            <View style={{ flexDirection: "row", gap: 14 }}>
+              <ThemeOption mode="dark" Icon={Moon} label="Dark" active={theme === "dark"}
+                previewBg="#0A0A0A" previewCard="#242424" previewText="#F5F5F5" accent="#22C55E"
+                onPick={(m: any) => { setTheme(m); setPicker(false); }} />
+              <ThemeOption mode="light" Icon={Sun} label="Light" active={theme === "light"}
+                previewBg="#F4F5F3" previewCard="#E6E7E4" previewText="#111311" accent="#16A34A"
+                onPick={(m: any) => { setTheme(m); setPicker(false); }} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: C.bg },
-  h1: { fontFamily: "SpaceGrotesk_700Bold", fontSize: 24, color: C.text, letterSpacing: -0.5, marginBottom: 18 },
-  profileCard: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 18, padding: 16 },
-  avatar: { width: 52, height: 52, borderRadius: 16, backgroundColor: C.cardHi, borderWidth: 1, borderColor: C.border, alignItems: "center", justifyContent: "center" },
-  avatarText: { fontFamily: "SpaceGrotesk_600SemiBold", fontSize: 18, color: C.green },
-  name: { fontFamily: "SpaceGrotesk_600SemiBold", fontSize: 18, color: C.text },
-  email: { fontFamily: "Inter_400Regular", fontSize: 13, color: C.sub, marginTop: 2 },
-  editBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: C.border },
-  editText: { fontFamily: "Inter_500Medium", fontSize: 13, color: C.text },
-  proCard: { marginTop: 12, backgroundColor: C.greenBg, borderWidth: 1, borderColor: C.greenBorder, borderRadius: 18, padding: 18 },
-  proHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
-  proTitle: { fontFamily: "SpaceGrotesk_600SemiBold", fontSize: 16, color: C.text },
-  proSub: { fontFamily: "Inter_400Regular", fontSize: 13, color: C.sub, lineHeight: 19, marginBottom: 14 },
-  proBtn: { backgroundColor: C.green, borderRadius: 12, paddingVertical: 12, alignItems: "center" },
-  proBtnText: { fontFamily: "SpaceGrotesk_600SemiBold", fontSize: 14, color: "#0A0A0A" },
-  sectionLabel: { fontFamily: "Inter_500Medium", fontSize: 10, letterSpacing: 1, color: C.micro, marginTop: 24, marginBottom: 10 },
-  section: { backgroundColor: C.card, borderWidth: 1, borderColor: C.border, borderRadius: 16, overflow: "hidden" },
-  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 15 },
-  rowBorder: { borderBottomWidth: 1, borderBottomColor: C.border },
-  rowLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
-  rowIcon: { width: 22, alignItems: "center" },
-  rowLabel: { fontFamily: "Inter_500Medium", fontSize: 14, color: C.text },
-  rowRight: { flexDirection: "row", alignItems: "center", gap: 8 },
-  rowValue: { fontFamily: "SpaceGrotesk_500Medium", fontSize: 13, color: C.sub },
+  screen: { flex: 1, backgroundColor: T.bg },
+  scroll: { padding: 16, paddingTop: 60, paddingBottom: 40 },
+  h1: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, marginBottom: 18 },
+
+  micro: { fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
+  rowCenter: { flexDirection: "row", alignItems: "center", gap: 5 },
+
+  headerCard: { padding: 18, flexDirection: "row", alignItems: "center", gap: 14 },
+  avatar: { width: 56, height: 56, borderRadius: 18, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: T.green, fontSize: 20, fontFamily: FONTS.heading },
+  name: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
+  streakText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
+
+  proCard: { padding: 16, flexDirection: "row", alignItems: "center", gap: 14 },
+  proIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: "rgba(251,146,60,0.12)", alignItems: "center", justifyContent: "center" },
+  proTitle: { fontSize: 15, color: T.text, fontFamily: FONTS.heading },
+  proSubRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 3 },
+  proSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
+
+  sectionCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: "hidden" },
+  divider: { height: 1, backgroundColor: T.border, marginLeft: 62 },
+  row: { flexDirection: "row", alignItems: "center", gap: 13, paddingVertical: 14, paddingHorizontal: 15 },
+  rowIcon: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  rowLabel: { flex: 1, fontSize: 14, fontFamily: FONTS.body, fontWeight: "500" },
+  rowValue: { fontSize: 13, color: T.sub, fontFamily: FONTS.heading, marginRight: 8 },
+
+  toggle: { width: 42, height: 25, borderRadius: 99, borderWidth: 1, justifyContent: "center" },
+  knob: { position: "absolute", top: 2, width: 19, height: 19, borderRadius: 10, backgroundColor: "#fff" },
+
+  overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", alignItems: "center", justifyContent: "center", padding: 22 },
+  pickerCard: { width: "100%", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 24, padding: 20 },
+  pickerHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  pickerTitle: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
+  pickerClose: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 9, padding: 6 },
+
+  previewOuter: { borderRadius: 18, padding: 3 },
+  previewInner: { borderRadius: 15, overflow: "hidden", padding: 14, height: 150, justifyContent: "space-between" },
+  previewTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  previewCheck: { width: 20, height: 20, borderRadius: 10, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
+  previewChip: { borderRadius: 8, height: 34, justifyContent: "center", paddingLeft: 8 },
+  previewLabel: { fontSize: 13, fontFamily: FONTS.heading, marginTop: 10, textAlign: "center" },
 });
