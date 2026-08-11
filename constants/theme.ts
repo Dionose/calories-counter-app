@@ -18,6 +18,7 @@ export const DARK = {
   fat: "#A3E635",
   track: "#181818",
   ink: "#0A0A0A",
+  emptyTile: "#121212",
 };
 
 export const LIGHT = {

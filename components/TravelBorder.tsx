@@ -1,11 +1,6 @@
 // components/TravelBorder.tsx
-// TRUE conic revolving border using Skia's SweepGradient (real conic gradient).
-import {
-    Canvas,
-    RoundedRect,
-    SweepGradient,
-    vec
-} from "@shopify/react-native-skia";
+// TRUE conic revolving border using Skia's SweepGradient. Single color OR rainbow.
+import { Canvas, RoundedRect, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { useEffect, useState } from "react";
 import { LayoutChangeEvent, StyleSheet, View, ViewStyle } from "react-native";
 import {
@@ -17,7 +12,8 @@ import {
 } from "react-native-reanimated";
 
 type Props = {
-  color: string;
+  color?: string;
+  colors?: string[];        // pass this for a revolving rainbow (Ultimate)
   cardBg: string;
   borderColor: string;
   radius?: number;
@@ -27,7 +23,8 @@ type Props = {
 };
 
 export default function TravelBorder({
-  color,
+  color = "#22C55E",
+  colors,
   cardBg,
   borderColor,
   radius = 18,
@@ -55,10 +52,18 @@ export default function TravelBorder({
   const cx = w / 2;
   const cy = h / 2;
 
-  // rotate the sweep gradient's center transform each frame
   const transform = useDerivedValue(() => [
     { rotate: (angle.value * Math.PI) / 180 },
   ]);
+
+  const isRainbow = !!colors;
+
+  // EXACT working single-color config (the one confirmed revolving on device):
+  const singleColors = [borderColor, borderColor, borderColor, color, "#ffffff", color, borderColor];
+  const singlePositions = [0, 0.55, 0.78, 0.9, 0.95, 0.99, 1];
+
+  // rainbow: wrap the palette fully around, evenly spaced
+  const rainbowColors = colors ? [...colors, colors[0]] : [];
 
   return (
     <View onLayout={onLayout} style={[{ borderRadius: radius }, style]}>
@@ -73,26 +78,26 @@ export default function TravelBorder({
             style="stroke"
             strokeWidth={strokeWidth}
           >
-            <SweepGradient
-              origin={vec(cx, cy)}
-              c={vec(cx, cy)}
-              colors={[
-                borderColor,
-                borderColor,
-                borderColor,
-                color,
-                "#ffffff",
-                color,
-                borderColor,
-              ]}
-              positions={[0, 0.55, 0.78, 0.9, 0.95, 0.99, 1]}
-              transform={transform}
-            />
+            {isRainbow ? (
+              <SweepGradient
+                origin={vec(cx, cy)}
+                c={vec(cx, cy)}
+                colors={rainbowColors}
+                transform={transform}
+              />
+            ) : (
+              <SweepGradient
+                origin={vec(cx, cy)}
+                c={vec(cx, cy)}
+                colors={singleColors}
+                positions={singlePositions}
+                transform={transform}
+              />
+            )}
           </RoundedRect>
         </Canvas>
       )}
 
-      {/* card content */}
       <View style={{ backgroundColor: cardBg, borderRadius: radius - strokeWidth, margin: strokeWidth }}>
         {children}
       </View>
