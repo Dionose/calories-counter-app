@@ -1,13 +1,14 @@
 // app/(tabs)/calendar.tsx
 import { LinearGradient } from "expo-linear-gradient";
-import { ChevronLeft, ChevronRight, Flame, Mic, Sparkles } from "lucide-react-native";
+import { CalendarDays, ChevronLeft, ChevronRight, Flame, Mic, Sparkles } from "lucide-react-native";
 import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import TravelBorder from "../../components/TravelBorder";
 import { DARK, FONTS } from "../../constants/theme";
 
 const T = DARK;
-const ULT_COLORS = ["#F43F5E", "#F97316", "#FACC15", "#22C55E", "#3B82F6", "#A855F7"];
+const ULT_COLORS: [string, string, ...string[]] = ["#F43F5E", "#F97316", "#FACC15", "#22C55E", "#3B82F6", "#A855F7"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 const TIERS: Record<number, { name: string; color: string }> = {
   1: { name: "Spark", color: "#38BDF8" },
@@ -34,7 +35,7 @@ const DAY_MEALS = [
   { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, pct: 35, voice: true },
 ];
 
-const TILE_SIZE = 46; // fixed height so every tile is the same big size
+const TILE_SIZE = 52;
 
 function Micro({ children }: { children: React.ReactNode }) {
   return <Text style={styles.micro}>{children}</Text>;
@@ -47,40 +48,35 @@ function DayTile({ d, onSelect }: { d: number | null; onSelect: (d: number) => v
   const happened = d <= TODAY;
   const isUlt = t && t.color === "ultimate";
 
-  // future / not-happened day — fills the whole cell (this is the big size we want)
+  // future / not-happened day — plain dark tile with number
   if (!happened) {
     return (
       <View style={styles.cell}>
-        <View style={[styles.tileFull, { backgroundColor: T.emptyTile, borderWidth: 1, borderColor: T.border }]}>
-          <Text style={{ fontSize: 12, fontFamily: FONTS.heading, color: T.micro }}>{d}</Text>
+        <View style={[styles.tileBox, { backgroundColor: T.emptyTile, borderWidth: 1, borderColor: T.border }]}>
+          <Text style={[styles.dayNum, { color: T.micro }]}>{d}</Text>
         </View>
       </View>
     );
   }
 
-  const innerContent = (dayColor: string, flameColor: string) => (
-    <View style={styles.tileInner}>
-      <Text style={{ fontSize: 12, fontFamily: FONTS.heading, color: dayColor }}>{d}</Text>
-      <Flame size={10} color={flameColor} fill={flameColor} />
-    </View>
-  );
-
-  // ULTIMATE — revolving rainbow border
+  // ULTIMATE — filled purple tile, revolving rainbow border, warm flame
   if (isUlt) {
     return (
       <Pressable style={styles.cell} onPress={() => onSelect(d)}>
-        <TravelBorder colors={ULT_COLORS} cardBg="#1A0F22" borderColor={T.border} radius={12} strokeWidth={2.5} style={styles.tileFull}>
-          {innerContent("#FFFFFF", "#FFFFFF")}
+        <TravelBorder colors={ULT_COLORS} cardBg="#3B1A4A" borderColor={T.border} radius={12} strokeWidth={2.5} style={styles.tileBox}>
+          <Text style={[styles.dayNum, styles.dayNumOverlay, { color: "#FFFFFF" }]}>{d}</Text>
+          <Flame size={12} color="#FACC15" fill="#FB923C" style={styles.flameOverlay} />
         </TravelBorder>
       </Pressable>
     );
   }
 
-  // normal tiers — single-color revolving border
+  // normal tiers — filled tinted tile (via cardBg), single-color revolving border
   return (
     <Pressable style={styles.cell} onPress={() => onSelect(d)}>
-      <TravelBorder color={t.color} cardBg={`${t.color}22`} borderColor={T.border} radius={12} strokeWidth={2.5} style={styles.tileFull}>
-        {innerContent(T.text, t.color)}
+      <TravelBorder color={t.color} cardBg={`${t.color}33`} borderColor={T.border} radius={12} strokeWidth={2.5} style={styles.tileBox}>
+        <Text style={[styles.dayNum, styles.dayNumOverlay, { color: T.text }]}>{d}</Text>
+        <Flame size={12} color={t.color} fill={t.color} style={styles.flameOverlay} />
       </TravelBorder>
     </Pressable>
   );
@@ -88,6 +84,17 @@ function DayTile({ d, onSelect }: { d: number | null; onSelect: (d: number) => v
 
 export default function Calendar() {
   const [day, setDay] = useState<number | null>(null);
+  const [monthIdx, setMonthIdx] = useState(7); // 7 = August
+  const [year, setYear] = useState(2026);
+
+  const prevMonth = () => {
+    if (monthIdx === 0) { setMonthIdx(11); setYear((y) => y - 1); }
+    else setMonthIdx((m) => m - 1);
+  };
+  const nextMonth = () => {
+    if (monthIdx === 11) { setMonthIdx(0); setYear((y) => y + 1); }
+    else setMonthIdx((m) => m + 1);
+  };
 
   if (day != null) {
     const tier = dayTier(day);
@@ -101,7 +108,7 @@ export default function Calendar() {
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
           <Pressable onPress={() => setDay(null)} style={styles.backRow}>
             <ChevronLeft size={22} color={T.text} />
-            <Text style={styles.backTitle}>Aug {day}, 2026</Text>
+            <Text style={styles.backTitle}>{MONTHS[monthIdx].slice(0, 3)} {day}, {year}</Text>
           </Pressable>
 
           {isUlt ? (
@@ -183,9 +190,10 @@ export default function Calendar() {
         <View style={styles.headerRow}>
           <Text style={styles.h1}>Calendar</Text>
           <View style={styles.monthNav}>
-            <ChevronLeft size={17} color={T.sub} />
-            <Text style={styles.monthText}>Aug 2026</Text>
-            <ChevronRight size={17} color={T.sub} />
+            <Pressable onPress={prevMonth} hitSlop={10}><ChevronLeft size={17} color={T.sub} /></Pressable>
+            <Text style={styles.monthText}>{MONTHS[monthIdx].slice(0, 3)} {year}</Text>
+            <Pressable onPress={nextMonth} hitSlop={10}><ChevronRight size={17} color={T.sub} /></Pressable>
+            <Pressable hitSlop={10} style={{ marginLeft: 4 }}><CalendarDays size={17} color={T.green} /></Pressable>
           </View>
         </View>
 
@@ -240,8 +248,10 @@ const styles = StyleSheet.create({
 
   grid: { flexDirection: "row", flexWrap: "wrap" },
   cell: { width: `${100 / 7}%`, padding: 3 },
-  tileFull: { height: TILE_SIZE, borderRadius: 12 },
-  tileInner: { flex: 1, borderRadius: 10, padding: 5, justifyContent: "space-between", alignItems: "flex-start" },
+  tileBox: { height: TILE_SIZE, borderRadius: 12, overflow: "hidden", position: "relative" },
+  dayNum: { fontSize: 12, fontFamily: FONTS.heading },
+  dayNumOverlay: { position: "absolute", top: 5, left: 7, zIndex: 2 },
+  flameOverlay: { position: "absolute", top: 20, left: 6, zIndex: 2 },
 
   hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 18 },
 
