@@ -1,14 +1,15 @@
+// app/_layout.tsx
+import { BricolageGrotesque_400Regular, BricolageGrotesque_500Medium, BricolageGrotesque_600SemiBold, useFonts } from "@expo-google-fonts/bricolage-grotesque";
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from "@expo-google-fonts/inter";
-import { SpaceGrotesk_400Regular, SpaceGrotesk_500Medium, SpaceGrotesk_600SemiBold, SpaceGrotesk_700Bold, useFonts } from "@expo-google-fonts/space-grotesk";
 import { Stack } from "expo-router";
 import { View } from "react-native";
+import { AppStateProvider } from "../constants/AppState";
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
-    SpaceGrotesk_400Regular,
-    SpaceGrotesk_500Medium,
-    SpaceGrotesk_600SemiBold,
-    SpaceGrotesk_700Bold,
+    BricolageGrotesque_400Regular,
+    BricolageGrotesque_500Medium,
+    BricolageGrotesque_600SemiBold,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
@@ -19,8 +20,12 @@ export default function RootLayout() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }}>
-      <Stack.Screen name="(tabs)" />
-    </Stack>
+    <AppStateProvider>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0A0A0A" } }}>
+        {/* onboarding shows first; it router.replace()s into (tabs) when done */}
+        <Stack.Screen name="onboarding" />
+        <Stack.Screen name="(tabs)" />
+      </Stack>
+    </AppStateProvider>
   );
 }

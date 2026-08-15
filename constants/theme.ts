@@ -14,6 +14,10 @@ export const DARK = {
   greenBg: "rgba(34,197,94,0.10)",
   greenBorder: "rgba(34,197,94,0.35)",
   orange: "#FB923C",
+  red: "#EF4444",
+  gold: "#FBBF24",
+  goldBg: "rgba(251,191,36,0.12)",
+  goldBorder: "rgba(251,191,36,0.40)",
   carbs: "#2DD4BF",
   fat: "#A3E635",
   track: "#181818",
@@ -33,10 +37,15 @@ export const LIGHT = {
   greenBg: "rgba(22,163,74,0.10)",
   greenBorder: "rgba(22,163,74,0.30)",
   orange: "#EA7317",
+  red: "#DC2626",
+  gold: "#D97706",
+  goldBg: "rgba(217,119,6,0.10)",
+  goldBorder: "rgba(217,119,6,0.35)",
   carbs: "#0D9488",
   fat: "#65A30D",
   track: "#ECEDEA",
   ink: "#FFFFFF",
+  emptyTile: "#EAEBE8",
 };
 
 // Streak tier colors (Spark → Warming → Hot → Red-hot → Ultimate)
@@ -48,10 +57,24 @@ export const TIERS = {
   5: { name: "Ultimate", color: "ultimate" },
 };
 
-// Font families (already loaded in your _layout.tsx)
+// The rainbow used for the Ultimate tier (typed so Skia/LinearGradient accept it)
+export const ULT_COLORS: [string, string, ...string[]] = [
+  "#F43F5E", "#F97316", "#FACC15", "#22C55E", "#3B82F6", "#8B5CF6",
+];
+
+// Day thresholds for each tier — Spark 1-4, Warming 5-8, Hot 9-12, Red-hot 13-16, Ultimate 17+
+export function tierForStreak(days: number) {
+  if (days >= 17) return TIERS[5]; // Ultimate
+  if (days >= 13) return TIERS[4]; // Red-hot
+  if (days >= 9) return TIERS[3];  // Hot
+  if (days >= 5) return TIERS[2];  // Warming
+  return TIERS[1];                 // Spark
+}
+
+// Font families (loaded in app/_layout.tsx)
 export const FONTS = {
-  heading: "SpaceGrotesk_700Bold",
-  headingMed: "SpaceGrotesk_600SemiBold",
+  heading: "BricolageGrotesque_500Medium",
+  headingMed: "BricolageGrotesque_500Medium",
   body: "Inter_400Regular",
   bodyMed: "Inter_500Medium",
 };

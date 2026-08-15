@@ -1,6 +1,8 @@
+// app/(tabs)/_layout.tsx
 import { Tabs } from "expo-router";
-import { BarChart3, Calendar, Camera, Home, User } from "lucide-react-native";
-import { Pressable, StyleSheet, View } from "react-native";
+import LottieView from "lottie-react-native";
+import React from "react";
+import { StyleSheet, View } from "react-native";
 
 const C = {
   bg: "#0C0C0C",
@@ -9,11 +11,40 @@ const C = {
   micro: "#6A6A6A",
 };
 
-function CameraButton({ onPress }: { onPress?: () => void }) {
+// ---- animated tab icons ----
+const ICONS = {
+  home: require("../../assets/motion-home-22C55E.json"),
+  calendar: require("../../assets/motion-calendar-outline-green.json"),
+  cameraDark: require("../../assets/motion-camera-dark.json"), // dark = shows on the green button
+  stats: require("../../assets/motion-stats-hybrid-green.json"),
+  profile: require("../../assets/motion-profile-22C55E.json"),
+};
+
+// A tab icon that always loops. Dimmed when the tab is not focused.
+function TabLottie({ source, focused, size = 28 }: { source: any; focused: boolean; size?: number }) {
   return (
-    <Pressable onPress={onPress} style={styles.cameraButton}>
-      <Camera size={24} color="#0A0A0A" strokeWidth={2.4} />
-    </Pressable>
+    <LottieView
+      source={source}
+      autoPlay
+      loop
+      style={{ width: size, height: size, opacity: focused ? 1 : 0.55 }}
+    />
+  );
+}
+
+// the raised center camera button (dark icon on the green button)
+function CameraTabIcon() {
+  return (
+    <View style={styles.cameraWrap}>
+      <View style={styles.cameraButton}>
+        <LottieView
+          source={ICONS.cameraDark}
+          autoPlay
+          loop
+          style={{ width: 30, height: 30 }}
+        />
+      </View>
+    </View>
   );
 }
 
@@ -44,41 +75,35 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color }) => <Home size={22} color={color} strokeWidth={2} />,
+          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.home} focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="calendar"
         options={{
           title: "Calendar",
-          tabBarIcon: ({ color }) => <Calendar size={22} color={color} strokeWidth={2} />,
+          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.calendar} focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="camera"
         options={{
           title: "",
-          tabBarIcon: () => (
-            <View style={styles.cameraWrap}>
-              <View style={styles.cameraButton}>
-                <Camera size={24} color="#0A0A0A" strokeWidth={2.4} />
-              </View>
-            </View>
-          ),
+          tabBarIcon: () => <CameraTabIcon />,
         }}
       />
       <Tabs.Screen
         name="stats"
         options={{
           title: "Stats",
-          tabBarIcon: ({ color }) => <BarChart3 size={22} color={color} strokeWidth={2} />,
+          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.stats} focused={focused} />,
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
           title: "Profile",
-          tabBarIcon: ({ color }) => <User size={22} color={color} strokeWidth={2} />,
+          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.profile} focused={focused} />,
         }}
       />
     </Tabs>

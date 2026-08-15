@@ -1,26 +1,37 @@
 // app/(tabs)/camera.tsx
+import LottieView from "lottie-react-native";
 import {
-    Bookmark,
-    Camera as CameraIcon,
-    Check,
-    ChevronLeft,
-    ChevronRight,
-    Clock,
-    Mic,
-    Minus,
-    Plus,
-    ScanBarcode, Search,
-    Send,
-    Sparkles,
-    Utensils,
+  Bookmark,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Minus,
+  Plus,
+  Send,
+  Sparkles,
+  Utensils
 } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import TravelBorder from "../../components/TravelBorder";
+import { useApp } from "../../constants/AppState";
 import { DARK, FONTS } from "../../constants/theme";
 
 const T = DARK;
 const MEAL = "Lunch"; // placeholder until Home routes a real meal in
+
+// ---- animated Lottie icons (camera + barcode) ----
+const ANIM = {
+  camera: require("../../assets/motion-camera-green.json"),
+  barcode: require("../../assets/motion-barcode-22C55E.json"),
+  mic: require("../../assets/motion-mic-dark.json"),
+  search: require("../../assets/motion-search-line-green.json"),
+  pen: require("../../assets/motion-pen-outline-green.json"),
+};
+function Anim({ source, size = 26 }: { source: any; size?: number }) {
+  return <LottieView source={source} autoPlay loop style={{ width: size, height: size }} />;
+}
 
 function Micro({ children, style }: { children: React.ReactNode; style?: any }) {
   return <Text style={[styles.micro, style]}>{children}</Text>;
@@ -59,12 +70,64 @@ function Stepper({ value, unitLabel, sub, onDec, onInc }: { value: string; unitL
   );
 }
 
+/* ===================== FOOD HISTOGRAM BAR =====================
+   Every detected food gets its own left-to-right bar, coloured by the food
+   itself, with the macros spelled out inside it. Bar width = share of the
+   biggest item's calories (floored so the text always fits). */
+type PlateItem = { name: string; color: string; cal: number; p: number; c: number; f: number };
+
+function FoodBar({ item, maxCal }: { item: PlateItem; maxCal: number }) {
+  const pct = 62 + (item.cal / maxCal) * 38; // 62%–100%, so macros never clip
+  return (
+    <View style={styles.barTrack}>
+      <View style={[styles.barFill, { width: `${pct}%`, backgroundColor: item.color }]}>
+        <View style={styles.barTopRow}>
+          <Text style={styles.barName} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.barCal}>{item.cal} cal</Text>
+        </View>
+        <Text style={styles.barMacros} numberOfLines={1}>
+          Protein {item.p}g · Carbs {item.c}g · Fat {item.f}g
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function MealTotal({ items }: { items: PlateItem[] }) {
+  const cal = items.reduce((s, i) => s + i.cal, 0);
+  const p = items.reduce((s, i) => s + i.p, 0);
+  const c = items.reduce((s, i) => s + i.c, 0);
+  const f = items.reduce((s, i) => s + i.f, 0);
+  return (
+    <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+      <View style={{ padding: 18 }}>
+        <Micro>Meal total</Micro>
+        <Text style={styles.mealTotalCal}>{cal.toLocaleString()} <Text style={styles.mealTotalUnit}>cal</Text></Text>
+        <View style={styles.macroTiles}>
+          {[["Protein", p, T.green], ["Carbs", c, T.carbs], ["Fat", f, T.fat]].map(([label, v, col]: any, i) => (
+            <View key={i} style={styles.macroTile}>
+              <Text style={[styles.macroTileNum, { color: col }]}>{v}g</Text>
+              <Text style={styles.macroTileLabel}>{label}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    </TravelBorder>
+  );
+}
+
 /* ===================== HUB ===================== */
+function HubLucide({ icon: Icon }: { icon: any }) {
+  if (!Icon) return null;
+  return <Icon size={22} color={T.green} />;
+}
+
 function Hub({ go }: { go: (s: string) => void }) {
   const opts = [
-    { I: CameraIcon, t: "Snap a meal", d: "Take a photo, AI estimates it.", g: "AI", s: "snap" },
-    { I: ScanBarcode, t: "Scan barcode", d: "Exact facts for packaged food.", g: "Exact", s: "barcode" },
-    { I: Search, t: "Search food", d: "Find the exact food + portion.", g: "Exact", s: "search" },
+    { anim: ANIM.camera, icon: null, t: "Snap a meal", d: "Take a photo, AI estimates it.", g: "AI", s: "snap" },
+    { anim: ANIM.barcode, icon: null, t: "Scan barcode", d: "Exact facts for packaged food.", g: "Exact", s: "barcode" },
+    { anim: ANIM.search, icon: null, t: "Search food", d: "Find the exact food + portion.", g: "Exact", s: "search" },
+    { anim: ANIM.pen, icon: null, t: "Log without a photo", d: "Forgot to snap it? We'll estimate it.", g: "Est.", s: "nophoto" },
   ];
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
@@ -72,7 +135,9 @@ function Hub({ go }: { go: (s: string) => void }) {
       <Text style={styles.hubSub}>Adding to <Text style={{ color: T.green }}>{MEAL}</Text>. Choose how:</Text>
       {opts.map((o, i) => (
         <Pressable key={i} onPress={() => go(o.s)} style={styles.hubCard}>
-          <View style={styles.hubIcon}><o.I size={24} color={T.green} /></View>
+          <View style={styles.hubIcon}>
+            {o.anim ? <Anim source={o.anim} size={o.s === "snap" ? 28 : 26} /> : <HubLucide icon={o.icon} />}
+          </View>
           <View style={{ flex: 1 }}>
             <View style={styles.hubRow}>
               <Text style={styles.hubCardTitle}>{o.t}</Text>
@@ -83,14 +148,28 @@ function Hub({ go }: { go: (s: string) => void }) {
           <ChevronRight size={20} color={T.micro} />
         </Pressable>
       ))}
-      <Text style={styles.centerHint}>All three work — try each one.</Text>
+      <Text style={styles.centerHint}>Every option works — try each one.</Text>
     </ScrollView>
   );
 }
 
 /* ===================== SNAP FLOW ===================== */
+// What MOTION detected on the plate. Voice refines the numbers, it doesn't
+// change the foods — so the same items carry both estimates.
+const PLATE_BASE: PlateItem[] = [
+  { name: "Scrambled eggs", color: "#FBBF24", cal: 220, p: 18, c: 1, f: 16 },
+  { name: "Avocado", color: "#84CC16", cal: 240, p: 3, c: 12, f: 22 },
+  { name: "Sourdough toast", color: "#E8C79A", cal: 70, p: 3, c: 13, f: 1 },
+];
+const PLATE_IMPROVED: PlateItem[] = [
+  { name: "Scrambled eggs", color: "#FBBF24", cal: 320, p: 20, c: 1, f: 27 },
+  { name: "Avocado", color: "#84CC16", cal: 240, p: 3, c: 12, f: 22 },
+  { name: "Sourdough toast", color: "#E8C79A", cal: 130, p: 4, c: 14, f: 7 },
+];
+
 function Snap({ back, done }: { back: () => void; done: () => void }) {
-  const [step, setStep] = useState<"analyzing" | "result" | "voice" | "recipe" | "improved">("analyzing");
+  const { freeLocked, openPaywall } = useApp();
+  const [step, setStep] = useState<"analyzing" | "result" | "voice" | "improved">("analyzing");
 
   useEffect(() => {
     if (step === "analyzing") {
@@ -110,75 +189,53 @@ function Snap({ back, done }: { back: () => void; done: () => void }) {
 
   if (step === "voice") return <Voice back={() => setStep("result")} done={() => setStep("improved")} />;
 
-  if (step === "recipe") {
-    return (
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <TopBar onBack={() => setStep("result")} title="Build it yourself" />
-        <Text style={styles.hubSub}>Add what you used. We'll estimate the calories.</Text>
-        <View style={styles.searchBox}>
-          <Search size={17} color={T.micro} />
-          <Text style={styles.searchPlaceholder}>Search an ingredient…</Text>
-        </View>
-        <View style={styles.listCard}>
-          {[["Eggs", "5 large", 360], ["Avocado", "1 whole", 240]].map((g, i) => (
-            <View key={i} style={[styles.listRow, i ? styles.rowBorder : null]}>
-              <View>
-                <Text style={styles.listName}>{g[0]}</Text>
-                <Text style={styles.listCalGreen}>{g[1]} · ~{g[2]} cal</Text>
-              </View>
-            </View>
-          ))}
-        </View>
-        <PrimaryBtn label={`Log to ${MEAL}`} onPress={done} />
-      </ScrollView>
-    );
-  }
-
   const improved = step === "improved";
+  const plate = improved ? PLATE_IMPROVED : PLATE_BASE;
+  const maxCal = Math.max(...plate.map((i) => i.cal));
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <TopBar onBack={back} />
+
+      {/* free-plan snap banner */}
+      {freeLocked && (
+        <Pressable onPress={() => openPaywall("subscribe")} style={styles.snapBanner}>
+          <Text style={styles.snapBannerText}>1 photo left today on the free plan — make it count · Upgrade →</Text>
+        </Pressable>
+      )}
+
       <View style={styles.photo}>
         <Text style={styles.photoLabel}>meal photo</Text>
       </View>
       <View style={styles.estRow}>
-        <Sparkles size={12} color={improved ? T.green : "#FB923C"} />
-        <Text style={[styles.estText, { color: improved ? T.green : "#FB923C" }]}>
-          ESTIMATED · {improved ? 91 : 62}% CONFIDENCE
+        <Sparkles size={12} color={T.green} />
+        <Text style={[styles.estText, { color: T.green }]}>
+          {improved ? "UPDATED WITH YOUR DETAILS" : "MOTION AI ESTIMATE"}
         </Text>
       </View>
       <Text style={styles.foodTitle}>Scrambled eggs & avocado</Text>
-      {improved && <Text style={styles.updatedText}>↑ Updated from what you said</Text>}
 
-      <View style={styles.listCard}>
-        <View style={styles.calorieHeader}>
-          <Micro>Calories</Micro>
-          <Text style={styles.calorieBig}>{improved ? 690 : 530}</Text>
-        </View>
-        {[["Protein", improved ? "38g" : "22g"], ["Carbs", improved ? "12g" : "9g"], ["Fat", improved ? "52g" : "40g"]].map((r, i) => (
-          <View key={i} style={[styles.listRow, styles.rowBorder]}>
-            <Text style={styles.macroKey}>{r[0]}</Text>
-            <Text style={styles.macroVal}>{r[1]}</Text>
-          </View>
-        ))}
+      <View style={styles.plateHeader}>
+        <Micro>On your plate · {plate.length} items</Micro>
+      </View>
+      {plate.map((item, i) => (
+        <FoodBar key={i} item={item} maxCal={maxCal} />
+      ))}
+
+      <View style={{ marginTop: 6 }}>
+        <MealTotal items={plate} />
       </View>
 
       {!improved && (
-        <Pressable onPress={() => setStep("voice")} style={styles.voiceCallout}>
-          <View style={styles.voiceIcon}><Mic size={20} color="#0A0A0A" /></View>
+        <Pressable onPress={() => setStep("voice")} style={[styles.voiceCallout, { marginTop: 14 }]}>
+          <View style={styles.voiceIcon}><Anim source={ANIM.mic} size={24} /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.voiceTitle}>Make it more accurate</Text>
-            <Text style={styles.voiceSub}>Tell us how you made it — 20 sec</Text>
+            <Text style={styles.voiceSub}>Tell Motion how it was made — 20 sec</Text>
           </View>
           <ChevronRight size={18} color={T.green} />
         </Pressable>
       )}
-
-      <Pressable onPress={() => setStep("recipe")} style={styles.recipeCallout}>
-        <View style={styles.recipeIcon}><Utensils size={16} color={T.green} /></View>
-        <Text style={styles.recipeText}>Or build it from ingredients</Text>
-        <ChevronRight size={16} color={T.micro} />
-      </Pressable>
 
       <PrimaryBtn label={`Log to ${MEAL}`} onPress={done} />
     </ScrollView>
@@ -221,7 +278,7 @@ function Voice({ back, done }: { back: () => void; done: () => void }) {
       <View style={{ width: "100%", maxWidth: 300, alignItems: "center" }}>
         <View style={styles.bubble}>
           <Text style={styles.bubbleText}>
-            {state === "paused" ? "Got it! Add anything else, or send?" : "Tell me how you made this dish — the more detail, the better."}
+            {state === "paused" ? "Got it — add anything else, or send it to Motion." : "Describe what you're eating — the more detail, the more accurate your calories."}
           </Text>
         </View>
         <Text style={[styles.timer, { opacity: state === "idle" ? 0.3 : 1 }]}>{fmt}</Text>
@@ -232,7 +289,7 @@ function Voice({ back, done }: { back: () => void; done: () => void }) {
           onPress={() => setState(state === "recording" ? "paused" : "recording")}
           style={[styles.micBtn, { backgroundColor: state === "recording" ? T.card : T.green, borderWidth: state === "recording" ? 2 : 0, borderColor: T.green }]}
         >
-          {state === "recording" ? <View style={styles.stopSquare} /> : <Mic size={30} color="#0A0A0A" />}
+          {state === "recording" ? <View style={styles.stopSquare} /> : <Anim source={ANIM.mic} size={36} />}
         </Pressable>
         <Text style={styles.micHint}>
           {state === "recording" ? "Tap to pause" : state === "paused" ? "Tap mic to add more" : "Tap to talk"}
@@ -240,7 +297,7 @@ function Voice({ back, done }: { back: () => void; done: () => void }) {
         {state === "paused" && (
           <Pressable onPress={() => setState("sending")} style={styles.sendBtn}>
             <Send size={16} color="#0A0A0A" />
-            <Text style={styles.sendText}>Done — send to AI</Text>
+            <Text style={styles.sendText}>Done — send to Motion</Text>
           </Pressable>
         )}
         <Pressable onPress={back} style={{ marginTop: 12 }}>
@@ -292,7 +349,15 @@ function Barcode({ back, done }: { back: () => void; done: () => void }) {
     );
   }
 
-  const cals = 190 * servings;
+  const yogurt: PlateItem = {
+    name: "Greek yogurt",
+    color: "#F5F0E4",
+    cal: Math.round(190 * servings),
+    p: Math.round(18 * servings),
+    c: Math.round(9 * servings),
+    f: 0,
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <TopBar onBack={back} />
@@ -301,7 +366,7 @@ function Barcode({ back, done }: { back: () => void; done: () => void }) {
         <Text style={[styles.estText, { color: T.green }]}>EXACT MATCH · FROM BARCODE</Text>
       </View>
       <View style={styles.productRow}>
-        <View style={styles.productImg}><ScanBarcode size={26} color={T.sub} /></View>
+        <View style={styles.productImg}><Anim source={ANIM.barcode} size={26} /></View>
         <View>
           <Text style={styles.productName}>Greek Yogurt</Text>
           <Text style={styles.productSub}>Chobani · Plain, Non-fat</Text>
@@ -320,16 +385,12 @@ function Barcode({ back, done }: { back: () => void; done: () => void }) {
         </View>
       </TravelBorder>
 
-      <View style={styles.totalCard}>
-        <View>
-          <Micro>Total</Micro>
-          <Text style={styles.totalCal}>{cals} <Text style={styles.totalCalUnit}>cal</Text></Text>
-        </View>
-        <View style={{ alignItems: "flex-end" }}>
-          <Text style={styles.macroSmall}>P {Math.round(18 * servings)}g</Text>
-          <Text style={styles.macroSmall}>C {Math.round(9 * servings)}g</Text>
-          <Text style={styles.macroSmall}>F {Math.round(0 * servings)}g</Text>
-        </View>
+      <View style={{ marginTop: 14 }}>
+        <FoodBar item={yogurt} maxCal={yogurt.cal} />
+      </View>
+
+      <View style={{ marginTop: 6 }}>
+        <MealTotal items={[yogurt]} />
       </View>
 
       <PrimaryBtn label={`Add to ${MEAL}`} onPress={done} />
@@ -337,15 +398,16 @@ function Barcode({ back, done }: { back: () => void; done: () => void }) {
   );
 }
 
-/* ===================== SEARCH FLOW ===================== */
+/* ===================== SEARCH DATA (shared by search + no-photo) ===================== */
 const RESULTS = [
-  { n: "Basmati rice", sub: "cooked", per: 121 },
-  { n: "Jasmine rice", sub: "cooked", per: 129 },
-  { n: "White rice", sub: "cooked", per: 130 },
-  { n: "Brown rice", sub: "cooked", per: 112 },
+  { n: "Basmati rice", sub: "cooked", per: 121, color: "#EFE7CE" },
+  { n: "Jasmine rice", sub: "cooked", per: 129, color: "#EFE7CE" },
+  { n: "White rice", sub: "cooked", per: 130, color: "#DBCBA0" },
+  { n: "Brown rice", sub: "cooked", per: 112, color: "#C9AE7B" },
 ];
 const UNITS = [
   { label: "grams", each: 1, per100: true },
+  { label: "piece", each: 50 },
   { label: "cup", each: 158 },
   { label: "scoop", each: 90 },
   { label: "handful", each: 45 },
@@ -354,7 +416,7 @@ const UNITS = [
 function SearchFlow({ back, done }: { back: () => void; done: () => void }) {
   const [food, setFood] = useState<null | typeof RESULTS[0]>(null);
   const [q, setQ] = useState("rice");
-  const [unitIdx, setUnitIdx] = useState(1);
+  const [unitIdx, setUnitIdx] = useState(2);
   const [count, setCount] = useState(1);
 
   if (!food) {
@@ -362,7 +424,7 @@ function SearchFlow({ back, done }: { back: () => void; done: () => void }) {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <TopBar onBack={back} title={`Add to ${MEAL}`} />
         <View style={styles.searchBox}>
-          <Search size={17} color={T.sub} />
+          <Anim source={ANIM.search} size={22} />
           <TextInput
             value={q}
             onChangeText={setQ}
@@ -415,7 +477,7 @@ function SearchFlow({ back, done }: { back: () => void; done: () => void }) {
             <View style={styles.listCard}>
               {RESULTS.map((r, i) => (
                 <Pressable key={i} onPress={() => setFood(r)} style={[styles.libRow, i ? styles.rowBorder : null]}>
-                  <FoodImg label />
+                  <View style={[styles.swatch, { backgroundColor: r.color }]} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.listName}>{r.n}</Text>
                     <Text style={styles.libSub}>{r.sub} · {r.per} cal / 100g</Text>
@@ -433,13 +495,21 @@ function SearchFlow({ back, done }: { back: () => void; done: () => void }) {
   const unit = UNITS[unitIdx];
   const grams = unit.per100 ? count : count * unit.each;
   const cals = Math.round(grams * (food.per / 100));
-  const stepAmt = unit.per100 ? 10 : 0.5;
+  const stepAmt = unit.per100 ? 10 : 1;
+  const item: PlateItem = {
+    name: food.n,
+    color: food.color,
+    cal: cals,
+    p: Math.round(grams * 0.027),
+    c: Math.round(grams * 0.28),
+    f: Math.round(grams * 0.003),
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <TopBar onBack={() => setFood(null)} title="How much?" />
       <View style={styles.foodHeaderRow}>
-        <FoodImg label />
+        <View style={[styles.swatchBig, { backgroundColor: food.color }]} />
         <View>
           <Text style={styles.productName}>{food.n}</Text>
           <Text style={styles.productSub}>{food.sub} · {food.per} cal / 100g</Text>
@@ -467,23 +537,109 @@ function SearchFlow({ back, done }: { back: () => void; done: () => void }) {
         onInc={() => setCount((c) => +(c + stepAmt).toFixed(1))}
       />
 
-      {!unit.per100 && (
-        <View style={styles.handHint}>
-          <Text style={{ fontSize: 20 }}>🖐️</Text>
-          <Text style={styles.handHintText}>
-            Not sure? One {unit.label} ≈ a {unit.label === "cup" ? "closed fist" : unit.label === "scoop" ? "ice-cream scoop" : "cupped hand"}.
-          </Text>
-        </View>
-      )}
+      <View style={{ marginTop: 14 }}>
+        <FoodBar item={item} maxCal={item.cal} />
+      </View>
 
-      <View style={styles.totalCard}>
-        <View>
-          <Micro>This portion</Micro>
-          <Text style={styles.totalCal}>{cals} <Text style={styles.totalCalUnit}>cal</Text></Text>
-        </View>
+      <View style={{ marginTop: 6 }}>
+        <MealTotal items={[item]} />
       </View>
 
       <PrimaryBtn label={`Add to ${MEAL}`} onPress={done} />
+    </ScrollView>
+  );
+}
+
+/* ===================== NO-PHOTO (log without a photo) ===================== */
+// Simple version: search → pick → amount → log. (Running-plate builder comes later.)
+function NoPhotoFlow({ back, done }: { back: () => void; done: () => void }) {
+  const [food, setFood] = useState<null | typeof RESULTS[0]>(null);
+  const [q, setQ] = useState("");
+  const [unitIdx, setUnitIdx] = useState(2);
+  const [count, setCount] = useState(1);
+
+  if (!food) {
+    const shown = q.length === 0 ? RESULTS : RESULTS.filter((r) => r.n.toLowerCase().includes(q.toLowerCase()));
+    return (
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <TopBar onBack={back} title="Log without a photo" />
+        <Text style={styles.hubSub}>Forgot to snap it? Log it here and we'll do our best to estimate the calories.</Text>
+        <View style={styles.searchBox}>
+          <Anim source={ANIM.search} size={22} />
+          <TextInput
+            value={q}
+            onChangeText={setQ}
+            placeholder="What did you eat?"
+            placeholderTextColor={T.micro}
+            style={styles.searchInput}
+          />
+        </View>
+        <View style={styles.listCard}>
+          {shown.map((r, i) => (
+            <Pressable key={i} onPress={() => setFood(r)} style={[styles.libRow, i ? styles.rowBorder : null]}>
+              <View style={[styles.swatch, { backgroundColor: r.color }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.listName}>{r.n}</Text>
+                <Text style={styles.libSub}>{r.sub} · {r.per} cal / 100g</Text>
+              </View>
+              <ChevronRight size={17} color={T.micro} />
+            </Pressable>
+          ))}
+        </View>
+      </ScrollView>
+    );
+  }
+
+  const unit = UNITS[unitIdx];
+  const grams = unit.per100 ? count : count * unit.each;
+  const cals = Math.round(grams * (food.per / 100));
+  const stepAmt = unit.per100 ? 10 : 1;
+  const item: PlateItem = {
+    name: food.n,
+    color: food.color,
+    cal: cals,
+    p: Math.round(grams * 0.027),
+    c: Math.round(grams * 0.28),
+    f: Math.round(grams * 0.003),
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.scroll}>
+      <TopBar onBack={() => setFood(null)} title="How much?" />
+      <View style={styles.foodHeaderRow}>
+        <View style={[styles.swatchBig, { backgroundColor: food.color }]} />
+        <View>
+          <Text style={styles.productName}>{food.n}</Text>
+          <Text style={styles.productSub}>{food.sub} · {food.per} cal / 100g</Text>
+        </View>
+      </View>
+
+      <Micro>Measure in</Micro>
+      <View style={styles.unitRow}>
+        {UNITS.map((u, i) => (
+          <Pressable key={i} onPress={() => { setUnitIdx(i); setCount(u.per100 ? 100 : 1); }} style={[styles.unitChip, unitIdx === i ? styles.unitChipOn : null]}>
+            <Text style={[styles.unitChipText, unitIdx === i ? styles.unitChipTextOn : null]}>{u.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <Stepper
+        value={String(count)}
+        unitLabel={unit.per100 ? "g" : unit.label + (count !== 1 ? "s" : "")}
+        sub={!unit.per100 ? `≈ ${grams} g` : undefined}
+        onDec={() => setCount((c) => Math.max(stepAmt, +(c - stepAmt).toFixed(1)))}
+        onInc={() => setCount((c) => +(c + stepAmt).toFixed(1))}
+      />
+
+      <View style={{ marginTop: 14 }}>
+        <FoodBar item={item} maxCal={item.cal} />
+      </View>
+
+      <View style={{ marginTop: 6 }}>
+        <MealTotal items={[item]} />
+      </View>
+
+      <PrimaryBtn label={`Log to ${MEAL}`} onPress={done} />
     </ScrollView>
   );
 }
@@ -506,7 +662,7 @@ function PrimaryBtn({ label, onPress }: { label: string; onPress: () => void }) 
 }
 
 export default function CameraScreen() {
-  const [screen, setScreen] = useState<"hub" | "snap" | "barcode" | "search">("hub");
+  const [screen, setScreen] = useState<"hub" | "snap" | "barcode" | "search" | "nophoto">("hub");
   const [done, setDone] = useState(false);
   const finish = () => setDone(true);
 
@@ -528,6 +684,7 @@ export default function CameraScreen() {
       {screen === "snap" && <Snap back={() => setScreen("hub")} done={finish} />}
       {screen === "barcode" && <Barcode back={() => setScreen("hub")} done={finish} />}
       {screen === "search" && <SearchFlow back={() => setScreen("hub")} done={finish} />}
+      {screen === "nophoto" && <NoPhotoFlow back={() => setScreen("hub")} done={finish} />}
     </View>
   );
 }
@@ -541,6 +698,8 @@ const styles = StyleSheet.create({
   topTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginLeft: 2 },
 
   foodImg: { width: 46, height: 46, borderRadius: 12, backgroundColor: "#1E1E1E", alignItems: "center", justifyContent: "center" },
+  swatch: { width: 46, height: 46, borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  swatchBig: { width: 56, height: 56, borderRadius: 14, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
 
   hubTitle: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, marginBottom: 6 },
   hubSub: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, marginBottom: 20 },
@@ -553,6 +712,9 @@ const styles = StyleSheet.create({
   tagText: { fontSize: 9, color: T.sub, fontFamily: FONTS.body },
   centerHint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 14 },
 
+  snapBanner: { backgroundColor: "rgba(251,191,36,0.12)", borderWidth: 1, borderColor: "rgba(251,191,36,0.4)", borderRadius: 12, padding: 12, marginBottom: 14 },
+  snapBannerText: { fontSize: 11.5, color: "#FBBF24", fontFamily: FONTS.headingMed, textAlign: "center" },
+
   centerScreen: { flex: 1, backgroundColor: T.bg, alignItems: "center", justifyContent: "center", padding: 24 },
   centerBig: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, marginTop: 18, textAlign: "center" },
   spinner: { width: 58, height: 58, borderRadius: 29, borderWidth: 3, borderColor: T.greenBg, borderTopColor: T.green },
@@ -562,28 +724,33 @@ const styles = StyleSheet.create({
   estRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
   estText: { fontSize: 10, letterSpacing: 1.2, fontFamily: FONTS.body },
   foodTitle: { fontSize: 19, color: T.text, fontFamily: FONTS.heading, marginBottom: 6 },
-  updatedText: { fontSize: 11.5, color: T.green, fontFamily: FONTS.body, marginBottom: 12 },
+
+  // food histogram bars
+  plateHeader: { marginTop: 10, marginBottom: 10, marginLeft: 2 },
+  barTrack: { backgroundColor: T.track, borderRadius: 12, marginBottom: 8, overflow: "hidden" },
+  barFill: { borderRadius: 12, paddingVertical: 10, paddingHorizontal: 12, justifyContent: "center" },
+  barTopRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 8 },
+  barName: { flex: 1, fontSize: 13.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+  barCal: { fontSize: 12.5, color: "#0A0A0A", fontFamily: FONTS.heading },
+  barMacros: { fontSize: 10, color: "rgba(10,10,10,0.72)", fontFamily: FONTS.body, marginTop: 3 },
+
+  mealTotalCal: { fontSize: 30, color: T.text, fontFamily: FONTS.heading, marginTop: 4 },
+  mealTotalUnit: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
+  macroTiles: { flexDirection: "row", gap: 8, marginTop: 14 },
+  macroTile: { flex: 1, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 12, paddingVertical: 10, alignItems: "center" },
+  macroTileNum: { fontSize: 16, fontFamily: FONTS.heading },
+  macroTileLabel: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 2, textTransform: "uppercase" },
 
   listCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: "hidden", marginBottom: 14, marginTop: 8 },
-  listRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 13, paddingHorizontal: 15 },
   rowBorder: { borderTopWidth: 1, borderTopColor: T.border },
   listName: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed },
-  listCalGreen: { fontSize: 11, color: T.green, fontFamily: FONTS.heading, marginTop: 3 },
-  calorieHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 15 },
-  calorieBig: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
-  macroKey: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-  macroVal: { fontSize: 13, color: T.sub, fontFamily: FONTS.heading },
 
   voiceCallout: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 14, padding: 14, marginBottom: 12 },
   voiceIcon: { width: 42, height: 42, borderRadius: 12, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
   voiceTitle: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed },
   voiceSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
-  recipeCallout: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderStyle: "dashed", borderRadius: 14, padding: 13, marginBottom: 14 },
-  recipeIcon: { width: 36, height: 36, borderRadius: 11, backgroundColor: T.greenBg, alignItems: "center", justifyContent: "center" },
-  recipeText: { flex: 1, fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
 
   searchBox: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 18 },
-  searchPlaceholder: { fontSize: 13.5, color: T.micro, fontFamily: FONTS.body },
   searchInput: { flex: 1, color: T.text, fontFamily: FONTS.body, fontSize: 14, padding: 0 },
 
   bubble: { backgroundColor: T.card, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 16, padding: 16, marginBottom: 30 },
@@ -619,11 +786,6 @@ const styles = StyleSheet.create({
   stepUnit: { fontSize: 15, color: T.sub, fontFamily: FONTS.body },
   stepSub: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 10 },
 
-  totalCard: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 16, padding: 18, marginTop: 14, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  totalCal: { fontSize: 30, color: T.text, fontFamily: FONTS.heading, marginTop: 4 },
-  totalCalUnit: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
-  macroSmall: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 3 },
-
   sectionLabel: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10, marginLeft: 2 },
   libRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12 },
   libSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
@@ -635,8 +797,6 @@ const styles = StyleSheet.create({
   unitChipOn: { borderColor: T.green, backgroundColor: T.greenBg },
   unitChipText: { color: T.sub, fontFamily: FONTS.headingMed, fontSize: 13 },
   unitChipTextOn: { color: T.green },
-  handHint: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 13, padding: 12, marginTop: 12 },
-  handHintText: { flex: 1, fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 16 },
 
   primaryBtn: { backgroundColor: T.green, borderRadius: 14, padding: 15, alignItems: "center", marginTop: 18 },
   primaryBtnText: { color: "#0A0A0A", fontFamily: FONTS.headingMed, fontSize: 14 },
