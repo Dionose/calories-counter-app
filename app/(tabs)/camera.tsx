@@ -14,13 +14,13 @@ import {
 } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import PageHeader from "../../components/PageHeader";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS } from "../../constants/theme";
 
 const MEAL = "Lunch"; // placeholder until Home routes a real meal in
 
-// ---- animated Lottie icons ----
 const ANIM = {
   camera: require("../../assets/motion-camera-green.json"),
   barcode: require("../../assets/motion-barcode-22C55E.json"),
@@ -32,14 +32,11 @@ function Anim({ source, size = 26 }: { source: any; size?: number }) {
   return <LottieView source={source} autoPlay loop style={{ width: size, height: size }} />;
 }
 
-/* ===================== FOOD HISTOGRAM BAR =====================
-   Every detected food gets its own left-to-right bar, coloured by the food
-   itself, with the macros spelled out inside it. */
 type PlateItem = { name: string; color: string; cal: number; p: number; c: number; f: number };
 
 function FoodBar({ item, maxCal, T }: { item: PlateItem; maxCal: number; T: any }) {
   const s = styles(T);
-  const pct = 62 + (item.cal / maxCal) * 38; // 62%–100%, so macros never clip
+  const pct = 62 + (item.cal / maxCal) * 38;
   return (
     <View style={s.barTrack}>
       <View style={[s.barFill, { width: `${pct}%`, backgroundColor: item.color }]}>
@@ -90,6 +87,7 @@ function Hub({ go, T }: { go: (s: string) => void; T: any }) {
   ];
   return (
     <ScrollView contentContainerStyle={s.scroll}>
+      <PageHeader title="Log" />
       <Text style={s.hubTitle}>Log {MEAL.toLowerCase()}</Text>
       <Text style={s.hubSub}>Adding to <Text style={{ color: T.green }}>{MEAL}</Text>. Choose how:</Text>
       {opts.map((o, i) => (
@@ -372,7 +370,7 @@ const UNITS = [
   { label: "handful", each: 45 },
 ];
 
-function PortionScreen({ food, unitIdx, setUnitIdx, count, setCount, onBack, onDone, label, totalLabel, T }: any) {
+function PortionScreen({ food, unitIdx, setUnitIdx, count, setCount, onBack, onDone, label, T }: any) {
   const s = styles(T);
   const unit = UNITS[unitIdx];
   const grams = unit.per100 ? count : count * unit.each;

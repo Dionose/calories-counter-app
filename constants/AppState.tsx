@@ -3,8 +3,8 @@
 //   - isPro / freeLocked  (the dev toggle: are we a free-after-trial user or Pro?)
 //   - theme               (dark / light)
 //   - openPaywall()       (any screen can call this to show the paywall)
-//   - plan + profile      (the user's calorie target, macros, weight, goal —
-//                          generated in onboarding, read by Home/Stats/Profile)
+//   - plan + profile      (the user's calorie target, macros, weight, goal)
+//   - streakDays          (drives the tier colour of the M, the flame, the calendar)
 // Wrap the app in <AppStateProvider> once (in app/_layout.tsx), then any screen
 // calls useApp() to read/change this state.
 
@@ -13,28 +13,25 @@ import { DARK, LIGHT } from "./theme";
 
 type ThemeMode = "dark" | "light";
 
-// what onboarding works out for this user
 export type Plan = {
   calories: number;
   protein: number;
   carbs: number;
   fat: number;
-  tdee: number;          // what they burn in a day, before the goal adjustment
-  addBurned: boolean;    // top the target up on training days?
+  tdee: number;
+  addBurned: boolean;
 };
 
-// the answers we keep using after onboarding
 export type UserProfile = {
   name: string;
   goal: "lose" | "maintain" | "gain";
   weightUnit: "kg" | "lbs";
-  startWeight: number;   // what they weighed at signup
-  targetWeight: number;  // what they're aiming for
-  paceRate: number;      // kg per week
-  goalWeeks: number;     // how long the plan says it takes
+  startWeight: number;
+  targetWeight: number;
+  paceRate: number;
+  goalWeeks: number;
 };
 
-// used until onboarding fills in the real thing (and for the DEV chip flow)
 const DEFAULT_PLAN: Plan = { calories: 1980, protein: 120, carbs: 230, fat: 65, tdee: 2480, addBurned: false };
 const DEFAULT_PROFILE: UserProfile = {
   name: "Dion",
@@ -69,8 +66,14 @@ type AppStateShape = {
   plan: Plan;
   profile: UserProfile;
   savePlan: (plan: Plan, profile: UserProfile) => void;
-  setDailyCalories: (calories: number) => void;  // Profile → Daily calories
-  resetToRecommended: () => void;                // Profile → "Reset to recommended"
+  setDailyCalories: (calories: number) => void;
+  resetToRecommended: () => void;
+
+  // --- streak ---
+  // one number drives every tier colour in the app. The real streak engine
+  // will own this later; for now the DEV tier switcher in Profile sets it.
+  streakDays: number;
+  setStreakDays: (d: number) => void;
 };
 
 const AppStateContext = createContext<AppStateShape | null>(null);
@@ -83,8 +86,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const [plan, setPlan] = useState<Plan>(DEFAULT_PLAN);
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
-  // what onboarding originally recommended — so "reset to recommended" can undo edits
   const [recommended, setRecommended] = useState<Plan>(DEFAULT_PLAN);
+  const [streakDays, setStreakDays] = useState(14);
 
   const togglePro = useCallback(() => setIsPro((v) => !v), []);
   const toggleTheme = useCallback(() => setThemeMode((m) => (m === "dark" ? "light" : "dark")), []);
@@ -129,14 +132,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       savePlan,
       setDailyCalories,
       resetToRecommended,
+      streakDays,
+      setStreakDays,
     }),
-    [isPro, themeMode, T, paywallOpen, paywallVariant, plan, profile, togglePro, toggleTheme, openPaywall, closePaywall, savePlan, setDailyCalories, resetToRecommended]
+    [isPro, themeMode, T, paywallOpen, paywallVariant, plan, profile, streakDays, togglePro, toggleTheme, openPaywall, closePaywall, savePlan, setDailyCalories, resetToRecommended]
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
-// Any screen calls this to read/change global state.
 export function useApp(): AppStateShape {
   const ctx = useContext(AppStateContext);
   if (!ctx) {

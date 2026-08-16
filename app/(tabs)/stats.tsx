@@ -2,6 +2,7 @@
 import { Activity, Check, ChevronLeft, Flame, Footprints, Lock, TrendingDown, Watch } from "lucide-react-native";
 import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import PageHeader from "../../components/PageHeader";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS } from "../../constants/theme";
@@ -44,7 +45,7 @@ function StatsMain({ range, setRange, openWeight }: { range: string; setRange: (
 
   return (
     <ScrollView contentContainerStyle={s.scroll}>
-      <Text style={s.h1}>Stats</Text>
+      <PageHeader title="Stats" />
 
       {/* range toggle */}
       <View style={s.toggle}>
@@ -313,7 +314,6 @@ const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
     scroll: { padding: 16, paddingTop: 60, paddingBottom: 40 },
-    h1: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, marginBottom: 14 },
 
     micro: { fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
     rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },

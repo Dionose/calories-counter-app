@@ -2,17 +2,26 @@
 import { Bell, Check, ChevronRight, Crown, Flame, Lock, LogOut, Mic, Moon, Palette, ScanBarcode, Shield, Sun, Target, User, Vibrate, Watch, X } from "lucide-react-native";
 import React, { useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import IsoM from "../../components/IsoM";
+import PageHeader from "../../components/PageHeader";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
-import { FONTS, tierForStreak } from "../../constants/theme";
-
-const STREAK_DAYS = 14;
+import { FONTS, TIERS, tierForStreak } from "../../constants/theme";
 
 // ---- three-plan paywall data ----
 const PLANS = [
   { id: "monthly", name: "Monthly", price: "$9.99", per: "/mo", sub: "Billed monthly", badge: null as string | null, glow: "#FB923C" },
   { id: "yearly", name: "Yearly", price: "$99.99", per: "/yr", sub: "Save ~17% vs monthly", badge: "Popular", glow: "#FBBF24" },
   { id: "lifetime", name: "Lifetime", price: "$499.99", per: "once", sub: "Pay once — yours for life", badge: "Best value", glow: "#FDE68A" },
+];
+
+// DEV: a day count that lands squarely in each tier, for previewing the M
+const TIER_PREVIEW: { tier: 1 | 2 | 3 | 4 | 5; days: number }[] = [
+  { tier: 1, days: 2 },
+  { tier: 2, days: 6 },
+  { tier: 3, days: 10 },
+  { tier: 4, days: 14 },
+  { tier: 5, days: 20 },
 ];
 
 function Toggle({ on, onPress, T }: { on: boolean; onPress: () => void; T: any }) {
@@ -151,7 +160,10 @@ function UsernameGate({ back, onUpgrade, T }: { back: () => void; onUpgrade: () 
 }
 
 export default function Profile() {
-  const { T, freeLocked, openPaywall, paywallOpen, closePaywall, themeMode, setThemeMode, plan, profile } = useApp();
+  const {
+    T, freeLocked, openPaywall, paywallOpen, closePaywall,
+    themeMode, setThemeMode, plan, profile, streakDays, setStreakDays,
+  } = useApp();
   const [picker, setPicker] = useState(false);
   const [watch, setWatch] = useState(true);
   const [reminders, setReminders] = useState(true);
@@ -159,7 +171,7 @@ export default function Profile() {
   const [sub, setSub] = useState<"main" | "username">("main");
 
   const s = styles(T);
-  const tier = tierForStreak(STREAK_DAYS);
+  const tier = tierForStreak(streakDays);
   const flameColor = tier.color === "ultimate" ? T.orange : tier.color;
 
   const goalLabel = profile.goal === "lose" ? "Lose weight" : profile.goal === "gain" ? "Gain weight" : "Maintain";
@@ -171,7 +183,7 @@ export default function Profile() {
   return (
     <View style={s.screen}>
       <ScrollView contentContainerStyle={s.scroll}>
-        <Text style={s.h1}>Profile</Text>
+        <PageHeader title="Profile" />
 
         {/* header card */}
         <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
@@ -181,7 +193,7 @@ export default function Profile() {
               <Text style={s.name}>{profile.name}</Text>
               <View style={[s.rowCenter, { marginTop: 3 }]}>
                 <Flame size={12} color={flameColor} fill={flameColor} />
-                <Text style={s.streakText}>{STREAK_DAYS}-day streak · {tier.name}</Text>
+                <Text style={s.streakText}>{streakDays}-day streak · {tier.name}</Text>
               </View>
             </View>
           </View>
@@ -206,6 +218,41 @@ export default function Profile() {
             </View>
           </TravelBorder>
         </Pressable>
+
+        {/* DEV tier switcher — preview the M in every tier. Remove before launch. */}
+        <View style={s.devCard}>
+          <Text style={s.devLabel}>DEV · TIER PREVIEW</Text>
+          <Text style={s.devHint}>
+            Sets your streak so you can see the M, the flame and the calendar in each tier.
+            {freeLocked ? " You're on FREE, so the M stays green — flip the DEV chip on Home to see tier colours." : ""}
+          </Text>
+
+          <View style={s.devMarkRow}>
+            <IsoM size={54} color={freeLocked ? T.green : tier.color} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.devMarkName}>{freeLocked ? "Free · plain green" : tier.name}</Text>
+              <Text style={s.devMarkDays}>{streakDays} day{streakDays === 1 ? "" : "s"}</Text>
+            </View>
+          </View>
+
+          <View style={s.devTierRow}>
+            {TIER_PREVIEW.map(({ tier: tr, days }) => {
+              const tt = TIERS[tr];
+              const on = tierForStreak(streakDays).name === tt.name;
+              const swatch = tt.color === "ultimate" ? "#8B5CF6" : tt.color;
+              return (
+                <Pressable
+                  key={tr}
+                  onPress={() => setStreakDays(days)}
+                  style={[s.devTierChip, on && { borderColor: swatch, backgroundColor: `${swatch}22` }]}
+                >
+                  <View style={[s.devTierDot, { backgroundColor: swatch }]} />
+                  <Text style={[s.devTierText, on && { color: swatch }]}>{tt.name}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
 
         <Section title="Appearance" T={T}>
           <Row icon={Palette} label="Theme" value={themeMode === "dark" ? "Dark" : "Light"} onPress={() => setPicker(true)} T={T} />
@@ -263,7 +310,6 @@ const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
     scroll: { padding: 16, paddingTop: 60, paddingBottom: 40 },
-    h1: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, marginBottom: 18 },
 
     micro: { fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
     rowCenter: { flexDirection: "row", alignItems: "center", gap: 5 },
@@ -279,6 +325,18 @@ const styles = (T: any) =>
     proTitle: { fontSize: 15, color: T.text, fontFamily: FONTS.heading },
     proSubRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 3 },
     proSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
+
+    // DEV tier switcher
+    devCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 15, marginBottom: 20 },
+    devLabel: { fontSize: 9, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body },
+    devHint: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 5, lineHeight: 16 },
+    devMarkRow: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 12, marginBottom: 12 },
+    devMarkName: { fontSize: 15, color: T.text, fontFamily: FONTS.heading },
+    devMarkDays: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+    devTierRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+    devTierChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderColor: T.border, backgroundColor: T.card, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7 },
+    devTierDot: { width: 9, height: 9, borderRadius: 3 },
+    devTierText: { fontSize: 11, color: T.sub, fontFamily: FONTS.headingMed },
 
     sectionCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: "hidden" },
     divider: { height: 1, backgroundColor: T.border, marginLeft: 62 },

@@ -3,6 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { CalendarDays, ChevronLeft, ChevronRight, Flame, Lock, Mic, Sparkles } from "lucide-react-native";
 import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import PageHeader from "../../components/PageHeader";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS, TIERS, ULT_COLORS } from "../../constants/theme";
@@ -38,7 +39,6 @@ function DayTile({ d, onSelect, plain, T }: { d: number | null; onSelect: (d: nu
   const happened = d <= TODAY;
   const isUlt = t && t.color === "ultimate";
 
-  // future / not-happened day — plain tile with number
   if (!happened) {
     return (
       <View style={s.cell}>
@@ -49,7 +49,6 @@ function DayTile({ d, onSelect, plain, T }: { d: number | null; onSelect: (d: nu
     );
   }
 
-  // FREE user — plain logged tile: green check, no tier colour
   if (plain) {
     return (
       <Pressable style={s.cell} onPress={() => onSelect(d)}>
@@ -61,7 +60,6 @@ function DayTile({ d, onSelect, plain, T }: { d: number | null; onSelect: (d: nu
     );
   }
 
-  // ULTIMATE — filled tile, revolving rainbow border, warm flame
   if (isUlt) {
     return (
       <Pressable style={s.cell} onPress={() => onSelect(d)}>
@@ -76,7 +74,6 @@ function DayTile({ d, onSelect, plain, T }: { d: number | null; onSelect: (d: nu
     );
   }
 
-  // normal tiers — filled tinted tile, single-color revolving border
   return (
     <Pressable style={s.cell} onPress={() => onSelect(d)}>
       <View style={s.tileWrap}>
@@ -172,29 +169,21 @@ export default function Calendar() {
             </View>
           ))}
 
-          {isUlt ? (
-            <TravelBorder colors={ULT_COLORS} cardBg={T.card} borderColor={T.border} radius={18}>
-              <View style={{ padding: 18 }}>
-                <Micro>Day total</Micro>
-                <View style={s.totalRow}>
-                  <Text style={s.totalBig}>{total.toLocaleString()}</Text>
-                  <Text style={s.totalSub}>of {goal.toLocaleString()} cal</Text>
-                  <Text style={s.totalUnder}>{Math.abs(goal - total)} {goal - total >= 0 ? "under" : "over"}</Text>
-                </View>
+          <TravelBorder
+            {...(isUlt ? { colors: ULT_COLORS } : { color: freeLocked ? T.green : t.color })}
+            cardBg={T.card}
+            borderColor={T.border}
+            radius={18}
+          >
+            <View style={{ padding: 18 }}>
+              <Micro>Day total</Micro>
+              <View style={s.totalRow}>
+                <Text style={s.totalBig}>{total.toLocaleString()}</Text>
+                <Text style={s.totalSub}>of {goal.toLocaleString()} cal</Text>
+                <Text style={s.totalUnder}>{Math.abs(goal - total)} {goal - total >= 0 ? "under" : "over"}</Text>
               </View>
-            </TravelBorder>
-          ) : (
-            <TravelBorder color={freeLocked ? T.green : t.color} cardBg={T.card} borderColor={T.border} radius={18}>
-              <View style={{ padding: 18 }}>
-                <Micro>Day total</Micro>
-                <View style={s.totalRow}>
-                  <Text style={s.totalBig}>{total.toLocaleString()}</Text>
-                  <Text style={s.totalSub}>of {goal.toLocaleString()} cal</Text>
-                  <Text style={s.totalUnder}>{Math.abs(goal - total)} {goal - total >= 0 ? "under" : "over"}</Text>
-                </View>
-              </View>
-            </TravelBorder>
-          )}
+            </View>
+          </TravelBorder>
         </ScrollView>
       </View>
     );
@@ -203,22 +192,29 @@ export default function Calendar() {
   return (
     <View style={s.screen}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-        <View style={s.headerRow}>
-          <Text style={s.h1}>Calendar</Text>
-          <View style={s.monthNav}>
-            <Pressable onPress={prevMonth} hitSlop={10}><ChevronLeft size={17} color={T.sub} /></Pressable>
-            <Text style={s.monthText}>{MONTHS[monthIdx].slice(0, 3)} {year}</Text>
-            <Pressable onPress={nextMonth} hitSlop={10}><ChevronRight size={17} color={T.sub} /></Pressable>
-            <Pressable hitSlop={10} style={{ marginLeft: 4 }}><CalendarDays size={17} color={T.green} /></Pressable>
-          </View>
+        <PageHeader title="Calendar" />
+
+        <View style={s.monthRow}>
+          <Pressable onPress={prevMonth} hitSlop={10}><ChevronLeft size={18} color={T.sub} /></Pressable>
+          <Text style={s.monthText}>{MONTHS[monthIdx]} {year}</Text>
+          <Pressable onPress={nextMonth} hitSlop={10}><ChevronRight size={18} color={T.sub} /></Pressable>
+          <Pressable hitSlop={10} style={{ marginLeft: 6 }}><CalendarDays size={17} color={T.green} /></Pressable>
         </View>
 
         {/* FREE users see a "colours are Pro" bar instead of the tier legend */}
         {freeLocked ? (
-          <Pressable onPress={() => openPaywall("subscribe")} style={s.plainBar}>
-            <Lock size={13} color={T.green} />
-            <Text style={s.plainBarText}>Your streak's still running — unlock tier colours with Pro</Text>
-          </Pressable>
+          <>
+            <Pressable onPress={() => openPaywall("subscribe")} style={s.plainBar}>
+              <Lock size={13} color={T.green} />
+              <Text style={s.plainBarText}>Your streak's still running — unlock tier colours with Pro</Text>
+            </Pressable>
+            <View style={s.legend}>
+              <View style={s.legendItem}>
+                <View style={{ width: 11, height: 11, borderRadius: 4, backgroundColor: T.green }} />
+                <Text style={s.legendText}>Logged · free plan</Text>
+              </View>
+            </View>
+          </>
         ) : (
           <View style={s.legend}>
             {[1, 2, 3, 4].map((tr) => {
@@ -261,16 +257,14 @@ const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
 
-    headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-    h1: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
-    monthNav: { flexDirection: "row", alignItems: "center", gap: 10 },
-    monthText: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed },
+    monthRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 },
+    monthText: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, minWidth: 130, textAlign: "center" },
 
-    legend: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 16 },
+    legend: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 16, justifyContent: "center" },
     legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
     legendText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
 
-    plainBar: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12, marginBottom: 16 },
+    plainBar: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 12, paddingVertical: 11, paddingHorizontal: 12, marginBottom: 12 },
     plainBarText: { fontSize: 11.5, color: T.green, fontFamily: FONTS.headingMed, flex: 1 },
 
     dowRow: { flexDirection: "row", marginBottom: 6 },
