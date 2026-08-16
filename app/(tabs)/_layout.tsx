@@ -3,13 +3,8 @@ import { Tabs } from "expo-router";
 import LottieView from "lottie-react-native";
 import React from "react";
 import { StyleSheet, View } from "react-native";
-
-const C = {
-  bg: "#0C0C0C",
-  border: "#242424",
-  green: "#22C55E",
-  micro: "#6A6A6A",
-};
+import { useApp } from "../../constants/AppState";
+import { FONTS } from "../../constants/theme";
 
 // ---- animated tab icons ----
 const ICONS = {
@@ -33,10 +28,11 @@ function TabLottie({ source, focused, size = 28 }: { source: any; focused: boole
 }
 
 // the raised center camera button (dark icon on the green button)
-function CameraTabIcon() {
+function CameraTabIcon({ T }: { T: any }) {
+  const s = styles(T);
   return (
-    <View style={styles.cameraWrap}>
-      <View style={styles.cameraButton}>
+    <View style={s.cameraWrap}>
+      <View style={s.cameraButton}>
         <LottieView
           source={ICONS.cameraDark}
           autoPlay
@@ -49,23 +45,25 @@ function CameraTabIcon() {
 }
 
 export default function TabsLayout() {
+  const { T } = useApp();
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: true,
-        tabBarActiveTintColor: C.green,
-        tabBarInactiveTintColor: C.micro,
+        tabBarActiveTintColor: T.green,
+        tabBarInactiveTintColor: T.micro,
         tabBarStyle: {
-          backgroundColor: C.bg,
-          borderTopColor: C.border,
+          backgroundColor: T.card,
+          borderTopColor: T.border,
           borderTopWidth: 1,
           height: 88,
           paddingTop: 8,
           paddingBottom: 28,
         },
         tabBarLabelStyle: {
-          fontFamily: "Inter_500Medium",
+          fontFamily: FONTS.bodyMed,
           fontSize: 10,
           marginTop: 2,
         },
@@ -89,7 +87,7 @@ export default function TabsLayout() {
         name="camera"
         options={{
           title: "",
-          tabBarIcon: () => <CameraTabIcon />,
+          tabBarIcon: () => <CameraTabIcon T={T} />,
         }}
       />
       <Tabs.Screen
@@ -110,23 +108,24 @@ export default function TabsLayout() {
   );
 }
 
-const styles = StyleSheet.create({
-  cameraWrap: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  cameraButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
-    backgroundColor: C.green,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: -20,
-    shadowColor: C.green,
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 8,
-  },
-});
+const styles = (T: any) =>
+  StyleSheet.create({
+    cameraWrap: {
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    cameraButton: {
+      width: 52,
+      height: 52,
+      borderRadius: 18,
+      backgroundColor: T.green,
+      alignItems: "center",
+      justifyContent: "center",
+      marginTop: -20,
+      shadowColor: T.green,
+      shadowOpacity: 0.4,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 8,
+    },
+  });
