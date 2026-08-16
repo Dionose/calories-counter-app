@@ -8,13 +8,6 @@ import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS, TIERS, tierForStreak } from "../../constants/theme";
 
-// ---- three-plan paywall data ----
-const PLANS = [
-  { id: "monthly", name: "Monthly", price: "$9.99", per: "/mo", sub: "Billed monthly", badge: null as string | null, glow: "#FB923C" },
-  { id: "yearly", name: "Yearly", price: "$99.99", per: "/yr", sub: "Save ~17% vs monthly", badge: "Popular", glow: "#FBBF24" },
-  { id: "lifetime", name: "Lifetime", price: "$499.99", per: "once", sub: "Pay once — yours for life", badge: "Best value", glow: "#FDE68A" },
-];
-
 // DEV: a day count that lands squarely in each tier, for previewing the M
 const TIER_PREVIEW: { tier: 1 | 2 | 3 | 4 | 5; days: number }[] = [
   { tier: 1, days: 2 },
@@ -91,60 +84,6 @@ function ThemeOption({ mode, Icon, label, active, previewBg, previewCard, previe
   );
 }
 
-// ---- the three-plan paywall ----
-function Paywall({ visible, onClose, T }: { visible: boolean; onClose: () => void; T: any }) {
-  const s = styles(T);
-  const [plan, setPlan] = useState("yearly");
-  const P = PLANS.find((p) => p.id === plan)!;
-  const cta = plan === "lifetime" ? "Get Lifetime — $499.99" : `Subscribe · ${P.price}${P.per}`;
-
-  return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={s.pwOverlay}>
-        <View style={s.pwCard}>
-          <View style={s.pwHeader}>
-            <View style={s.pwCrown}><Crown size={22} color={T.gold} /></View>
-            <Pressable onPress={onClose} hitSlop={10} style={s.pwClose}><X size={18} color={T.sub} /></Pressable>
-          </View>
-          <Text style={s.pwTitle}>Unlock MOTION Pro</Text>
-          <Text style={s.pwSub}>Motion Voice AI · barcode · leaderboard · full history · tier colours & more.</Text>
-
-          <Text style={[s.micro, { marginTop: 16, marginBottom: 10 }]}>Choose your plan</Text>
-          {PLANS.map((pl) => {
-            const on = plan === pl.id;
-            return (
-              <Pressable key={pl.id} onPress={() => setPlan(pl.id)} style={[s.planRow, { borderColor: on ? T.green : T.border, backgroundColor: on ? T.greenBg : T.card }]}>
-                <View style={[s.planCrown, { backgroundColor: pl.glow }]}><Crown size={16} color="#0A0A0A" /></View>
-                <View style={{ flex: 1 }}>
-                  <View style={s.rowCenter}>
-                    <Text style={s.planName}>Pro · {pl.name}</Text>
-                    {pl.badge && <View style={s.planBadge}><Text style={s.planBadgeText}>{pl.badge}</Text></View>}
-                  </View>
-                  <Text style={s.planSub}>{pl.sub}</Text>
-                </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={s.planPrice}>{pl.price}</Text>
-                  <Text style={s.planPer}>{pl.per}</Text>
-                </View>
-              </Pressable>
-            );
-          })}
-
-          <View style={s.pwNote}>
-            <Shield size={13} color={T.green} />
-            <Text style={s.pwNoteText}>All plans unlock the same Pro — cancel monthly/yearly anytime; lifetime is a one-time payment.</Text>
-          </View>
-
-          <Pressable onPress={onClose} style={s.pwCta}><Text style={s.pwCtaText}>{cta}</Text></Pressable>
-          <Pressable onPress={onClose} style={{ alignItems: "center", marginTop: 12 }}>
-            <Text style={s.pwMaybe}>Maybe later</Text>
-          </Pressable>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
 // ---- username Pro-gate wall ----
 function UsernameGate({ back, onUpgrade, T }: { back: () => void; onUpgrade: () => void; T: any }) {
   const s = styles(T);
@@ -161,7 +100,7 @@ function UsernameGate({ back, onUpgrade, T }: { back: () => void; onUpgrade: () 
 
 export default function Profile() {
   const {
-    T, freeLocked, openPaywall, paywallOpen, closePaywall,
+    T, freeLocked, openPaywall,
     themeMode, setThemeMode, plan, profile, streakDays, setStreakDays,
   } = useApp();
   const [picker, setPicker] = useState(false);
@@ -199,7 +138,7 @@ export default function Profile() {
           </View>
         </TravelBorder>
 
-        {/* Pro card — opens the three-plan paywall */}
+        {/* Pro card — opens the one global paywall */}
         <Pressable style={{ marginTop: 12, marginBottom: 20 }} onPress={() => openPaywall("subscribe")}>
           <TravelBorder color={T.orange} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={s.proCard}>
@@ -299,9 +238,6 @@ export default function Profile() {
           </Pressable>
         </Pressable>
       </Modal>
-
-      {/* THREE-PLAN PAYWALL */}
-      <Paywall visible={paywallOpen} onClose={closePaywall} T={T} />
     </View>
   );
 }
@@ -326,7 +262,6 @@ const styles = (T: any) =>
     proSubRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 3 },
     proSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
 
-    // DEV tier switcher
     devCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 15, marginBottom: 20 },
     devLabel: { fontSize: 9, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body },
     devHint: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 5, lineHeight: 16 },
@@ -360,29 +295,6 @@ const styles = (T: any) =>
     previewChip: { borderRadius: 8, height: 34, justifyContent: "center", paddingLeft: 8 },
     previewLabel: { fontSize: 13, fontFamily: FONTS.heading, marginTop: 10, textAlign: "center" },
 
-    // paywall
-    pwOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
-    pwCard: { backgroundColor: T.bg, borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, borderColor: T.border, padding: 22, paddingBottom: 36 },
-    pwHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
-    pwCrown: { width: 44, height: 44, borderRadius: 14, backgroundColor: T.goldBg, alignItems: "center", justifyContent: "center" },
-    pwClose: { padding: 4 },
-    pwTitle: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, marginTop: 14 },
-    pwSub: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, marginTop: 6, lineHeight: 19 },
-    planRow: { flexDirection: "row", alignItems: "center", gap: 11, padding: 13, borderRadius: 16, borderWidth: 1.5, marginBottom: 9 },
-    planCrown: { width: 30, height: 30, borderRadius: 9, alignItems: "center", justifyContent: "center" },
-    planName: { fontSize: 14, color: T.text, fontFamily: FONTS.heading },
-    planBadge: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1, marginLeft: 6 },
-    planBadgeText: { fontSize: 8.5, color: T.green, fontFamily: FONTS.heading },
-    planSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 1 },
-    planPrice: { fontSize: 14.5, color: T.text, fontFamily: FONTS.heading },
-    planPer: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
-    pwNote: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 10 },
-    pwNoteText: { flex: 1, fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 15 },
-    pwCta: { backgroundColor: T.green, borderRadius: 14, padding: 15, alignItems: "center", marginTop: 18 },
-    pwCtaText: { color: T.ink, fontFamily: FONTS.heading, fontSize: 14 },
-    pwMaybe: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
-
-    // username gate
     gateBadge: { width: 60, height: 60, borderRadius: 18, backgroundColor: T.gold, alignItems: "center", justifyContent: "center", marginBottom: 18 },
     gateTitle: { fontSize: 20, color: T.text, fontFamily: FONTS.heading, textAlign: "center", marginBottom: 8 },
     gateSub: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 19, marginBottom: 24, maxWidth: 264 },

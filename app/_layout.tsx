@@ -3,6 +3,7 @@ import { BricolageGrotesque_400Regular, BricolageGrotesque_500Medium, BricolageG
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from "@expo-google-fonts/inter";
 import { Stack } from "expo-router";
 import { View } from "react-native";
+import Paywall from "../components/Paywall";
 import { AppStateProvider } from "../constants/AppState";
 
 export default function RootLayout() {
@@ -26,6 +27,9 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding" />
         <Stack.Screen name="(tabs)" />
       </Stack>
+
+      {/* the one paywall, available to every screen via openPaywall() */}
+      <Paywall />
     </AppStateProvider>
   );
 }
