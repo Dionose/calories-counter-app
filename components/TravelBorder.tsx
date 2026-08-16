@@ -1,20 +1,22 @@
 // components/TravelBorder.tsx
 // TRUE conic revolving border using Skia's SweepGradient. Single color OR rainbow.
 //
-// PHASE SYNC — why the angle doesn't start at 0:
+// PHASE SYNC — why the angle doesn't start at 0, and why we listen to AppState:
 // Every instance used to begin its rotation at 0 on mount, so a border that
 // mounted later sat at a different point in the cycle than one already on
-// screen — the bright spot top-left on one, bottom-right on the other. That's
-// what made pop-out sheets look mismatched against the card behind them.
-// Now the starting angle is anchored to wall-clock time, so any border joins
-// the cycle already in progress and every border on screen stays in phase.
-// This is the same shared-clock fix used in the web mockup for the Calendar
-// when new months load in.
+// screen. The starting angle is now anchored to wall-clock time instead.
+//
+// Backgrounding breaks that anchor: iOS suspends the animation, and on return
+// it resumes from where it paused — drifted from the clock, and each instance
+// drifted by a different amount. That's why borders looked fine until you
+// switched to another app and came back. So we re-anchor every time the app
+// becomes active.
 import { Canvas, RoundedRect, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { useEffect, useState } from "react";
-import { LayoutChangeEvent, StyleSheet, View, ViewStyle } from "react-native";
+import { AppState, LayoutChangeEvent, StyleSheet, View, ViewStyle } from "react-native";
 import {
   Easing,
+  cancelAnimation,
   useDerivedValue,
   useSharedValue,
   withRepeat,
@@ -49,18 +51,30 @@ export default function TravelBorder({
   const angle = useSharedValue(0);
 
   useEffect(() => {
-    // where the shared cycle is right now, 0..1
-    const phase = (Date.now() % SPIN_MS) / SPIN_MS;
-    const start = phase * 360;
+    // jump to wherever the shared cycle is right now, then spin from there
+    const anchor = () => {
+      const phase = (Date.now() % SPIN_MS) / SPIN_MS;
+      const start = phase * 360;
+      cancelAnimation(angle);
+      angle.value = start;
+      angle.value = withRepeat(
+        withTiming(start + 360, { duration: SPIN_MS, easing: Easing.linear }),
+        -1,
+        false
+      );
+    };
 
-    // jump straight to that point, then spin a full turn from there and repeat.
-    // start and start+360 are the same visual angle, so the loop is seamless.
-    angle.value = start;
-    angle.value = withRepeat(
-      withTiming(start + 360, { duration: SPIN_MS, easing: Easing.linear }),
-      -1,
-      false
-    );
+    anchor();
+
+    // coming back from another app leaves the animation drifted — re-anchor
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") anchor();
+    });
+
+    return () => {
+      sub.remove();
+      cancelAnimation(angle);
+    };
   }, []);
 
   const onLayout = (e: LayoutChangeEvent) => {

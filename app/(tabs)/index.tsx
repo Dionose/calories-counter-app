@@ -3,7 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import LottieView from "lottie-react-native";
 import { ChevronLeft, ChevronRight, Flame, HelpCircle, Trophy, X } from "lucide-react-native";
-import React, { useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import GradientText from "../../components/GradientText";
@@ -89,6 +89,7 @@ const TIER_RANGE: Record<string, string> = {
 };
 
 type Scope = "General" | "Regional" | "Total";
+const SCOPES: Scope[] = ["General", "Regional", "Total"];
 
 export default function Home() {
   const router = useRouter();
@@ -103,6 +104,12 @@ export default function Home() {
   const [howOpen, setHowOpen] = useState(false);
   const [crownPlay, setCrownPlay] = useState(0);
   const board = useRef(new Animated.Value(0)).current;
+
+  // guards against rapid repeat taps. Switching scope swaps 30 text rows for
+  // ten crown SVGs and restarts the reveal — hammering it faster than a frame
+  // queues that work over and over until the thread stalls.
+  const scopeLock = useRef(false);
+  const sheetBusy = useRef(false);
 
   const tier = tierForStreak(streakDays);
   const isUlt = tier.color === "ultimate";
@@ -124,35 +131,52 @@ export default function Home() {
     { label: "Fat", v: Math.round(plan.fat * 0.28), t: plan.fat, c: T.orange },
   ];
 
-  const openHero = () => {
+  const openHero = useCallback(() => {
+    if (sheetBusy.current) return;
+    sheetBusy.current = true;
     setHeroOpen(true);
-    Animated.timing(hero, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  };
-  const closeHero = () => {
-    Animated.timing(hero, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true })
-      .start(() => setHeroOpen(false));
-  };
+    Animated.timing(hero, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true })
+      .start(() => { sheetBusy.current = false; });
+  }, []);
 
-  const openBoard = () => {
+  const closeHero = useCallback(() => {
+    if (sheetBusy.current) return;
+    sheetBusy.current = true;
+    Animated.timing(hero, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true })
+      .start(() => { setHeroOpen(false); sheetBusy.current = false; });
+  }, []);
+
+  const openBoard = useCallback(() => {
+    if (sheetBusy.current) return;
+    sheetBusy.current = true;
     setHowOpen(false);
     setBoardMounted(true);
     setBoardBody(true);
     setCrownPlay((k) => k + 1);
-    Animated.timing(board, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  };
+    Animated.timing(board, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true })
+      .start(() => { sheetBusy.current = false; });
+  }, []);
 
-  const closeBoard = () => {
+  const closeBoard = useCallback(() => {
+    if (sheetBusy.current) return;
+    sheetBusy.current = true;
     setBoardBody(false);
     Animated.timing(board, { toValue: 0, duration: 200, easing: Easing.in(Easing.quad), useNativeDriver: true })
-      .start(() => { setBoardMounted(false); setHowOpen(false); });
-  };
+      .start(() => { setBoardMounted(false); setHowOpen(false); sheetBusy.current = false; });
+  }, []);
 
-  const pickScope = (sc: Scope) => {
-    setScope(sc);
-    if (sc === "Total") setCrownPlay((k) => k + 1);
-  };
+  // ignore a tap on the scope you're already on, and ignore anything that
+  // lands inside the swap window
+  const pickScope = useCallback((sc: Scope) => {
+    setScope((cur) => {
+      if (sc === cur || scopeLock.current) return cur;
+      scopeLock.current = true;
+      setTimeout(() => { scopeLock.current = false; }, 260);
+      if (sc === "Total") setCrownPlay((k) => k + 1);
+      return sc;
+    });
+  }, []);
 
-  // no scale — only opacity and lift, both native-driven
   const heroLift = hero.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
   const boardLift = board.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
 
@@ -223,6 +247,13 @@ export default function Home() {
     );
   };
 
+  // the row lists are built once, not on every scope tap
+  const seasonRows = useMemo(() => BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />), [T, streakDays]);
+  const totalTopRows = useMemo(() => TOTAL_TOP.map((r) => <TotalRow key={r.rank} r={r} />), [T]);
+  const totalNearRows = useMemo(() => TOTAL_NEAR.map((r) => <TotalRow key={r.rank} r={r} />), [T]);
+  const seasonPreview = useMemo(() => BOARD_FULL.slice(0, 3).map((r) => <BoardRow key={r.rank} r={r} />), [T, streakDays]);
+  const totalPreview = useMemo(() => TOTAL_TOP.slice(0, 3).map((r) => <TotalRow key={r.rank} r={r} />), [T]);
+
   const CalorieBar = ({ height = 10 }: { height?: number }) => (
     <View style={[s.track, { height }]}>
       {over > 0 ? (
@@ -237,6 +268,27 @@ export default function Home() {
       )}
     </View>
   );
+
+  const ScopeToggle = ({ big = false }: { big?: boolean }) => (
+    <View style={s.scopeToggle}>
+      {SCOPES.map((sc) => (
+        <Pressable
+          key={sc}
+          onPress={() => pickScope(sc)}
+          style={[s.scopeBtn, big && { paddingHorizontal: 14, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
+        >
+          <Text style={[s.scopeText, big && { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+
+  const scopeCaption =
+    scope === "General"
+      ? "Top players worldwide · this season"
+      : scope === "Regional"
+        ? "Top in your country · this season"
+        : "All-time · never resets";
 
   return (
     <View style={s.screen}>
@@ -329,13 +381,7 @@ export default function Home() {
         {/* LEADERBOARD */}
         <View style={[s.rowBetween, { marginTop: 24, marginBottom: 10 }]}>
           <Text style={s.micro}>LEADERBOARD</Text>
-          <View style={s.scopeToggle}>
-            {(["General", "Regional", "Total"] as Scope[]).map((sc) => (
-              <Pressable key={sc} onPress={() => pickScope(sc)} style={[s.scopeBtn, scope === sc && { backgroundColor: T.green }]}>
-                <Text style={[s.scopeText, scope === sc && { color: T.ink }]}>{sc}</Text>
-              </Pressable>
-            ))}
-          </View>
+          <ScopeToggle />
         </View>
 
         <BlurLock label="Leaderboard" sub="See where you rank with Pro" locked={freeLocked} radius={18}>
@@ -343,18 +389,10 @@ export default function Home() {
             <View style={{ padding: 14 }}>
               <View style={s.boardHead}>
                 <Trophy size={13} color={T.text} />
-                <Text style={s.boardHeadText}>
-                  {scope === "General"
-                    ? "Top players worldwide · this season"
-                    : scope === "Regional"
-                      ? "Top in your country · this season"
-                      : "All-time · never resets"}
-                </Text>
+                <Text style={s.boardHeadText}>{scopeCaption}</Text>
               </View>
 
-              {isTotal
-                ? TOTAL_TOP.slice(0, 3).map((r) => <TotalRow key={r.rank} r={r} />)
-                : BOARD_FULL.slice(0, 3).map((r) => <BoardRow key={r.rank} r={r} />)}
+              {isTotal ? totalPreview : seasonPreview}
 
               <Tap onPress={openBoard} style={{ marginTop: 6 }}>
                 <View style={s.seeFull}>
@@ -496,7 +534,7 @@ export default function Home() {
                   </ScrollView>
 
                   <View style={s.sheetFooter}>
-                    <Tap onPress={() => { closeHero(); setTimeout(toCamera, 200); }}>
+                    <Tap onPress={() => { closeHero(); setTimeout(toCamera, 220); }}>
                       <View style={s.sheetCta}>
                         <Text style={s.sheetCtaText}>Log a meal</Text>
                       </View>
@@ -612,26 +650,10 @@ export default function Home() {
                   ) : (
                     <>
                       <View style={s.sheetScopeRow}>
-                        <View style={s.scopeToggle}>
-                          {(["General", "Regional", "Total"] as Scope[]).map((sc) => (
-                            <Pressable
-                              key={sc}
-                              onPress={() => pickScope(sc)}
-                              style={[s.scopeBtn, { paddingHorizontal: 14, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
-                            >
-                              <Text style={[s.scopeText, { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
-                            </Pressable>
-                          ))}
-                        </View>
+                        <ScopeToggle big />
                       </View>
 
-                      <Text style={s.sheetSub}>
-                        {scope === "General"
-                          ? "Top players worldwide · this season"
-                          : scope === "Regional"
-                            ? "Top in your country · this season"
-                            : "All-time · never resets"}
-                      </Text>
+                      <Text style={s.sheetSub}>{scopeCaption}</Text>
 
                       <ScrollView
                         style={{ flex: 1 }}
@@ -652,7 +674,7 @@ export default function Home() {
                               <Text style={s.badgeCaption}>4 seasons finished at {tier.name}</Text>
                             </View>
 
-                            {TOTAL_TOP.map((r) => <TotalRow key={r.rank} r={r} />)}
+                            {totalTopRows}
 
                             <View style={s.gapRow}>
                               <View style={s.gapLine} />
@@ -660,14 +682,14 @@ export default function Home() {
                               <View style={s.gapLine} />
                             </View>
 
-                            {TOTAL_NEAR.map((r) => <TotalRow key={r.rank} r={r} />)}
+                            {totalNearRows}
 
                             <Text style={s.chaseText}>
                               12 points behind @tomiwa. That's three days at Ultimate.
                             </Text>
                           </>
                         ) : (
-                          BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)
+                          seasonRows
                         )}
                       </ScrollView>
 

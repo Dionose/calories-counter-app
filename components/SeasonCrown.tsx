@@ -7,11 +7,14 @@
 // The sheen animates strokeDashoffset over a path with hundreds of segments.
 // Running it on ten crowns freezes the app — and that holds EVEN on Reanimated
 // with the animation on the UI thread, because the cost is the SVG redraw, not
-// the bridge. So: the sheen runs ONLY on the reveal crown, where there is one.
+// the bridge. So the sheen runs ONLY on the reveal crown, where there is one.
 // Everything in a list gets the float and nothing else.
-// The float uses the native driver and is free at any count.
+//
+// BACKGROUNDING: iOS suspends animations when you leave the app and resumes
+// them where they paused, so crowns come back bobbing out of step with each
+// other. Both loops re-anchor whenever the app becomes active.
 import React, { useEffect, useMemo, useRef } from "react";
-import { Animated, Easing, View } from "react-native";
+import { Animated, AppState, Easing, View } from "react-native";
 import Svg, { Circle, Defs, LinearGradient, Path, Stop, Text as SvgText } from "react-native-svg";
 import { FONTS, ULT_COLORS } from "../constants/theme";
 
@@ -77,33 +80,63 @@ export default function SeasonCrown({
   const spin = useRef(new Animated.Value(0)).current;
   const num = useRef(new Animated.Value(sequence ? 0 : 1)).current;
 
-  // the float — native driver, so it costs nothing even with ten on screen
+  // the float — native driver, so it costs nothing even with ten on screen.
+  // Restarted on foreground so crowns don't come back bobbing out of step.
   useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(bob, { toValue: 1, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(bob, { toValue: 0, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
+    let loop: Animated.CompositeAnimation | undefined;
+
+    const start = () => {
+      loop?.stop();
+      bob.setValue(0);
+      loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(bob, { toValue: 1, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+          Animated.timing(bob, { toValue: 0, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        ])
+      );
+      loop.start();
+    };
+
+    start();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") start();
+    });
+
+    return () => {
+      sub.remove();
+      loop?.stop();
+    };
   }, []);
 
-  // the sheen — its own loop, reset on every mount so reopening the sheet
-  // always shows it running rather than frozen mid-lap
+  // the sheen — its own loop, reset on mount and on foreground so it always
+  // runs rather than sitting frozen mid-lap
   useEffect(() => {
     if (!withSheen) return;
-    flow.setValue(0);
-    const loop = Animated.loop(
-      Animated.timing(flow, {
-        toValue: 1,
-        duration: 3400,
-        easing: Easing.linear,
-        useNativeDriver: false,
-      })
-    );
-    loop.start();
-    return () => loop.stop();
+    let loop: Animated.CompositeAnimation | undefined;
+
+    const start = () => {
+      loop?.stop();
+      flow.setValue(0);
+      loop = Animated.loop(
+        Animated.timing(flow, {
+          toValue: 1,
+          duration: 3400,
+          easing: Easing.linear,
+          useNativeDriver: false,
+        })
+      );
+      loop.start();
+    };
+
+    start();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") start();
+    });
+
+    return () => {
+      sub.remove();
+      loop?.stop();
+    };
   }, [withSheen]);
 
   // the reveal
