@@ -2,12 +2,13 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import LottieView from "lottie-react-native";
-import { ChevronDown, ChevronLeft, ChevronRight, Flame, HelpCircle, Trophy, X } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Flame, HelpCircle, Trophy, X } from "lucide-react-native";
 import React, { useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import GradientText from "../../components/GradientText";
 import PageHeader from "../../components/PageHeader";
+import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
@@ -15,8 +16,10 @@ import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
 const CAMERA_ICON = require("../../assets/motion-camera-dark.json");
 const SCREEN_H = Dimensions.get("window").height;
-// explicit — TravelBorder's card sizes to content and won't stretch to a flexed parent
+
+// Both sheets get an EXPLICIT height — TravelBorder's card sizes to its content.
 const SHEET_H = Math.round(SCREEN_H * 0.72);
+const HERO_H = Math.round(SCREEN_H * 0.62);
 
 const MEALS: { name: string; cal: number; typical: number }[] = [
   { name: "Breakfast", cal: 215, typical: 450 },
@@ -25,7 +28,7 @@ const MEALS: { name: string; cal: number; typical: number }[] = [
   { name: "Snacks", cal: 0, typical: 200 },
 ];
 
-// the leaderboard ranks on EARNED points only — never on plan, never on spend
+/* SEASON boards — General and Regional reset every season */
 const BOARD_FULL = [
   { rank: 1, handle: "amara_k", pts: 412, days: 21 },
   { rank: 2, handle: "dionj", pts: 388, days: 14, me: true },
@@ -59,7 +62,22 @@ const BOARD_FULL = [
   { rank: 30, handle: "malik_d", pts: 71, days: 1 },
 ];
 
-const BOARD = BOARD_FULL.slice(0, 3);
+/* TOTAL board — never resets, so it rewards tenure */
+const TOTAL_TOP = [
+  { rank: 1, handle: "kenji_w", pts: 41280, tier: 5, seasons: 14 },
+  { rank: 2, handle: "amara_k", pts: 38940, tier: 5, seasons: 12 },
+  { rank: 3, handle: "svetlana", pts: 36110, tier: 5, seasons: 11 },
+  { rank: 4, handle: "obi.n", pts: 33470, tier: 5, seasons: 9 },
+  { rank: 5, handle: "marta_c", pts: 30820, tier: 4, seasons: 10 },
+];
+
+const TOTAL_NEAR = [
+  { rank: 4316, handle: "hana_s", pts: 9268, tier: 4, seasons: 3 },
+  { rank: 4317, handle: "tomiwa", pts: 9226, tier: 5, seasons: 2 },
+  { rank: 4318, handle: "dionj", pts: 9214, tier: 5, seasons: 4, me: true },
+  { rank: 4319, handle: "priya", pts: 9188, tier: 3, seasons: 5 },
+  { rank: 4320, handle: "ben.w", pts: 9140, tier: 4, seasons: 2 },
+];
 
 const TIER_PTS: Record<string, number> = { Spark: 1, Warming: 2, Hot: 3, "Red-hot": 4, Ultimate: 5 };
 const TIER_RANGE: Record<string, string> = {
@@ -70,18 +88,21 @@ const TIER_RANGE: Record<string, string> = {
   Ultimate: "day 17+",
 };
 
+type Scope = "General" | "Regional" | "Total";
+
 export default function Home() {
   const router = useRouter();
   const { T, freeLocked, togglePro, isPro, plan, profile, streakDays } = useApp();
-  const [open, setOpen] = useState(false);
-  const [scope, setScope] = useState<"General" | "Regional">("General");
+  const [scope, setScope] = useState<Scope>("General");
+
+  const [heroOpen, setHeroOpen] = useState(false);
+  const hero = useRef(new Animated.Value(0)).current;
 
   const [boardMounted, setBoardMounted] = useState(false);
+  const [boardBody, setBoardBody] = useState(false);
   const [howOpen, setHowOpen] = useState(false);
+  const [crownPlay, setCrownPlay] = useState(0);
   const board = useRef(new Animated.Value(0)).current;
-
-  const [drawerH, setDrawerH] = useState(0);
-  const expand = useRef(new Animated.Value(0)).current;
 
   const tier = tierForStreak(streakDays);
   const isUlt = tier.color === "ultimate";
@@ -103,36 +124,37 @@ export default function Home() {
     { label: "Fat", v: Math.round(plan.fat * 0.28), t: plan.fat, c: T.orange },
   ];
 
-  const toggleHero = () => {
-    const next = !open;
-    setOpen(next);
-    Animated.timing(expand, {
-      toValue: next ? 1 : 0,
-      duration: next ? 420 : 260,
-      easing: next ? Easing.bezier(0.2, 0.8, 0.2, 1) : Easing.in(Easing.quad),
-      useNativeDriver: false,
-    }).start();
+  const openHero = () => {
+    setHeroOpen(true);
+    Animated.timing(hero, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  };
+  const closeHero = () => {
+    Animated.timing(hero, { toValue: 0, duration: 190, easing: Easing.in(Easing.quad), useNativeDriver: true })
+      .start(() => setHeroOpen(false));
   };
 
   const openBoard = () => {
     setHowOpen(false);
     setBoardMounted(true);
-    Animated.timing(board, { toValue: 1, duration: 380, easing: Easing.bezier(0.2, 0.9, 0.25, 1), useNativeDriver: true }).start();
+    setBoardBody(true);
+    setCrownPlay((k) => k + 1);
+    Animated.timing(board, { toValue: 1, duration: 320, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   };
 
   const closeBoard = () => {
-    Animated.timing(board, { toValue: 0, duration: 260, easing: Easing.in(Easing.quad), useNativeDriver: true })
+    setBoardBody(false);
+    Animated.timing(board, { toValue: 0, duration: 200, easing: Easing.in(Easing.quad), useNativeDriver: true })
       .start(() => { setBoardMounted(false); setHowOpen(false); });
   };
 
-  const drawerHeight = expand.interpolate({ inputRange: [0, 1], outputRange: [0, drawerH] });
-  const contentOpacity = expand.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 0, 1] });
-  const contentShift = expand.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] });
-  const chevron = expand.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] });
-  const hintOpacity = expand.interpolate({ inputRange: [0, 0.4], outputRange: [1, 0], extrapolate: "clamp" });
+  const pickScope = (sc: Scope) => {
+    setScope(sc);
+    if (sc === "Total") setCrownPlay((k) => k + 1);
+  };
 
-  const boardScale = board.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1] });
-  const boardLift = board.interpolate({ inputRange: [0, 1], outputRange: [30, 0] });
+  // no scale — only opacity and lift, both native-driven
+  const heroLift = hero.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
+  const boardLift = board.interpolate({ inputRange: [0, 1], outputRange: [40, 0] });
 
   const unit = profile.weightUnit;
   const rate = unit === "kg" ? profile.paceRate : profile.paceRate * 2.20462;
@@ -160,6 +182,8 @@ export default function Home() {
       ? { colors: ULT_COLORS }
       : { color: tier.color };
 
+  const isTotal = scope === "Total";
+
   const BoardRow = ({ r }: { r: typeof BOARD_FULL[0] }) => {
     const rt = tierForStreak(r.days);
     const ult = rt.color === "ultimate";
@@ -179,34 +203,39 @@ export default function Home() {
     );
   };
 
-  const drawerContent = (
-    <>
-      {macros.map((m) => {
-        const target = Math.min(100, (m.v / m.t) * 100);
-        const barWidth = expand.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${target}%`] });
-        return (
-          <View key={m.label} style={{ marginBottom: 11 }}>
-            <View style={s.rowBetween}>
-              <Text style={s.macroLabel}>{m.label.toUpperCase()}</Text>
-              <Text style={s.macroLabel}>{m.v}/{m.t}g</Text>
-            </View>
-            <View style={s.macroTrack}>
-              <Animated.View style={[s.macroFill, { width: barWidth, backgroundColor: m.c }]}>
-                <Text style={s.macroInside}>{m.v}g</Text>
-              </Animated.View>
-            </View>
+  const TotalRow = ({ r }: { r: typeof TOTAL_TOP[0] & { me?: boolean } }) => {
+    const rt = TIERS[r.tier as 1 | 2 | 3 | 4 | 5];
+    const ult = rt.color === "ultimate";
+    return (
+      <View style={[s.totalRow, r.me && s.boardRowMe]}>
+        <Text style={s.totalRank}>{r.rank.toLocaleString()}</Text>
+        <SeasonCrown color={rt.color} count={r.seasons} size={38} />
+        {ult ? (
+          <View style={{ flex: 1 }}>
+            <GradientText text={`@${r.handle}`} colors={ULT_COLORS} fontSize={13} fontFamily={FONTS.headingMed} />
           </View>
-        );
-      })}
-      <View style={s.statsRow}>
-        {[["Eaten", eaten.toLocaleString()], ["Burned", burned.toLocaleString()], ["Goal", goal.toLocaleString()]].map(([l, v]) => (
-          <View key={l} style={{ alignItems: "center" }}>
-            <Text style={s.statNum}>{v}</Text>
-            <Text style={s.statLabel}>{l.toUpperCase()}</Text>
-          </View>
-        ))}
+        ) : (
+          <Text style={[s.boardName, { color: rt.color }]} numberOfLines={1}>@{r.handle}</Text>
+        )}
+        {r.me && <View style={s.youChip}><Text style={s.youChipText}>YOU</Text></View>}
+        <Text style={s.boardPts}>{r.pts.toLocaleString()}</Text>
       </View>
-    </>
+    );
+  };
+
+  const CalorieBar = ({ height = 10 }: { height?: number }) => (
+    <View style={[s.track, { height }]}>
+      {over > 0 ? (
+        <View style={[s.fillFlat, { width: `${pct}%`, backgroundColor: over > 200 ? T.red : T.orange }]} />
+      ) : (
+        <LinearGradient
+          colors={["#15803D", "#22C55E", "#86EFAC"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={[s.fillFlat, { width: `${pct}%` }]}
+        />
+      )}
+    </View>
   );
 
   return (
@@ -226,14 +255,12 @@ export default function Home() {
         <Text style={s.greeting}>Good evening, {profile.name} · Tue Aug 9</Text>
 
         {/* CALORIE HERO */}
-        <View style={{ marginTop: 16 }}>
+        <Tap onPress={openHero} style={{ marginTop: 16 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
-            <Pressable onPress={toggleHero} style={{ padding: 20 }}>
+            <View style={{ padding: 20 }}>
               <View style={s.rowBetween}>
                 <Text style={s.micro}>CALORIES LEFT TODAY</Text>
-                <Animated.View style={{ transform: [{ rotate: chevron }] }}>
-                  <ChevronDown size={16} color={T.micro} />
-                </Animated.View>
+                <ChevronRight size={16} color={T.micro} />
               </View>
 
               <View style={s.calRow}>
@@ -241,42 +268,17 @@ export default function Home() {
                 <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
               </View>
 
-              <View style={s.track}>
-                {over > 0 ? (
-                  <View style={[s.fillFlat, { width: `${pct}%`, backgroundColor: over > 200 ? T.red : T.orange }]} />
-                ) : (
-                  <LinearGradient
-                    colors={["#15803D", "#22C55E", "#86EFAC"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={[s.fillFlat, { width: `${pct}%` }]}
-                  />
-                )}
-              </View>
+              <CalorieBar />
 
               <View style={[s.rowBetween, { marginTop: 8 }]}>
                 <Text style={s.eatenLine}>{eaten.toLocaleString()} eaten</Text>
                 <Text style={s.toGoLine}>{remaining.toLocaleString()} to go</Text>
               </View>
 
-              <Animated.View style={{ height: drawerHeight, overflow: "hidden" }}>
-                <Animated.View
-                  style={{ paddingTop: 18, opacity: contentOpacity, transform: [{ translateY: contentShift }] }}
-                  onLayout={(e) => {
-                    const h = e.nativeEvent.layout.height;
-                    if (h > 0 && Math.abs(h - drawerH) > 1) setDrawerH(h);
-                  }}
-                >
-                  {drawerContent}
-                </Animated.View>
-              </Animated.View>
-
-              <Animated.View style={{ opacity: hintOpacity }}>
-                <Text style={s.tapHint}>Tap to expand macros</Text>
-              </Animated.View>
-            </Pressable>
+              <Text style={s.tapHint}>Tap for macros</Text>
+            </View>
           </TravelBorder>
-        </View>
+        </Tap>
 
         {/* PRIMARY-ACTION NUDGE */}
         <Tap onPress={toCamera} style={{ marginTop: 14 }}>
@@ -328,8 +330,8 @@ export default function Home() {
         <View style={[s.rowBetween, { marginTop: 24, marginBottom: 10 }]}>
           <Text style={s.micro}>LEADERBOARD</Text>
           <View style={s.scopeToggle}>
-            {(["General", "Regional"] as const).map((sc) => (
-              <Pressable key={sc} onPress={() => setScope(sc)} style={[s.scopeBtn, scope === sc && { backgroundColor: T.green }]}>
+            {(["General", "Regional", "Total"] as Scope[]).map((sc) => (
+              <Pressable key={sc} onPress={() => pickScope(sc)} style={[s.scopeBtn, scope === sc && { backgroundColor: T.green }]}>
                 <Text style={[s.scopeText, scope === sc && { color: T.ink }]}>{sc}</Text>
               </Pressable>
             ))}
@@ -342,11 +344,17 @@ export default function Home() {
               <View style={s.boardHead}>
                 <Trophy size={13} color={T.text} />
                 <Text style={s.boardHeadText}>
-                  {scope === "General" ? "Top players worldwide" : "Top in your country"}
+                  {scope === "General"
+                    ? "Top players worldwide · this season"
+                    : scope === "Regional"
+                      ? "Top in your country · this season"
+                      : "All-time · never resets"}
                 </Text>
               </View>
 
-              {BOARD.map((r) => <BoardRow key={r.rank} r={r} />)}
+              {isTotal
+                ? TOTAL_TOP.slice(0, 3).map((r) => <TotalRow key={r.rank} r={r} />)
+                : BOARD_FULL.slice(0, 3).map((r) => <BoardRow key={r.rank} r={r} />)}
 
               <Tap onPress={openBoard} style={{ marginTop: 6 }}>
                 <View style={s.seeFull}>
@@ -359,7 +367,11 @@ export default function Home() {
 
         {!freeLocked && (
           <View style={s.boardFoot}>
-            <Text style={s.boardFootText}>Points come from logging streaks and tiers — nothing else.</Text>
+            <Text style={s.boardFootText}>
+              {isTotal
+                ? "Every season's points added up. This board never resets."
+                : "Points come from logging streaks and tiers — nothing else."}
+            </Text>
           </View>
         )}
 
@@ -409,12 +421,100 @@ export default function Home() {
         </View>
       </ScrollView>
 
-      {/* LEADERBOARD POP-OUT.
-          The backdrop is a SIBLING behind the card, never an ancestor — a
-          Pressable wrapping a ScrollView swallows the scroll gesture. */}
-      <Modal visible={boardMounted} transparent animationType="fade" onRequestClose={closeBoard}>
+      {/* CALORIE DETAIL POP-OUT */}
+      <Modal visible={heroOpen} transparent animationType="none" onRequestClose={closeHero}>
         <View style={{ flex: 1 }}>
-          <Pressable style={s.backdrop} onPress={closeBoard} />
+          <Animated.View style={[s.backdrop, { opacity: hero }]}>
+            <Pressable style={{ flex: 1 }} onPress={closeHero} />
+          </Animated.View>
+
+          <View style={s.sheetCentre} pointerEvents="box-none">
+            <Animated.View
+              style={{
+                width: "100%",
+                maxWidth: 380,
+                opacity: hero,
+                transform: [{ translateY: heroLift }],
+              }}
+            >
+              <TravelBorder color={T.green} cardBg={T.bg} borderColor={T.border} radius={26} strokeWidth={2.5}>
+                <View style={{ height: HERO_H }}>
+                  <View style={s.sheetHead}>
+                    <View style={{ width: 34 }} />
+                    <Text style={s.sheetTitle}>Today</Text>
+                    <Pressable onPress={closeHero} hitSlop={14} style={s.sheetClose}>
+                      <X size={18} color={T.sub} />
+                    </Pressable>
+                  </View>
+
+                  <ScrollView
+                    style={{ flex: 1 }}
+                    contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 10 }}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <Text style={[s.micro, { marginTop: 4 }]}>CALORIES LEFT TODAY</Text>
+                    <View style={s.calRow}>
+                      <Text style={s.calBig}>{remaining.toLocaleString()}</Text>
+                      <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
+                    </View>
+
+                    <CalorieBar height={12} />
+
+                    <View style={[s.rowBetween, { marginTop: 8, marginBottom: 20 }]}>
+                      <Text style={s.eatenLine}>{eaten.toLocaleString()} eaten</Text>
+                      <Text style={s.toGoLine}>{remaining.toLocaleString()} to go</Text>
+                    </View>
+
+                    {macros.map((m) => (
+                      <View key={m.label} style={{ marginBottom: 13 }}>
+                        <View style={s.rowBetween}>
+                          <Text style={s.macroLabel}>{m.label.toUpperCase()}</Text>
+                          <Text style={s.macroLabel}>{m.v}/{m.t}g</Text>
+                        </View>
+                        <View style={s.macroTrack}>
+                          <View style={[s.macroFill, { width: `${Math.min(100, (m.v / m.t) * 100)}%`, backgroundColor: m.c }]}>
+                            <Text style={s.macroInside}>{m.v}g</Text>
+                          </View>
+                        </View>
+                      </View>
+                    ))}
+
+                    <View style={s.statsRow}>
+                      {[["Eaten", eaten.toLocaleString()], ["Burned", burned.toLocaleString()], ["Goal", goal.toLocaleString()]].map(([l, v]) => (
+                        <View key={l} style={{ alignItems: "center" }}>
+                          <Text style={s.statNum}>{v}</Text>
+                          <Text style={s.statLabel}>{l.toUpperCase()}</Text>
+                        </View>
+                      ))}
+                    </View>
+
+                    {plan.addBurned && (
+                      <Text style={s.burnedNote}>
+                        Burned calories are added to your target — that's why today's goal is {goal.toLocaleString()}.
+                      </Text>
+                    )}
+                  </ScrollView>
+
+                  <View style={s.sheetFooter}>
+                    <Tap onPress={() => { closeHero(); setTimeout(toCamera, 200); }}>
+                      <View style={s.sheetCta}>
+                        <Text style={s.sheetCtaText}>Log a meal</Text>
+                      </View>
+                    </Tap>
+                  </View>
+                </View>
+              </TravelBorder>
+            </Animated.View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* LEADERBOARD POP-OUT */}
+      <Modal visible={boardMounted} transparent animationType="none" onRequestClose={closeBoard}>
+        <View style={{ flex: 1 }}>
+          <Animated.View style={[s.backdrop, { opacity: board }]}>
+            <Pressable style={{ flex: 1 }} onPress={closeBoard} />
+          </Animated.View>
 
           <View style={s.sheetCentre} pointerEvents="box-none">
             <Animated.View
@@ -422,13 +522,12 @@ export default function Home() {
                 width: "100%",
                 maxWidth: 380,
                 opacity: board,
-                transform: [{ scale: boardScale }, { translateY: boardLift }],
+                transform: [{ translateY: boardLift }],
               }}
             >
               <TravelBorder {...boardBorder} cardBg={T.bg} borderColor={T.border} radius={26} strokeWidth={2.5}>
                 <View style={{ height: SHEET_H }}>
 
-                  {/* header */}
                   <View style={s.sheetHead}>
                     {howOpen ? (
                       <Pressable onPress={() => setHowOpen(false)} hitSlop={14} style={s.sheetBack}>
@@ -443,8 +542,7 @@ export default function Home() {
                     </Pressable>
                   </View>
 
-                  {howOpen ? (
-                    /* ---------- PANEL 2 · the explanation ---------- */
+                  {!boardBody ? null : howOpen ? (
                     <ScrollView
                       style={{ flex: 1 }}
                       contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 22 }}
@@ -488,29 +586,38 @@ export default function Home() {
 
                       <View style={s.howDivider} />
 
+                      <Text style={s.howSmallTitle}>The three boards</Text>
+                      <Text style={s.howText}>
+                        <Text style={s.howBold}>General</Text> and <Text style={s.howBold}>Regional</Text>{" "}
+                        reset every season, so everyone starts level and a newcomer can reach the top.
+                        Regional narrows it to your country, which is usually where you'll place highest.
+                      </Text>
+
+                      <Text style={[s.howText, { marginTop: 10 }]}>
+                        <Text style={s.howBold}>Total</Text> never resets — it adds up every season you've
+                        ever played. It rewards sticking around, so people who joined early sit high on it.
+                        Your crown there shows the tier you've finished seasons at, and the number is how
+                        many times. Finish higher and the crown changes colour, starting the count again.
+                      </Text>
+
+                      <View style={s.howDivider} />
+
                       <Text style={s.howSmallTitle}>What doesn't count</Text>
                       <Text style={s.howText}>
                         Nothing you can buy. Your plan, what you paid, how long you've had the app — none
                         of it affects your rank. Points come from logging and streaks only, so everyone
                         climbs the same ladder.
                       </Text>
-
-                      <Text style={[s.howText, { marginTop: 10 }]}>
-                        <Text style={s.howBold}>General</Text> ranks you against everyone using MOTION.{" "}
-                        <Text style={s.howBold}>Regional</Text> narrows it to your country, which is
-                        usually where you'll place highest.
-                      </Text>
                     </ScrollView>
                   ) : (
-                    /* ---------- PANEL 1 · the players ---------- */
                     <>
                       <View style={s.sheetScopeRow}>
                         <View style={s.scopeToggle}>
-                          {(["General", "Regional"] as const).map((sc) => (
+                          {(["General", "Regional", "Total"] as Scope[]).map((sc) => (
                             <Pressable
                               key={sc}
-                              onPress={() => setScope(sc)}
-                              style={[s.scopeBtn, { paddingHorizontal: 20, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
+                              onPress={() => pickScope(sc)}
+                              style={[s.scopeBtn, { paddingHorizontal: 14, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
                             >
                               <Text style={[s.scopeText, { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
                             </Pressable>
@@ -519,18 +626,51 @@ export default function Home() {
                       </View>
 
                       <Text style={s.sheetSub}>
-                        {scope === "General" ? "Top players worldwide" : "Top in your country"}
+                        {scope === "General"
+                          ? "Top players worldwide · this season"
+                          : scope === "Regional"
+                            ? "Top in your country · this season"
+                            : "All-time · never resets"}
                       </Text>
 
                       <ScrollView
                         style={{ flex: 1 }}
                         contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8 }}
                         showsVerticalScrollIndicator={false}
+                        removeClippedSubviews
                       >
-                        {BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)}
+                        {isTotal ? (
+                          <>
+                            <View style={s.badgeStage}>
+                              <SeasonCrown
+                                color={isUlt ? "ultimate" : tier.color}
+                                count={4}
+                                size={92}
+                                sequence
+                                playKey={crownPlay}
+                              />
+                              <Text style={s.badgeCaption}>4 seasons finished at {tier.name}</Text>
+                            </View>
+
+                            {TOTAL_TOP.map((r) => <TotalRow key={r.rank} r={r} />)}
+
+                            <View style={s.gapRow}>
+                              <View style={s.gapLine} />
+                              <Text style={s.gapText}>your position</Text>
+                              <View style={s.gapLine} />
+                            </View>
+
+                            {TOTAL_NEAR.map((r) => <TotalRow key={r.rank} r={r} />)}
+
+                            <Text style={s.chaseText}>
+                              12 points behind @tomiwa. That's three days at Ultimate.
+                            </Text>
+                          </>
+                        ) : (
+                          BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)
+                        )}
                       </ScrollView>
 
-                      {/* widget two — pinned below the list, never scrolls with it */}
                       <View style={s.howFooter}>
                         <Tap onPress={() => setHowOpen(true)}>
                           <View style={s.howRow}>
@@ -583,19 +723,24 @@ const styles = (T: any) =>
     calRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
     calBig: { fontSize: 46, color: T.text, fontFamily: FONTS.heading },
     calSub: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
-    track: { marginTop: 14, height: 10, borderRadius: 99, backgroundColor: T.track, overflow: "hidden" },
+    track: { marginTop: 14, borderRadius: 99, backgroundColor: T.track, overflow: "hidden" },
     fillFlat: { height: "100%", borderRadius: 99 },
     eatenLine: { fontSize: 11, color: T.green, fontFamily: FONTS.headingMed },
     toGoLine: { fontSize: 11, color: T.sub, fontFamily: FONTS.headingMed },
     tapHint: { fontSize: 10, color: T.micro, marginTop: 10, textAlign: "center", fontFamily: FONTS.body },
 
     macroLabel: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body, marginBottom: 4 },
-    macroTrack: { height: 18, borderRadius: 7, backgroundColor: T.track, overflow: "hidden" },
+    macroTrack: { height: 20, borderRadius: 7, backgroundColor: T.track, overflow: "hidden" },
     macroFill: { height: "100%", borderRadius: 7, justifyContent: "center", alignItems: "flex-end", minWidth: 30, paddingRight: 7 },
     macroInside: { fontSize: 10.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
-    statsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 6, paddingTop: 12, borderTopWidth: 1, borderTopColor: T.border },
+    statsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 8, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
     statNum: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
     statLabel: { fontSize: 9, color: T.micro, marginTop: 2, fontFamily: FONTS.body, letterSpacing: 0.6 },
+    burnedNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 14, lineHeight: 15, textAlign: "center" },
+
+    sheetFooter: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: T.border },
+    sheetCta: { backgroundColor: T.green, borderRadius: 14, padding: 14, alignItems: "center" },
+    sheetCtaText: { color: T.ink, fontFamily: FONTS.headingMed, fontSize: 14 },
 
     nudge: {
       flexDirection: "row", alignItems: "center", gap: 12,
@@ -618,8 +763,8 @@ const styles = (T: any) =>
     addText: { color: T.sub, fontSize: 12, fontFamily: FONTS.body },
 
     scopeToggle: { flexDirection: "row", backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 10, padding: 2 },
-    scopeBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8 },
-    scopeText: { fontSize: 11, color: T.sub, fontFamily: FONTS.headingMed },
+    scopeBtn: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8 },
+    scopeText: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed },
 
     boardHead: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
     boardHeadText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
@@ -636,6 +781,15 @@ const styles = (T: any) =>
     boardFoot: { marginTop: 10, paddingHorizontal: 4 },
     boardFootText: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 15 },
 
+    totalRow: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 7, paddingHorizontal: 9, borderRadius: 12, marginBottom: 6 },
+    totalRank: { width: 34, fontSize: 12, color: T.sub, fontFamily: FONTS.heading, textAlign: "center" },
+    badgeStage: { alignItems: "center", paddingTop: 4, paddingBottom: 10 },
+    badgeCaption: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+    gapRow: { flexDirection: "row", alignItems: "center", gap: 10, marginVertical: 10 },
+    gapLine: { flex: 1, height: 1, backgroundColor: T.border },
+    gapText: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, letterSpacing: 0.6 },
+    chaseText: { fontSize: 11.5, color: T.green, fontFamily: FONTS.headingMed, textAlign: "center", marginTop: 8 },
+
     strip: { flexDirection: "row", gap: 10, marginTop: 16 },
     chipCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 13, minHeight: 92 },
     wRow: { flexDirection: "row", alignItems: "baseline", gap: 4, marginTop: 5 },
@@ -644,7 +798,6 @@ const styles = (T: any) =>
     wTrend: { marginLeft: "auto", color: T.green, fontSize: 10, fontFamily: FONTS.headingMed },
     chipNote: { fontSize: 9.5, color: T.sub, marginTop: 4, fontFamily: FONTS.body },
 
-    // pop-out
     backdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(0,0,0,0.62)" },
     sheetCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
     sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingTop: 14, paddingBottom: 8 },

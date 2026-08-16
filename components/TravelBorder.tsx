@@ -1,15 +1,28 @@
 // components/TravelBorder.tsx
 // TRUE conic revolving border using Skia's SweepGradient. Single color OR rainbow.
+//
+// PHASE SYNC — why the angle doesn't start at 0:
+// Every instance used to begin its rotation at 0 on mount, so a border that
+// mounted later sat at a different point in the cycle than one already on
+// screen — the bright spot top-left on one, bottom-right on the other. That's
+// what made pop-out sheets look mismatched against the card behind them.
+// Now the starting angle is anchored to wall-clock time, so any border joins
+// the cycle already in progress and every border on screen stays in phase.
+// This is the same shared-clock fix used in the web mockup for the Calendar
+// when new months load in.
 import { Canvas, RoundedRect, SweepGradient, vec } from "@shopify/react-native-skia";
 import React, { useEffect, useState } from "react";
 import { LayoutChangeEvent, StyleSheet, View, ViewStyle } from "react-native";
 import {
-    Easing,
-    useDerivedValue,
-    useSharedValue,
-    withRepeat,
-    withTiming,
+  Easing,
+  useDerivedValue,
+  useSharedValue,
+  withRepeat,
+  withTiming,
 } from "react-native-reanimated";
+
+// one full revolution — every border in the app shares this cycle
+const SPIN_MS = 3000;
 
 type Props = {
   color?: string;
@@ -36,8 +49,15 @@ export default function TravelBorder({
   const angle = useSharedValue(0);
 
   useEffect(() => {
+    // where the shared cycle is right now, 0..1
+    const phase = (Date.now() % SPIN_MS) / SPIN_MS;
+    const start = phase * 360;
+
+    // jump straight to that point, then spin a full turn from there and repeat.
+    // start and start+360 are the same visual angle, so the loop is seamless.
+    angle.value = start;
     angle.value = withRepeat(
-      withTiming(360, { duration: 3000, easing: Easing.linear }),
+      withTiming(start + 360, { duration: SPIN_MS, easing: Easing.linear }),
       -1,
       false
     );
