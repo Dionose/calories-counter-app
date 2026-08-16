@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, Apple, Bell, Check, ChevronLeft, Flame, Globe,
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
+import IsoM, { IsoMGlow } from "../components/IsoM";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
 import { DARK, FONTS } from "../constants/theme";
@@ -136,10 +137,7 @@ const LANGUAGES = [
 
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
 
-/* ===================== THE PLAN CALCULATION =====================
-   The NUMBER comes from a formula (Mifflin-St Jeor + activity factor),
-   not from the AI — same inputs always give the same target, and it's
-   clinically grounded. Motion supplies the coaching around it. */
+/* ===================== THE PLAN CALCULATION ===================== */
 function buildPlan(a: Record<string, any>) {
   const wUnit = a.weight?.unit || "kg";
   const wRaw = parseFloat(a.weight?.val) || 75;
@@ -228,7 +226,6 @@ export default function Onboarding() {
   const goBack = () => { if (i > 0) { setDir(-1); setI(i - 1); } };
 
   const finish = (pro: boolean) => {
-    // hand the generated plan to the rest of the app before we leave onboarding
     const p = buildPlan(answers);
     const tl = goalTimeline(answers);
     savePlan(
@@ -256,7 +253,7 @@ export default function Onboarding() {
 
   useEffect(() => {
     if (step.kind === "building") {
-      const t = setTimeout(() => { setDir(1); setI((x) => x + 1); }, 2200);
+      const t = setTimeout(() => { setDir(1); setI((x) => x + 1); }, 2600);
       return () => clearTimeout(t);
     }
   }, [step]);
@@ -317,7 +314,9 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
       </View>
 
       <View style={styles.welcomeBody}>
-        <View style={styles.markWrap}><Text style={styles.mark}>M</Text></View>
+        <View style={{ marginBottom: 20 }}>
+          <IsoMGlow size={124} />
+        </View>
         <Text style={styles.welcomeTitle}>Calorie tracking{"\n"}made easy</Text>
         <Text style={styles.welcomeSub}>
           Snap a photo of your meal and MOTION works out the calories. Build a streak, keep it going.
@@ -355,9 +354,7 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
   );
 }
 
-/* ===================== HEALTH SYNC =====================
-   UI + explanation only. The real HealthKit / Health Connect call needs a
-   development build (it does NOT work in Expo Go) — wire at backend phase. */
+/* ===================== HEALTH SYNC ===================== */
 function HealthStep({ value, onChange, onNext }: any) {
   const connected = value === "yes";
   return (
@@ -414,7 +411,7 @@ function NotificationsStep({ value, onChange, onNext }: any) {
       </Text>
 
       <View style={styles.notifPreview}>
-        <View style={styles.notifIcon}><Text style={styles.notifIconText}>M</Text></View>
+        <View style={styles.notifIcon}><IsoM size={34} /></View>
         <View style={{ flex: 1 }}>
           <Text style={styles.notifTitle}>MOTION</Text>
           <Text style={styles.notifBody}>You haven't logged anything today — your streak slips if the day ends empty.</Text>
@@ -545,9 +542,7 @@ function SignInStep({ onNext }: { onNext: () => void }) {
   );
 }
 
-/* ===================== YOUR WEIGHT OVER TIME =====================
-   Direction-aware: losing starts high and comes down, gaining starts low
-   and goes up, maintaining runs flat. */
+/* ===================== YOUR WEIGHT OVER TIME ===================== */
 function GraphStep({ answers, onNext }: any) {
   const { unit, cur, target, weeks, losing, maintaining } = goalTimeline(answers);
   const fade = useRef(new Animated.Value(0)).current;
@@ -968,10 +963,7 @@ function WeightStep({ step, value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== DESIRED WEIGHT =====================
-   A target that contradicts the stated goal is a HARD BLOCK, not a note —
-   letting it through would make the plan, the timeline and the graph all
-   disagree with each other. */
+/* ===================== DESIRED WEIGHT ===================== */
 function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
   const unit = current?.unit || "kg";
   const cur = parseFloat(current?.val) || (unit === "kg" ? 78 : 172);
@@ -985,7 +977,6 @@ function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
   const change = inRange ? n - cur : 0;
   const pctChange = inRange ? Math.abs(change) / cur : 0;
 
-  // does the target contradict the goal they picked?
   const contradictsGain = inRange && goal === "gain" && change <= 0;
   const contradictsLose = inRange && goal === "lose" && change >= 0;
   const contradicts = contradictsGain || contradictsLose;
@@ -1163,7 +1154,7 @@ function MessageStep({ step, onNext }: any) {
 function BuildingStep({ step }: any) {
   return (
     <View style={[styles.body, { flex: 1, justifyContent: "center", alignItems: "center" }]}>
-      <Spinner />
+      <IsoMGlow size={104} />
       <Text style={[styles.title, { textAlign: "center", marginTop: 24, fontSize: 22 }]}>{step.title}</Text>
       <Text style={[styles.sub, { textAlign: "center", marginTop: 8 }]}>{step.sub}</Text>
     </View>
@@ -1173,6 +1164,9 @@ function BuildingStep({ step }: any) {
 function TrialPaywall({ onStartTrial, onSkip }: { onStartTrial: () => void; onSkip: () => void }) {
   return (
     <ScrollView contentContainerStyle={[styles.body, { paddingBottom: 40 }]}>
+      <View style={{ alignItems: "center", marginBottom: 4 }}>
+        <IsoMGlow size={78} />
+      </View>
       <Text style={[styles.title, { fontSize: 26 }]}>Start your 3-day free trial</Text>
       <Text style={[styles.sub, { marginTop: 8 }]}>Then $9.99 US/month. Cancel anytime before day 4 and you won't be charged.</Text>
 
@@ -1208,15 +1202,6 @@ function TrialPaywall({ onStartTrial, onSkip }: { onStartTrial: () => void; onSk
   );
 }
 
-function Spinner() {
-  const spin = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.loop(Animated.timing(spin, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true })).start();
-  }, []);
-  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-  return <Animated.View style={[styles.spinner, { transform: [{ rotate }] }]} />;
-}
-
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: T.bg },
   topBar: { flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 60, paddingHorizontal: 16, paddingBottom: 8 },
@@ -1232,8 +1217,6 @@ const styles = StyleSheet.create({
   langChip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 99, paddingHorizontal: 12, paddingVertical: 7 },
   langText: { fontSize: 12, color: T.sub, fontFamily: FONTS.bodyMed },
   welcomeBody: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 28 },
-  markWrap: { width: 96, height: 96, borderRadius: 30, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center", marginBottom: 28 },
-  mark: { fontSize: 46, color: T.green, fontFamily: FONTS.heading },
   welcomeTitle: { fontSize: 32, color: T.text, fontFamily: FONTS.heading, textAlign: "center", lineHeight: 38 },
   welcomeSub: { fontSize: 14.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginTop: 14, lineHeight: 21 },
   welcomeFooter: { padding: 24, paddingBottom: 44 },
@@ -1256,9 +1239,8 @@ const styles = StyleSheet.create({
   permRowSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
   permNote: { fontSize: 11.5, color: T.micro, fontFamily: FONTS.body, marginTop: 14, lineHeight: 17 },
 
-  notifPreview: { flexDirection: "row", gap: 12, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 14, marginTop: 22 },
-  notifIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
-  notifIconText: { fontSize: 16, color: "#0A0A0A", fontFamily: FONTS.heading },
+  notifPreview: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 14, marginTop: 22 },
+  notifIcon: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
   notifTitle: { fontSize: 12, color: T.text, fontFamily: FONTS.heading },
   notifBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 17 },
 
@@ -1342,8 +1324,6 @@ const styles = StyleSheet.create({
   primaryBtn: { backgroundColor: T.green, borderRadius: 14, padding: 16, alignItems: "center" },
   primaryBtnText: { color: "#0A0A0A", fontFamily: FONTS.heading, fontSize: 15 },
   skipText: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-
-  spinner: { width: 58, height: 58, borderRadius: 29, borderWidth: 3, borderColor: T.greenBg, borderTopColor: T.green },
 
   featureRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   featureCheck: { width: 22, height: 22, borderRadius: 7, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
