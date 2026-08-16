@@ -2,7 +2,7 @@
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import LottieView from "lottie-react-native";
-import { ChevronDown, ChevronRight, Flame, Trophy, X } from "lucide-react-native";
+import { ChevronDown, ChevronLeft, ChevronRight, Flame, HelpCircle, Trophy, X } from "lucide-react-native";
 import React, { useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
@@ -11,15 +11,13 @@ import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
-import { FONTS, ULT_COLORS, tierForStreak } from "../../constants/theme";
+import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
 const CAMERA_ICON = require("../../assets/motion-camera-dark.json");
 const SCREEN_H = Dimensions.get("window").height;
-// the pop-out's inner height — set explicitly, because TravelBorder's card
-// sizes to its content and won't stretch to a flexed parent
+// explicit — TravelBorder's card sizes to content and won't stretch to a flexed parent
 const SHEET_H = Math.round(SCREEN_H * 0.72);
 
-// today's meals — real log entries at backend phase. cal = 0 means nothing logged.
 const MEALS: { name: string; cal: number; typical: number }[] = [
   { name: "Breakfast", cal: 215, typical: 450 },
   { name: "Lunch", cal: 530, typical: 600 },
@@ -28,12 +26,6 @@ const MEALS: { name: string; cal: number; typical: number }[] = [
 ];
 
 // the leaderboard ranks on EARNED points only — never on plan, never on spend
-const BOARD = [
-  { rank: 1, handle: "amara_k", pts: 412, days: 21 },
-  { rank: 2, handle: "dionj", pts: 388, days: 14, me: true },
-  { rank: 3, handle: "kwame.b", pts: 356, days: 12 },
-];
-
 const BOARD_FULL = [
   { rank: 1, handle: "amara_k", pts: 412, days: 21 },
   { rank: 2, handle: "dionj", pts: 388, days: 14, me: true },
@@ -45,10 +37,38 @@ const BOARD_FULL = [
   { rank: 8, handle: "yusuf.a", pts: 255, days: 6 },
   { rank: 9, handle: "priya", pts: 233, days: 5 },
   { rank: 10, handle: "marcus", pts: 210, days: 3 },
+  { rank: 11, handle: "chidera", pts: 204, days: 18 },
+  { rank: 12, handle: "hana_s", pts: 198, days: 15 },
+  { rank: 13, handle: "olu.a", pts: 191, days: 13 },
+  { rank: 14, handle: "mei_l", pts: 186, days: 12 },
+  { rank: 15, handle: "jonas", pts: 179, days: 11 },
+  { rank: 16, handle: "rania", pts: 172, days: 9 },
+  { rank: 17, handle: "diego_p", pts: 165, days: 8 },
+  { rank: 18, handle: "aisha", pts: 158, days: 8 },
+  { rank: 19, handle: "ben.w", pts: 150, days: 7 },
+  { rank: 20, handle: "zanele", pts: 144, days: 6 },
+  { rank: 21, handle: "arjun", pts: 137, days: 6 },
+  { rank: 22, handle: "clara_v", pts: 129, days: 5 },
+  { rank: 23, handle: "ifeoma", pts: 122, days: 5 },
+  { rank: 24, handle: "leo.k", pts: 114, days: 4 },
+  { rank: 25, handle: "noor", pts: 108, days: 4 },
+  { rank: 26, handle: "santi", pts: 101, days: 3 },
+  { rank: 27, handle: "grace.o", pts: 94, days: 3 },
+  { rank: 28, handle: "haruto", pts: 86, days: 2 },
+  { rank: 29, handle: "elif", pts: 79, days: 2 },
+  { rank: 30, handle: "malik_d", pts: 71, days: 1 },
 ];
 
-// tier → points earned per logged day
+const BOARD = BOARD_FULL.slice(0, 3);
+
 const TIER_PTS: Record<string, number> = { Spark: 1, Warming: 2, Hot: 3, "Red-hot": 4, Ultimate: 5 };
+const TIER_RANGE: Record<string, string> = {
+  Spark: "days 1–4",
+  Warming: "days 5–8",
+  Hot: "days 9–12",
+  "Red-hot": "days 13–16",
+  Ultimate: "day 17+",
+};
 
 export default function Home() {
   const router = useRouter();
@@ -57,6 +77,7 @@ export default function Home() {
   const [scope, setScope] = useState<"General" | "Regional">("General");
 
   const [boardMounted, setBoardMounted] = useState(false);
+  const [howOpen, setHowOpen] = useState(false);
   const board = useRef(new Animated.Value(0)).current;
 
   const [drawerH, setDrawerH] = useState(0);
@@ -94,22 +115,14 @@ export default function Home() {
   };
 
   const openBoard = () => {
+    setHowOpen(false);
     setBoardMounted(true);
-    Animated.timing(board, {
-      toValue: 1,
-      duration: 380,
-      easing: Easing.bezier(0.2, 0.9, 0.25, 1),
-      useNativeDriver: true,
-    }).start();
+    Animated.timing(board, { toValue: 1, duration: 380, easing: Easing.bezier(0.2, 0.9, 0.25, 1), useNativeDriver: true }).start();
   };
 
   const closeBoard = () => {
-    Animated.timing(board, {
-      toValue: 0,
-      duration: 260,
-      easing: Easing.in(Easing.quad),
-      useNativeDriver: true,
-    }).start(() => setBoardMounted(false));
+    Animated.timing(board, { toValue: 0, duration: 260, easing: Easing.in(Easing.quad), useNativeDriver: true })
+      .start(() => { setBoardMounted(false); setHowOpen(false); });
   };
 
   const drawerHeight = expand.interpolate({ inputRange: [0, 1], outputRange: [0, drawerH] });
@@ -279,7 +292,7 @@ export default function Home() {
           </View>
         </Tap>
 
-        {/* TODAY'S MEALS — three states */}
+        {/* TODAY'S MEALS */}
         <Text style={[s.micro, { marginTop: 22, marginBottom: 10 }]}>TODAY'S MEALS</Text>
         {MEALS.map((m) => {
           const isNext = nextMeal?.name === m.name;
@@ -350,7 +363,7 @@ export default function Home() {
           </View>
         )}
 
-        {/* SECONDARY chips — streak + expected weight */}
+        {/* SECONDARY chips */}
         <View style={s.strip}>
           <Tap onPress={() => router.push("/(tabs)/calendar")} style={{ flex: 1 }}>
             <View style={s.chipCard}>
@@ -396,66 +409,149 @@ export default function Home() {
         </View>
       </ScrollView>
 
-      {/* LEADERBOARD — pops out over Home, keeping its traveling border */}
+      {/* LEADERBOARD POP-OUT.
+          The backdrop is a SIBLING behind the card, never an ancestor — a
+          Pressable wrapping a ScrollView swallows the scroll gesture. */}
       <Modal visible={boardMounted} transparent animationType="fade" onRequestClose={closeBoard}>
-        <Pressable style={s.backdrop} onPress={closeBoard}>
-          <Animated.View
-            style={{
-              width: "100%",
-              maxWidth: 380,
-              opacity: board,
-              transform: [{ scale: boardScale }, { translateY: boardLift }],
-            }}
-          >
-            {/* swallow taps so the backdrop doesn't close it */}
-            <Pressable onPress={() => {}}>
+        <View style={{ flex: 1 }}>
+          <Pressable style={s.backdrop} onPress={closeBoard} />
+
+          <View style={s.sheetCentre} pointerEvents="box-none">
+            <Animated.View
+              style={{
+                width: "100%",
+                maxWidth: 380,
+                opacity: board,
+                transform: [{ scale: boardScale }, { translateY: boardLift }],
+              }}
+            >
               <TravelBorder {...boardBorder} cardBg={T.bg} borderColor={T.border} radius={26} strokeWidth={2.5}>
                 <View style={{ height: SHEET_H }}>
+
+                  {/* header */}
                   <View style={s.sheetHead}>
-                    <Text style={s.sheetTitle}>Leaderboard</Text>
+                    {howOpen ? (
+                      <Pressable onPress={() => setHowOpen(false)} hitSlop={14} style={s.sheetBack}>
+                        <ChevronLeft size={18} color={T.text} />
+                      </Pressable>
+                    ) : (
+                      <View style={{ width: 34 }} />
+                    )}
+                    <Text style={s.sheetTitle}>{howOpen ? "How points work" : "Leaderboard"}</Text>
                     <Pressable onPress={closeBoard} hitSlop={14} style={s.sheetClose}>
                       <X size={18} color={T.sub} />
                     </Pressable>
                   </View>
 
-                  <View style={s.sheetScopeRow}>
-                    <View style={s.scopeToggle}>
-                      {(["General", "Regional"] as const).map((sc) => (
-                        <Pressable
-                          key={sc}
-                          onPress={() => setScope(sc)}
-                          style={[s.scopeBtn, { paddingHorizontal: 20, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
-                        >
-                          <Text style={[s.scopeText, { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                  </View>
-
-                  <Text style={s.sheetSub}>
-                    {scope === "General" ? "Top players worldwide" : "Top in your country"}
-                  </Text>
-
-                  <ScrollView
-                    style={{ flex: 1 }}
-                    contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 20 }}
-                    showsVerticalScrollIndicator={false}
-                  >
-                    {BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)}
-
-                    <View style={s.howCard}>
-                      <Text style={s.howTitle}>How points work</Text>
+                  {howOpen ? (
+                    /* ---------- PANEL 2 · the explanation ---------- */
+                    <ScrollView
+                      style={{ flex: 1 }}
+                      contentContainerStyle={{ paddingHorizontal: 14, paddingBottom: 22 }}
+                      showsVerticalScrollIndicator={false}
+                    >
                       <Text style={s.howText}>
-                        You earn points for every day you log, and the amount grows with your tier — Spark 1,
-                        Warming 2, Hot 3, Red-hot 4, Ultimate 5. Nothing else counts toward your rank.
+                        Every day you log a meal, you earn points. That's the whole game — show up, log,
+                        and your score goes up.
                       </Text>
-                    </View>
-                  </ScrollView>
+
+                      <Text style={[s.howText, { marginTop: 10 }]}>
+                        How much a day is worth depends on your streak tier. The longer you keep your
+                        streak alive, the higher your tier climbs, and the more each day earns:
+                      </Text>
+
+                      <View style={s.tierTable}>
+                        {(["Spark", "Warming", "Hot", "Red-hot", "Ultimate"] as const).map((name, i) => {
+                          const tt = TIERS[(i + 1) as 1 | 2 | 3 | 4 | 5];
+                          const swatch = tt.color === "ultimate" ? "#8B5CF6" : tt.color;
+                          const mine = tier.name === name;
+                          return (
+                            <View key={name} style={[s.tierRow, mine && s.tierRowMine]}>
+                              <View style={[s.tierDot, { backgroundColor: swatch }]} />
+                              <Text style={[s.tierName, mine && { color: T.text }]}>{name}</Text>
+                              <Text style={s.tierRange}>{TIER_RANGE[name]}</Text>
+                              <Text style={[s.tierPts, mine && { color: T.green }]}>+{TIER_PTS[name]}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+
+                      <Text style={[s.howText, { marginTop: 12 }]}>
+                        A day at Ultimate is worth five days at Spark. Two people logging the same number
+                        of days can end up far apart — consistency is what separates them.
+                      </Text>
+
+                      <Text style={[s.howText, { marginTop: 10 }]}>
+                        Miss a day and your streak eases back a tier rather than resetting to zero, so one
+                        bad day doesn't undo weeks of work. Pick it up again and you climb straight back.
+                      </Text>
+
+                      <View style={s.howDivider} />
+
+                      <Text style={s.howSmallTitle}>What doesn't count</Text>
+                      <Text style={s.howText}>
+                        Nothing you can buy. Your plan, what you paid, how long you've had the app — none
+                        of it affects your rank. Points come from logging and streaks only, so everyone
+                        climbs the same ladder.
+                      </Text>
+
+                      <Text style={[s.howText, { marginTop: 10 }]}>
+                        <Text style={s.howBold}>General</Text> ranks you against everyone using MOTION.{" "}
+                        <Text style={s.howBold}>Regional</Text> narrows it to your country, which is
+                        usually where you'll place highest.
+                      </Text>
+                    </ScrollView>
+                  ) : (
+                    /* ---------- PANEL 1 · the players ---------- */
+                    <>
+                      <View style={s.sheetScopeRow}>
+                        <View style={s.scopeToggle}>
+                          {(["General", "Regional"] as const).map((sc) => (
+                            <Pressable
+                              key={sc}
+                              onPress={() => setScope(sc)}
+                              style={[s.scopeBtn, { paddingHorizontal: 20, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
+                            >
+                              <Text style={[s.scopeText, { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+
+                      <Text style={s.sheetSub}>
+                        {scope === "General" ? "Top players worldwide" : "Top in your country"}
+                      </Text>
+
+                      <ScrollView
+                        style={{ flex: 1 }}
+                        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8 }}
+                        showsVerticalScrollIndicator={false}
+                      >
+                        {BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)}
+                      </ScrollView>
+
+                      {/* widget two — pinned below the list, never scrolls with it */}
+                      <View style={s.howFooter}>
+                        <Tap onPress={() => setHowOpen(true)}>
+                          <View style={s.howRow}>
+                            <View style={s.howIcon}>
+                              <HelpCircle size={16} color={T.green} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={s.howRowTitle}>How points work</Text>
+                              <Text style={s.howRowSub}>Tap to see how ranking is decided</Text>
+                            </View>
+                            <ChevronRight size={17} color={T.micro} />
+                          </View>
+                        </Tap>
+                      </View>
+                    </>
+                  )}
                 </View>
               </TravelBorder>
-            </Pressable>
-          </Animated.View>
-        </Pressable>
+            </Animated.View>
+          </View>
+        </View>
       </Modal>
 
       {/* DEV toggle — remove before launch. */}
@@ -548,13 +644,32 @@ const styles = (T: any) =>
     wTrend: { marginLeft: "auto", color: T.green, fontSize: 10, fontFamily: FONTS.headingMed },
     chipNote: { fontSize: 9.5, color: T.sub, marginTop: 4, fontFamily: FONTS.body },
 
-    backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.62)", alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
-    sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
-    sheetTitle: { fontSize: 17, color: T.text, fontFamily: FONTS.heading, letterSpacing: 0.3 },
+    // pop-out
+    backdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(0,0,0,0.62)" },
+    sheetCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
+    sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingTop: 14, paddingBottom: 8 },
+    sheetTitle: { flex: 1, textAlign: "center", fontSize: 16, color: T.text, fontFamily: FONTS.heading, letterSpacing: 0.3 },
+    sheetBack: { width: 34, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
     sheetClose: { width: 34, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
     sheetScopeRow: { alignItems: "center", paddingBottom: 8 },
     sheetSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginBottom: 8 },
-    howCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 15, marginTop: 12 },
-    howTitle: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 6 },
-    howText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
+
+    howFooter: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 14, borderTopWidth: 1, borderTopColor: T.border },
+    howRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 13 },
+    howIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center" },
+    howRowTitle: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed },
+    howRowSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+
+    howSmallTitle: { fontSize: 12.5, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 6 },
+    howText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, lineHeight: 18.5 },
+    howBold: { color: T.text, fontFamily: FONTS.headingMed },
+    howDivider: { height: 1, backgroundColor: T.border, marginVertical: 14 },
+
+    tierTable: { marginTop: 11, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 12, overflow: "hidden" },
+    tierRow: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 9, paddingHorizontal: 11 },
+    tierRowMine: { backgroundColor: T.greenBg },
+    tierDot: { width: 9, height: 9, borderRadius: 3 },
+    tierName: { width: 62, fontSize: 11.5, color: T.sub, fontFamily: FONTS.headingMed },
+    tierRange: { flex: 1, fontSize: 10.5, color: T.micro, fontFamily: FONTS.body },
+    tierPts: { fontSize: 12, color: T.sub, fontFamily: FONTS.heading },
   });
