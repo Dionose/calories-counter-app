@@ -4,8 +4,9 @@ import { useRouter } from "expo-router";
 import LottieView from "lottie-react-native";
 import { ChevronDown, ChevronRight, Flame, Trophy, X } from "lucide-react-native";
 import React, { useRef, useState } from "react";
-import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
+import GradientText from "../../components/GradientText";
 import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
@@ -13,6 +14,10 @@ import { useApp } from "../../constants/AppState";
 import { FONTS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
 const CAMERA_ICON = require("../../assets/motion-camera-dark.json");
+const SCREEN_H = Dimensions.get("window").height;
+// the pop-out's inner height — set explicitly, because TravelBorder's card
+// sizes to its content and won't stretch to a flexed parent
+const SHEET_H = Math.round(SCREEN_H * 0.72);
 
 // today's meals — real log entries at backend phase. cal = 0 means nothing logged.
 const MEALS: { name: string; cal: number; typical: number }[] = [
@@ -50,10 +55,10 @@ export default function Home() {
   const { T, freeLocked, togglePro, isPro, plan, profile, streakDays } = useApp();
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState<"General" | "Regional">("General");
-  const [boardOpen, setBoardOpen] = useState(false);
 
-  // the drawer animates its own height — LayoutAnimation is a no-op on the
-  // New Architecture, so we measure the content once and tween to it.
+  const [boardMounted, setBoardMounted] = useState(false);
+  const board = useRef(new Animated.Value(0)).current;
+
   const [drawerH, setDrawerH] = useState(0);
   const expand = useRef(new Animated.Value(0)).current;
 
@@ -88,11 +93,33 @@ export default function Home() {
     }).start();
   };
 
+  const openBoard = () => {
+    setBoardMounted(true);
+    Animated.timing(board, {
+      toValue: 1,
+      duration: 380,
+      easing: Easing.bezier(0.2, 0.9, 0.25, 1),
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeBoard = () => {
+    Animated.timing(board, {
+      toValue: 0,
+      duration: 260,
+      easing: Easing.in(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => setBoardMounted(false));
+  };
+
   const drawerHeight = expand.interpolate({ inputRange: [0, 1], outputRange: [0, drawerH] });
   const contentOpacity = expand.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 0, 1] });
   const contentShift = expand.interpolate({ inputRange: [0, 1], outputRange: [-10, 0] });
   const chevron = expand.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] });
   const hintOpacity = expand.interpolate({ inputRange: [0, 0.4], outputRange: [1, 0], extrapolate: "clamp" });
+
+  const boardScale = board.interpolate({ inputRange: [0, 1], outputRange: [0.88, 1] });
+  const boardLift = board.interpolate({ inputRange: [0, 1], outputRange: [30, 0] });
 
   const unit = profile.weightUnit;
   const rate = unit === "kg" ? profile.paceRate : profile.paceRate * 2.20462;
@@ -122,18 +149,23 @@ export default function Home() {
 
   const BoardRow = ({ r }: { r: typeof BOARD_FULL[0] }) => {
     const rt = tierForStreak(r.days);
-    const nameColor = rt.color === "ultimate" ? T.orange : rt.color;
+    const ult = rt.color === "ultimate";
     return (
       <View style={[s.boardRow, r.me && s.boardRowMe]}>
         <Text style={s.boardRank}>{r.rank}</Text>
-        <Text style={[s.boardName, { color: nameColor }]} numberOfLines={1}>@{r.handle}</Text>
+        {ult ? (
+          <View style={{ flex: 1 }}>
+            <GradientText text={`@${r.handle}`} colors={ULT_COLORS} fontSize={13} fontFamily={FONTS.headingMed} />
+          </View>
+        ) : (
+          <Text style={[s.boardName, { color: rt.color }]} numberOfLines={1}>@{r.handle}</Text>
+        )}
         {r.me && <View style={s.youChip}><Text style={s.youChipText}>YOU</Text></View>}
         <Text style={s.boardPts}>{r.pts} <Text style={s.boardPtsUnit}>pts</Text></Text>
       </View>
     );
   };
 
-  // the expanded macro block — measured once, then animated to
   const drawerContent = (
     <>
       {macros.map((m) => {
@@ -214,7 +246,6 @@ export default function Home() {
                 <Text style={s.toGoLine}>{remaining.toLocaleString()} to go</Text>
               </View>
 
-              {/* the drawer — height tweens from 0 to the measured content height */}
               <Animated.View style={{ height: drawerHeight, overflow: "hidden" }}>
                 <Animated.View
                   style={{ paddingTop: 18, opacity: contentOpacity, transform: [{ translateY: contentShift }] }}
@@ -304,7 +335,7 @@ export default function Home() {
 
               {BOARD.map((r) => <BoardRow key={r.rank} r={r} />)}
 
-              <Tap onPress={() => setBoardOpen(true)} style={{ marginTop: 6 }}>
+              <Tap onPress={openBoard} style={{ marginTop: 6 }}>
                 <View style={s.seeFull}>
                   <Text style={s.seeFullText}>See full leaderboard</Text>
                 </View>
@@ -319,7 +350,7 @@ export default function Home() {
           </View>
         )}
 
-        {/* SECONDARY chips — streak + expected weight, demoted below the board */}
+        {/* SECONDARY chips — streak + expected weight */}
         <View style={s.strip}>
           <Tap onPress={() => router.push("/(tabs)/calendar")} style={{ flex: 1 }}>
             <View style={s.chipCard}>
@@ -332,9 +363,15 @@ export default function Home() {
                 <Text style={s.wUnit}>days</Text>
                 <Flame size={16} color={flameColor} fill={flameColor} style={{ marginLeft: "auto" }} />
               </View>
-              <Text style={[s.chipNote, { color: flameColor }]}>
-                {tier.name} · +{TIER_PTS[tier.name] || 1} pts today
-              </Text>
+              {isUlt ? (
+                <View style={{ marginTop: 4 }}>
+                  <GradientText text="Ultimate · +5 pts today" colors={ULT_COLORS} fontSize={9.5} fontFamily={FONTS.headingMed} />
+                </View>
+              ) : (
+                <Text style={[s.chipNote, { color: flameColor }]}>
+                  {tier.name} · +{TIER_PTS[tier.name] || 1} pts today
+                </Text>
+              )}
             </View>
           </Tap>
 
@@ -359,42 +396,66 @@ export default function Home() {
         </View>
       </ScrollView>
 
-      {/* FULL LEADERBOARD — becomes a 70% inline overlay with a traveling
-          border once we build the inline-camera pattern. */}
-      <Modal visible={boardOpen} animationType="slide" onRequestClose={() => setBoardOpen(false)}>
-        <View style={s.screen}>
-          <ScrollView contentContainerStyle={{ padding: 18, paddingTop: 60, paddingBottom: 40 }}>
-            <View style={[s.rowBetween, { marginBottom: 14 }]}>
-              <Text style={s.sheetTitle}>Leaderboard</Text>
-              <Pressable onPress={() => setBoardOpen(false)} hitSlop={16} style={s.sheetClose}>
-                <X size={20} color={T.sub} />
-              </Pressable>
-            </View>
+      {/* LEADERBOARD — pops out over Home, keeping its traveling border */}
+      <Modal visible={boardMounted} transparent animationType="fade" onRequestClose={closeBoard}>
+        <Pressable style={s.backdrop} onPress={closeBoard}>
+          <Animated.View
+            style={{
+              width: "100%",
+              maxWidth: 380,
+              opacity: board,
+              transform: [{ scale: boardScale }, { translateY: boardLift }],
+            }}
+          >
+            {/* swallow taps so the backdrop doesn't close it */}
+            <Pressable onPress={() => {}}>
+              <TravelBorder {...boardBorder} cardBg={T.bg} borderColor={T.border} radius={26} strokeWidth={2.5}>
+                <View style={{ height: SHEET_H }}>
+                  <View style={s.sheetHead}>
+                    <Text style={s.sheetTitle}>Leaderboard</Text>
+                    <Pressable onPress={closeBoard} hitSlop={14} style={s.sheetClose}>
+                      <X size={18} color={T.sub} />
+                    </Pressable>
+                  </View>
 
-            <View style={[s.scopeToggle, { alignSelf: "center", marginBottom: 10 }]}>
-              {(["General", "Regional"] as const).map((sc) => (
-                <Pressable key={sc} onPress={() => setScope(sc)} style={[s.scopeBtn, { paddingHorizontal: 20 }, scope === sc && { backgroundColor: T.green }]}>
-                  <Text style={[s.scopeText, scope === sc && { color: T.ink }]}>{sc}</Text>
-                </Pressable>
-              ))}
-            </View>
-            <Text style={s.sheetSub}>
-              {scope === "General" ? "Top players worldwide" : "Top in your country"}
-            </Text>
+                  <View style={s.sheetScopeRow}>
+                    <View style={s.scopeToggle}>
+                      {(["General", "Regional"] as const).map((sc) => (
+                        <Pressable
+                          key={sc}
+                          onPress={() => setScope(sc)}
+                          style={[s.scopeBtn, { paddingHorizontal: 20, paddingVertical: 6 }, scope === sc && { backgroundColor: T.green }]}
+                        >
+                          <Text style={[s.scopeText, { fontSize: 12 }, scope === sc && { color: T.ink }]}>{sc}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                  </View>
 
-            <View style={s.sheetCard}>
-              {BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)}
-            </View>
+                  <Text style={s.sheetSub}>
+                    {scope === "General" ? "Top players worldwide" : "Top in your country"}
+                  </Text>
 
-            <View style={s.howCard}>
-              <Text style={s.howTitle}>How points work</Text>
-              <Text style={s.howText}>
-                You earn points for every day you log, and the amount grows with your tier — Spark 1, Warming 2,
-                Hot 3, Red-hot 4, Ultimate 5. Nothing else counts toward your rank.
-              </Text>
-            </View>
-          </ScrollView>
-        </View>
+                  <ScrollView
+                    style={{ flex: 1 }}
+                    contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 20 }}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />)}
+
+                    <View style={s.howCard}>
+                      <Text style={s.howTitle}>How points work</Text>
+                      <Text style={s.howText}>
+                        You earn points for every day you log, and the amount grows with your tier — Spark 1,
+                        Warming 2, Hot 3, Red-hot 4, Ultimate 5. Nothing else counts toward your rank.
+                      </Text>
+                    </View>
+                  </ScrollView>
+                </View>
+              </TravelBorder>
+            </Pressable>
+          </Animated.View>
+        </Pressable>
       </Modal>
 
       {/* DEV toggle — remove before launch. */}
@@ -487,11 +548,13 @@ const styles = (T: any) =>
     wTrend: { marginLeft: "auto", color: T.green, fontSize: 10, fontFamily: FONTS.headingMed },
     chipNote: { fontSize: 9.5, color: T.sub, marginTop: 4, fontFamily: FONTS.body },
 
-    sheetTitle: { fontSize: 20, color: T.text, fontFamily: FONTS.heading },
-    sheetClose: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
-    sheetSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginBottom: 12 },
-    sheetCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 10 },
-    howCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 15, marginTop: 14 },
+    backdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.62)", alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
+    sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
+    sheetTitle: { fontSize: 17, color: T.text, fontFamily: FONTS.heading, letterSpacing: 0.3 },
+    sheetClose: { width: 34, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
+    sheetScopeRow: { alignItems: "center", paddingBottom: 8 },
+    sheetSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginBottom: 8 },
+    howCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 15, marginTop: 12 },
     howTitle: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 6 },
     howText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
   });
