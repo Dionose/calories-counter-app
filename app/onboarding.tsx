@@ -136,7 +136,10 @@ const LANGUAGES = [
 
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
 
-/* ===================== THE PLAN CALCULATION ===================== */
+/* ===================== THE PLAN CALCULATION =====================
+   The NUMBER comes from a formula (Mifflin-St Jeor + activity factor),
+   not from the AI — same inputs always give the same target, and it's
+   clinically grounded. Motion supplies the coaching around it. */
 function buildPlan(a: Record<string, any>) {
   const wUnit = a.weight?.unit || "kg";
   const wRaw = parseFloat(a.weight?.val) || 75;
@@ -210,7 +213,7 @@ function StepTransition({ stepKey, dir, children }: { stepKey: string; dir: numb
 
 export default function Onboarding() {
   const router = useRouter();
-  const { setIsPro } = useApp();
+  const { setIsPro, savePlan } = useApp();
   const [i, setI] = useState(0);
   const [dir, setDir] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
@@ -225,6 +228,28 @@ export default function Onboarding() {
   const goBack = () => { if (i > 0) { setDir(-1); setI(i - 1); } };
 
   const finish = (pro: boolean) => {
+    // hand the generated plan to the rest of the app before we leave onboarding
+    const p = buildPlan(answers);
+    const tl = goalTimeline(answers);
+    savePlan(
+      {
+        calories: p.calories,
+        protein: p.protein,
+        carbs: p.carbs,
+        fat: p.fat,
+        tdee: p.tdee,
+        addBurned: answers.burned === "yes",
+      },
+      {
+        name: "Dion",
+        goal: (answers.goal || "lose") as "lose" | "maintain" | "gain",
+        weightUnit: (tl.unit || "kg") as "kg" | "lbs",
+        startWeight: tl.cur,
+        targetWeight: tl.target,
+        paceRate: PACE_RATE[answers.pace] || 0.5,
+        goalWeeks: tl.weeks,
+      }
+    );
     setIsPro(pro);
     router.replace("/(tabs)");
   };
@@ -515,14 +540,14 @@ function SignInStep({ onNext }: { onNext: () => void }) {
         <Text style={[styles.primaryBtnText, (!agreed || email.length <= 3) && styles.btnTextDisabled]}>Create account</Text>
       </Pressable>
 
-      {!agreed && (
-        <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>
-      )}
+      {!agreed && <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>}
     </ScrollView>
   );
 }
 
-/* ===================== YOUR WEIGHT OVER TIME ===================== */
+/* ===================== YOUR WEIGHT OVER TIME =====================
+   Direction-aware: losing starts high and comes down, gaining starts low
+   and goes up, maintaining runs flat. */
 function GraphStep({ answers, onNext }: any) {
   const { unit, cur, target, weeks, losing, maintaining } = goalTimeline(answers);
   const fade = useRef(new Animated.Value(0)).current;
@@ -531,17 +556,24 @@ function GraphStep({ answers, onNext }: any) {
     Animated.timing(fade, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
   }, []);
 
-  const X0 = 44, X1 = 272, YTOP = 18, YGOAL = 104;
+  const X0 = 44, X1 = 272;
+  const YHI = 18, YLO = 104, YMID = 62;
   const midX = (X0 + X1) / 2;
   const midWeek = Math.max(1, Math.round(weeks / 2));
 
+  const YSTART = maintaining ? YMID : losing ? YHI : YLO;
+  const YEND = maintaining ? YMID : losing ? YLO : YHI;
+  const d = YEND - YSTART;
+
   const greenPath = maintaining
-    ? `M${X0} 60 C 110 60, 180 60, ${X1} 60`
-    : `M${X0} ${YTOP} C 100 ${YTOP + 22}, 150 ${YGOAL - 26}, 200 ${YGOAL} C 225 ${YGOAL + 2}, 250 ${YGOAL}, ${X1} ${YGOAL}`;
+    ? `M${X0} ${YMID} C 110 ${YMID}, 180 ${YMID}, ${X1} ${YMID}`
+    : `M${X0} ${YSTART} C 100 ${YSTART + d * 0.25}, 150 ${YEND - d * 0.30}, 200 ${YEND} C 225 ${YEND}, 250 ${YEND}, ${X1} ${YEND}`;
 
   const greyPath = maintaining
-    ? `M${X0} 60 C 110 54, 170 40, ${X1} 30`
-    : `M${X0} ${YTOP} C 90 ${YTOP + 18}, 120 ${YTOP + 44}, 152 ${YTOP + 48} C 195 ${YTOP + 54}, 225 ${YTOP + 26}, ${X1} ${YTOP + 14}`;
+    ? `M${X0} ${YMID} C 110 ${YMID - 8}, 170 ${YMID - 24}, ${X1} ${YMID - 34}`
+    : `M${X0} ${YSTART} C 90 ${YSTART + d * 0.20}, 120 ${YSTART + d * 0.50}, 152 ${YSTART + d * 0.55} C 195 ${YSTART + d * 0.62}, 225 ${YSTART + d * 0.30}, ${X1} ${YSTART + d * 0.16}`;
+
+  const goalLabelY = maintaining ? YMID - 9 : losing ? YEND - 9 : YEND + 17;
 
   return (
     <ScrollView contentContainerStyle={styles.body}>
@@ -555,7 +587,7 @@ function GraphStep({ answers, onNext }: any) {
           <Text style={styles.explainText}>
             <Text style={styles.explainLead}>With MOTION. </Text>
             {maintaining
-              ? `You log every day, and your weight holds steady at ${cur} ${unit} — no creeping back up.`
+              ? `You log every day, and your weight holds steady at ${cur} ${unit} — no creeping up, no sliding down.`
               : `You log every day, so your weight moves ${losing ? "down" : "up"} at a steady pace and settles at your goal of ${target} ${unit}.`}
           </Text>
         </View>
@@ -566,7 +598,9 @@ function GraphStep({ answers, onNext }: any) {
           <View style={[styles.explainDash, { backgroundColor: "#4A4A4A" }]} />
           <Text style={[styles.explainText, { color: T.sub }]}>
             <Text style={[styles.explainLead, { color: T.sub }]}>Without tracking. </Text>
-            The usual pattern — a strong start, then it stalls, and the weight drifts back to where it began.
+            {maintaining
+              ? "The usual pattern — without keeping an eye on it, the weight slowly creeps up over the months."
+              : `The usual pattern — a strong start, then it stalls, and the weight drifts back toward ${cur} ${unit}.`}
           </Text>
         </View>
       </View>
@@ -576,21 +610,23 @@ function GraphStep({ answers, onNext }: any) {
           <View style={{ padding: 16, paddingTop: 14 }}>
             <Text style={styles.chartAxisTitle}>WEIGHT ({unit.toUpperCase()})</Text>
             <Svg width="100%" height={150} viewBox="0 0 280 150">
+              <SvgLine x1={X0} y1={maintaining ? YMID : YEND} x2={X1} y2={maintaining ? YMID : YEND} stroke="#2E2E2E" strokeWidth={1} strokeDasharray="4 4" />
+
+              <SvgText x={38} y={YSTART + 4} fontSize={10} fill={T.sub} fontFamily={FONTS.body} textAnchor="end">{cur}</SvgText>
               {!maintaining && (
-                <SvgLine x1={X0} y1={YGOAL} x2={X1} y2={YGOAL} stroke="#2E2E2E" strokeWidth={1} strokeDasharray="4 4" />
+                <SvgText x={38} y={YEND + 4} fontSize={10} fill={T.green} fontFamily={FONTS.body} textAnchor="end">{target}</SvgText>
               )}
-              <SvgText x={38} y={YTOP + 4} fontSize={10} fill={T.sub} fontFamily={FONTS.body} textAnchor="end">{cur}</SvgText>
-              {!maintaining && (
-                <SvgText x={38} y={YGOAL + 4} fontSize={10} fill={T.green} fontFamily={FONTS.body} textAnchor="end">{target}</SvgText>
-              )}
+
               <Path d={greyPath} stroke="#4A4A4A" strokeWidth={3} fill="none" strokeLinecap="round" />
               <Path d={greenPath} stroke="#22C55E" strokeWidth={3.5} fill="none" strokeLinecap="round" />
+
               <SvgText x={X0} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="start">Now</SvgText>
               <SvgText x={midX} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="middle">Week {midWeek}</SvgText>
               <SvgText x={X1} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="end">Week {weeks}</SvgText>
-              {!maintaining && (
-                <SvgText x={X1} y={YGOAL - 8} fontSize={9.5} fill={T.green} fontFamily={FONTS.body} textAnchor="end">your goal</SvgText>
-              )}
+
+              <SvgText x={X1} y={goalLabelY} fontSize={9.5} fill={T.green} fontFamily={FONTS.body} textAnchor="end">
+                {maintaining ? "staying here" : "your goal"}
+              </SvgText>
             </Svg>
           </View>
         </TravelBorder>
@@ -932,7 +968,10 @@ function WeightStep({ step, value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== DESIRED WEIGHT ===================== */
+/* ===================== DESIRED WEIGHT =====================
+   A target that contradicts the stated goal is a HARD BLOCK, not a note —
+   letting it through would make the plan, the timeline and the graph all
+   disagree with each other. */
 function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
   const unit = current?.unit || "kg";
   const cur = parseFloat(current?.val) || (unit === "kg" ? 78 : 172);
@@ -945,22 +984,32 @@ function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
 
   const change = inRange ? n - cur : 0;
   const pctChange = inRange ? Math.abs(change) / cur : 0;
+
+  // does the target contradict the goal they picked?
+  const contradictsGain = inRange && goal === "gain" && change <= 0;
+  const contradictsLose = inRange && goal === "lose" && change >= 0;
+  const contradicts = contradictsGain || contradictsLose;
+
+  const canContinue = inRange && !contradicts;
+
   let note = "";
   let noteBad = false;
   if (v.val.length > 0 && !inRange) {
     note = `Enter a target between ${min} and ${max} ${unit}.`;
     noteBad = true;
+  } else if (contradictsGain) {
+    note = `You chose to gain weight, so your target has to be above ${cur} ${unit}. Enter a higher number, or go back and change your goal.`;
+    noteBad = true;
+  } else if (contradictsLose) {
+    note = `You chose to lose weight, so your target has to be below ${cur} ${unit}. Enter a lower number, or go back and change your goal.`;
+    noteBad = true;
   } else if (inRange && pctChange > 0.25) {
     note = "That's a big change from where you are now. It's doable, but it'll take a while — you can always adjust later.";
-  } else if (inRange && goal === "lose" && change > 0) {
-    note = "That's above your current weight, but your goal is to lose. Double-check the number.";
-    noteBad = true;
-  } else if (inRange && goal === "gain" && change < 0) {
-    note = "That's below your current weight, but your goal is to gain. Double-check the number.";
-    noteBad = true;
   } else if (inRange) {
     note = `That's ${Math.abs(change).toFixed(1)} ${unit} ${change < 0 ? "below" : change > 0 ? "above" : "from"} where you are now — a healthy target.`;
   }
+
+  const noteOk = inRange && !contradicts && pctChange <= 0.25;
 
   return (
     <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
@@ -968,23 +1017,34 @@ function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
       {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
 
       <View style={styles.currentChip}>
-        <Text style={styles.currentChipText}>Right now: {cur} {unit}</Text>
+        <Text style={styles.currentChipText}>
+          Right now: {cur} {unit}
+          {goal === "lose" ? " · aiming lower" : goal === "gain" ? " · aiming higher" : ""}
+        </Text>
       </View>
 
       <View style={styles.entryRow}>
-        <TextInput value={v.val} onChangeText={(t) => onChange({ val: t.replace(/[^0-9.]/g, "") })} keyboardType="decimal-pad" placeholder={unit === "kg" ? "72" : "159"} placeholderTextColor={T.micro} style={styles.bigInput} maxLength={5} />
+        <TextInput
+          value={v.val}
+          onChangeText={(t) => onChange({ val: t.replace(/[^0-9.]/g, "") })}
+          keyboardType="decimal-pad"
+          placeholder={goal === "gain" ? String(Math.round(cur + (unit === "kg" ? 6 : 13))) : goal === "lose" ? String(Math.round(cur - (unit === "kg" ? 6 : 13))) : String(Math.round(cur))}
+          placeholderTextColor={T.micro}
+          style={styles.bigInput}
+          maxLength={5}
+        />
         <Text style={styles.entryUnit}>{unit}</Text>
       </View>
 
       {note ? (
-        <View style={[styles.warnRow, !noteBad && pctChange <= 0.25 && styles.noteRowOk]}>
-          {noteBad || pctChange > 0.25 ? <AlertTriangle size={14} color="#FBBF24" /> : <Check size={14} color={T.green} />}
-          <Text style={[styles.warnText, !noteBad && pctChange <= 0.25 && { color: T.green }]}>{note}</Text>
+        <View style={[styles.warnRow, noteOk && styles.noteRowOk]}>
+          {noteOk ? <Check size={14} color={T.green} /> : <AlertTriangle size={14} color="#FBBF24" />}
+          <Text style={[styles.warnText, noteOk && { color: T.green }]}>{note}</Text>
         </View>
       ) : null}
 
-      <Pressable onPress={inRange ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !inRange && styles.btnDisabled]}>
-        <Text style={[styles.primaryBtnText, !inRange && styles.btnTextDisabled]}>Continue</Text>
+      <Pressable onPress={canContinue ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !canContinue && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !canContinue && styles.btnTextDisabled]}>Continue</Text>
       </Pressable>
     </ScrollView>
   );
@@ -1186,7 +1246,6 @@ const styles = StyleSheet.create({
   langRowOn: { backgroundColor: T.greenBg },
   langRowText: { fontSize: 14.5, color: T.text, fontFamily: FONTS.body },
 
-  // permissions (health / notifications)
   permIcon: { width: 62, height: 62, borderRadius: 20, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center", marginTop: 8 },
   permCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, marginTop: 22, overflow: "hidden" },
   permRow: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
@@ -1203,10 +1262,8 @@ const styles = StyleSheet.create({
   notifTitle: { fontSize: 12, color: T.text, fontFamily: FONTS.heading },
   notifBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 17 },
 
-  // referral
   codeInput: { fontSize: 26, color: T.text, fontFamily: FONTS.heading, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 18, textAlign: "center", letterSpacing: 3, marginTop: 28 },
 
-  // sign in
   authBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 14, paddingVertical: 15 },
   authDim: { opacity: 0.45 },
   authText: { fontSize: 14.5, fontFamily: FONTS.headingMed },

@@ -10,18 +10,41 @@ import { FONTS, tierForStreak } from "../../constants/theme";
 const STREAK_DAYS = 14;
 
 export default function Home() {
-  const { T, freeLocked, togglePro, isPro } = useApp();
+  const { T, freeLocked, togglePro, isPro, plan, profile } = useApp();
   const [open, setOpen] = useState(false);
 
   const tier = tierForStreak(STREAK_DAYS);
   const flameColor = tier.color === "ultimate" ? "#FB923C" : tier.color;
 
+  // today's meals — these become real log entries at backend phase
   const meals: [string, number][] = [
     ["Breakfast", 215],
     ["Lunch", 530],
     ["Dinner", 0],
     ["Snacks", 0],
   ];
+
+  // everything below comes from the plan onboarding generated
+  const eaten = meals.reduce((sum, [, cal]) => sum + cal, 0);
+  const burned = 320; // from health sync later
+  const goal = plan.calories + (plan.addBurned ? burned : 0);
+  const remaining = Math.max(0, goal - eaten);
+  const pct = Math.min(100, (eaten / goal) * 100);
+
+  // macros eaten so far — placeholder ratios until real logs exist
+  const macros = [
+    { label: "Protein", v: Math.round(plan.protein * 0.28), t: plan.protein, c: T.green },
+    { label: "Carbs", v: Math.round(plan.carbs * 0.25), t: plan.carbs, c: T.carbs },
+    { label: "Fat", v: Math.round(plan.fat * 0.28), t: plan.fat, c: T.fat },
+  ];
+
+  // expected weight — day one of the plan, so it's still the starting number
+  const unit = profile.weightUnit;
+  const rate = unit === "kg" ? profile.paceRate : profile.paceRate * 2.20462;
+  const losing = profile.targetWeight < profile.startWeight;
+  const alt = unit === "kg"
+    ? `${(profile.startWeight * 2.20462).toFixed(1)} lbs`
+    : `${(profile.startWeight / 2.20462).toFixed(1)} kg`;
 
   const s = styles(T);
 
@@ -37,10 +60,10 @@ export default function Home() {
         <View style={s.header}>
           <View>
             <Text style={s.date}>TUESDAY · AUG 9</Text>
-            <Text style={s.greeting}>Good evening, Dion</Text>
+            <Text style={s.greeting}>Good evening, {profile.name}</Text>
           </View>
           <View style={s.avatar}>
-            <Text style={s.avatarText}>DJ</Text>
+            <Text style={s.avatarText}>{profile.name.slice(0, 2).toUpperCase()}</Text>
           </View>
         </View>
 
@@ -52,20 +75,16 @@ export default function Home() {
               <ChevronDown size={16} color={T.micro} style={{ transform: [{ rotate: open ? "180deg" : "0deg" }] }} />
             </View>
             <View style={s.calRow}>
-              <Text style={s.calBig}>1,235</Text>
-              <Text style={s.calSub}>of 1,980 cal</Text>
+              <Text style={s.calBig}>{remaining.toLocaleString()}</Text>
+              <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
             </View>
             <View style={s.track}>
-              <View style={[s.fill, { width: "38%" }]} />
+              <View style={[s.fill, { width: `${pct}%` }]} />
             </View>
 
             {open && (
               <View style={{ marginTop: 18 }}>
-                {[
-                  { label: "Protein", v: 34, t: 120, c: T.green },
-                  { label: "Carbs", v: 58, t: 230, c: T.carbs },
-                  { label: "Fat", v: 18, t: 65, c: T.fat },
-                ].map((m) => (
+                {macros.map((m) => (
                   <View key={m.label} style={{ marginBottom: 11 }}>
                     <View style={s.rowBetween}>
                       <Text style={s.macroLabel}>{m.label.toUpperCase()}</Text>
@@ -89,13 +108,18 @@ export default function Home() {
                   </View>
                 ))}
                 <View style={s.eatenRow}>
-                  {[["Eaten today", "745"], ["Burned", "320"]].map(([l, v]) => (
+                  {[["Eaten today", eaten.toLocaleString()], ["Burned", burned.toLocaleString()]].map(([l, v]) => (
                     <View key={l} style={{ alignItems: "center" }}>
                       <Text style={s.eatenNum}>{v}</Text>
                       <Text style={s.eatenLabel}>{l.toUpperCase()}</Text>
                     </View>
                   ))}
                 </View>
+                {plan.addBurned && (
+                  <Text style={s.burnedNote}>
+                    Burned calories are added to your target — that's why today's goal is {goal.toLocaleString()}.
+                  </Text>
+                )}
               </View>
             )}
 
@@ -110,11 +134,11 @@ export default function Home() {
               <View style={s.chip}>
                 <Text style={s.micro}>EXPECTED WEIGHT</Text>
                 <View style={s.wRow}>
-                  <Text style={s.wBig}>78.2</Text>
-                  <Text style={s.wUnit}>kg</Text>
-                  <Text style={s.wTrend}>↓ 0.8</Text>
+                  <Text style={s.wBig}>{profile.startWeight}</Text>
+                  <Text style={s.wUnit}>{unit}</Text>
+                  <Text style={s.wTrend}>{losing ? "↓" : "↑"} {rate.toFixed(1)}</Text>
                 </View>
-                <Text style={s.wLbs}>172.4 lbs</Text>
+                <Text style={s.wLbs}>{alt}</Text>
               </View>
             </TravelBorder>
           </View>
@@ -188,6 +212,7 @@ const styles = (T: any) =>
     eatenRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 8, paddingTop: 12, borderTopWidth: 1, borderTopColor: T.border },
     eatenNum: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
     eatenLabel: { fontSize: 9, color: T.micro, marginTop: 2, fontFamily: FONTS.body },
+    burnedNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 12, lineHeight: 15, textAlign: "center" },
 
     strip: { flexDirection: "row", gap: 10, marginTop: 14, marginBottom: 22 },
     chip: { padding: 13, minHeight: 92, justifyContent: "flex-start" },
