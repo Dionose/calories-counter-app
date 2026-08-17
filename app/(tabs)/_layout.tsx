@@ -2,13 +2,29 @@
 // The tab bar. The camera sits in the middle as a raised button, and tapping
 // the tab you're already on fires resetTab() so that tab drops back to its
 // root — Stats leaves its detail view, Profile leaves the account screen.
+//
+// ICONS: all five loop, always. The animations are deliberately subtle — you
+// notice movement without being able to point at it — and an idle camera icon
+// that looks like it's taking a picture invites the tap, which is the whole
+// reason for animating them.
+//
+// "You are here" is carried by OPACITY and the label, not by colour: every
+// icon is the same pre-recoloured green (a Lottie's colour is baked in and
+// can't be tinted at runtime), so the active tab sits at full brightness and
+// the rest at 80%. Enough to read as current without the others looking
+// disabled.
 import { Tabs } from "expo-router";
-import { BarChart3, CalendarDays, Camera, Home, User } from "lucide-react-native";
 import React from "react";
 import { Platform, StyleSheet, View } from "react-native";
+import Icon, { IconName } from "../../components/Icon";
 import Paywall from "../../components/Paywall";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
+
+/* the gap that says "you're on this one" without dimming the others into
+   looking switched off */
+const ACTIVE_OPACITY = 1;
+const IDLE_OPACITY = 0.8;
 
 export default function TabsLayout() {
   const { T, resetTab } = useApp();
@@ -17,15 +33,25 @@ export default function TabsLayout() {
   /* Fires on every tab press. If the tab is already focused, we bump the reset
      key instead of navigating — that's what lets a sub-view close from the tab
      bar rather than trapping you until you find the back arrow. */
-  const listeners = ({ navigation, route }: any) => ({
+  const listeners = ({ navigation }: any) => ({
     tabPress: () => {
-      const focused = navigation.isFocused();
-      if (focused) {
+      if (navigation.isFocused()) {
         H.tap();
         resetTab();
       }
     },
   });
+
+  const tabIcon =
+    (anim: IconName) =>
+    ({ focused }: { focused: boolean }) => (
+      <Icon
+        name={anim}
+        size={24}
+        mode="loop"
+        style={{ opacity: focused ? ACTIVE_OPACITY : IDLE_OPACITY }}
+      />
+    );
 
   return (
     <View style={{ flex: 1, backgroundColor: T.bg }}>
@@ -43,23 +69,19 @@ export default function TabsLayout() {
       >
         <Tabs.Screen
           name="index"
-          options={{
-            title: "Home",
-            tabBarIcon: ({ color }) => <Home size={22} color={color} />,
-          }}
+          options={{ title: "Home", tabBarIcon: tabIcon("home") }}
           listeners={listeners}
         />
 
         <Tabs.Screen
           name="calendar"
-          options={{
-            title: "Calendar",
-            tabBarIcon: ({ color }) => <CalendarDays size={22} color={color} />,
-          }}
+          options={{ title: "Calendar", tabBarIcon: tabIcon("calendar") }}
           listeners={listeners}
         />
 
-        {/* the raised camera button */}
+        {/* the raised camera button — the DARK animation, since it sits on a
+            green fill where the green version would disappear. Always full
+            opacity: it's the primary action, not a peer of the other four. */}
         <Tabs.Screen
           name="camera"
           options={{
@@ -67,7 +89,7 @@ export default function TabsLayout() {
             tabBarIcon: () => (
               <View style={s.camWrap}>
                 <View style={s.camBtn}>
-                  <Camera size={26} color={T.ink} />
+                  <Icon name="cameraDark" size={26} mode="loop" />
                 </View>
               </View>
             ),
@@ -77,19 +99,13 @@ export default function TabsLayout() {
 
         <Tabs.Screen
           name="stats"
-          options={{
-            title: "Stats",
-            tabBarIcon: ({ color }) => <BarChart3 size={22} color={color} />,
-          }}
+          options={{ title: "Stats", tabBarIcon: tabIcon("stats") }}
           listeners={listeners}
         />
 
         <Tabs.Screen
           name="profile"
-          options={{
-            title: "Profile",
-            tabBarIcon: ({ color }) => <User size={22} color={color} />,
-          }}
+          options={{ title: "Profile", tabBarIcon: tabIcon("profile") }}
           listeners={listeners}
         />
       </Tabs>

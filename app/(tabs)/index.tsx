@@ -1,12 +1,12 @@
 // app/(tabs)/index.tsx
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import LottieView from "lottie-react-native";
-import { ChevronLeft, ChevronRight, Flame, HelpCircle, Trophy, X } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, HelpCircle, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import GradientText from "../../components/GradientText";
+import Icon, { IconName } from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
@@ -14,19 +14,30 @@ import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
-const CAMERA_ICON = require("../../assets/motion-camera-dark.json");
 const SCREEN_H = Dimensions.get("window").height;
 
 // Both sheets get an EXPLICIT height — TravelBorder's card sizes to its content.
 const SHEET_H = Math.round(SCREEN_H * 0.72);
 const HERO_H = Math.round(SCREEN_H * 0.62);
 
-const MEALS: { name: string; cal: number; typical: number }[] = [
-  { name: "Breakfast", cal: 215, typical: 450 },
-  { name: "Lunch", cal: 530, typical: 600 },
-  { name: "Dinner", cal: 0, typical: 700 },
-  { name: "Snacks", cal: 0, typical: 200 },
+/* each meal carries its own animated icon — identity, not state. The coloured
+   borders below still do the state work (logged / next / needs attention). */
+const MEALS: { name: string; cal: number; typical: number; icon: IconName }[] = [
+  { name: "Breakfast", cal: 215, typical: 450, icon: "breakfast" },
+  { name: "Lunch", cal: 530, typical: 600, icon: "lunch" },
+  { name: "Dinner", cal: 0, typical: 700, icon: "dinner" },
+  { name: "Snacks", cal: 0, typical: 200, icon: "snacks" },
 ];
+
+/** the flame animation for a tier — a dedicated file per tier reads far better
+    than one generic flame tinted five ways */
+const FLAME_FOR_TIER: Record<string, IconName> = {
+  Spark: "flameSpark",
+  Warming: "flameWarming",
+  Hot: "flameHot",
+  "Red-hot": "flameRedhot",
+  Ultimate: "flameUltimate",
+};
 
 /* SEASON boards — General and Regional reset every season */
 const BOARD_FULL = [
@@ -124,6 +135,7 @@ export default function Home() {
   // FREE users see the streak in plain green — the day count is the truth and
   // stays visible, but the tier, its colour and the points are the product.
   const flameColor = freeLocked ? T.green : isUlt ? T.orange : tier.color;
+  const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
   const eaten = MEALS.reduce((sum, m) => sum + m.cal, 0);
   const burned = 320;
@@ -355,7 +367,7 @@ export default function Home() {
         <Tap onPress={toCamera} style={{ marginTop: 14 }}>
           <View style={s.nudge}>
             <View style={s.nudgeIcon}>
-              <LottieView source={CAMERA_ICON} autoPlay loop style={{ width: 24, height: 24 }} />
+              <Icon name="cameraDark" size={24} mode="loop" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={s.nudgeTitle}>{nudgeTitle}</Text>
@@ -365,7 +377,8 @@ export default function Home() {
           </View>
         </Tap>
 
-        {/* TODAY'S MEALS */}
+        {/* TODAY'S MEALS — each carries its own icon for identity; the coloured
+            borders still carry the STATE (logged / next / needs attention) */}
         <Text style={[s.micro, { marginTop: 22, marginBottom: 10 }]}>TODAY'S MEALS</Text>
         {MEALS.map((m) => {
           const isNext = nextMeal?.name === m.name;
@@ -377,6 +390,10 @@ export default function Home() {
                 isNext && { borderColor: T.greenBorder, backgroundColor: T.greenBg },
                 isLight && { borderColor: T.goldBorder },
               ]}>
+                <View style={s.mealIcon}>
+                  <Icon name={m.icon} size={24} mode="loop" />
+                </View>
+
                 <View style={{ flex: 1 }}>
                   <View style={s.mealTitleRow}>
                     <Text style={s.mealName}>{m.name}</Text>
@@ -384,6 +401,7 @@ export default function Home() {
                   </View>
                   {isLight && <Text style={s.lightNote}>Looks light — add anything you missed?</Text>}
                 </View>
+
                 {m.cal > 0 ? (
                   <Text style={[s.mealCal, isLight && { color: T.gold }]}>{m.cal} cal</Text>
                 ) : (
@@ -407,7 +425,8 @@ export default function Home() {
           <TravelBorder {...boardBorder} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 14 }}>
               <View style={s.boardHead}>
-                <Trophy size={13} color={T.text} />
+                {/* counts 1 → 2 as the hands shift — places changing, not a cup */}
+                <Icon name="trophy" size={17} mode="loop" />
                 <Text style={s.boardHeadText}>{scopeCaption}</Text>
               </View>
 
@@ -443,7 +462,11 @@ export default function Home() {
               <View style={s.wRow}>
                 <Text style={s.wBig}>{streakDays}</Text>
                 <Text style={s.wUnit}>days</Text>
-                <Flame size={16} color={flameColor} fill={flameColor} style={{ marginLeft: "auto" }} />
+                {/* a dedicated flame per tier — far better than one generic
+                    flame tinted five ways. Free users get the plain green one. */}
+                <View style={{ marginLeft: "auto" }}>
+                  <Icon name={freeLocked ? "flameSpark" : flameAnim} size={20} mode="loop" />
+                </View>
               </View>
 
               {freeLocked ? (
@@ -803,7 +826,12 @@ const styles = (T: any) =>
     nudgeTitle: { fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed },
     nudgeSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
 
-    meal: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 18, flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 },
+    meal: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, padding: 16, flexDirection: "row", alignItems: "center", gap: 13 },
+    mealIcon: {
+      width: 42, height: 42, borderRadius: 13,
+      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
+      alignItems: "center", justifyContent: "center",
+    },
     mealTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
     mealName: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed },
     nextTag: { backgroundColor: T.green, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
@@ -844,7 +872,7 @@ const styles = (T: any) =>
 
     strip: { flexDirection: "row", gap: 10, marginTop: 16 },
     chipCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 13, minHeight: 92 },
-    wRow: { flexDirection: "row", alignItems: "baseline", gap: 4, marginTop: 5 },
+    wRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 5 },
     wBig: { fontSize: 19, color: T.text, fontFamily: FONTS.heading },
     wUnit: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
     wTrend: { marginLeft: "auto", color: T.green, fontSize: 10, fontFamily: FONTS.headingMed },
