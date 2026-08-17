@@ -9,7 +9,7 @@
 //
 // Same builder either way; only the framing and the first screen differ.
 import { LinearGradient } from "expo-linear-gradient";
-import { Check, Mic, Plus, Search, Sparkles, X } from "lucide-react-native";
+import { Check, Plus, Search, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
@@ -18,6 +18,7 @@ import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
+import Icon from "./Icon";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
@@ -221,7 +222,9 @@ export default function NoPhotoFlow({
         <Tap onPress={() => { H.tap(); onVoice(); }} style={{ marginTop: 6 }}>
           <View style={s.voiceCallout}>
             <View style={s.voiceIcon}>
-              <Mic size={19} color={T.green} />
+              {/* the GREEN mic — this sits on the card background, not a green
+                  fill, so the green animation reads fine here */}
+              <Icon name="mic" size={21} mode="loop" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={s.calloutTitle}>Or just describe it out loud</Text>

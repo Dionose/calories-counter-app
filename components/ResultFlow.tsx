@@ -16,6 +16,7 @@ import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
+import Icon from "./Icon";
 import { IsoMGlow } from "./IsoM";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
@@ -153,6 +154,8 @@ function Voice({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
 
   return (
     <View style={s.voiceWrap}>
+      {/* stays Lucide — this one needs to be GOLD for the Pro tag, and the
+          animation is baked green */}
       <View style={s.proTag}>
         <Mic size={16} color={T.gold} />
         <Text style={s.proTagText}>PRO · MOTION VOICE AI</Text>
@@ -199,7 +202,7 @@ function Voice({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
             >
               {state === "recording"
                 ? <View style={s.stopSquare} />
-                : <Mic size={30} color={T.ink} />}
+                : <Icon name="micDark" size={32} mode="loop" />}
             </Animated.View>
           </Pressable>
 
@@ -424,7 +427,9 @@ export default function ResultFlow({
           <Tap onPress={() => { H.tap(); setStage("voice"); }} style={{ marginBottom: 12 }}>
             <View style={s.voiceCallout}>
               <View style={s.voiceIcon}>
-                <Mic size={20} color={T.ink} />
+                {/* the DARK mic — this sits on a green fill, where the green
+                    animation would disappear */}
+                <Icon name="micDark" size={22} mode="loop" />
                 {freeLocked && (
                   <View style={s.proCrown}>
                     <Crown size={9} color="#0A0A0A" />

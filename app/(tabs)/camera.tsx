@@ -1,17 +1,17 @@
 // app/(tabs)/camera.tsx
 // The logging hub — four ways in, the capture widget, and the flows behind them.
 //
-// All four now work: snap → result, barcode → product, search, and
+// All four work: snap → result, barcode → product, search, and
 // log-without-photo. Search and no-photo share one builder; barcode and snap
 // have their own result screens because their data is different in kind
 // (exact from a label, vs estimated from a photo).
 import { useRouter } from "expo-router";
-import LottieView from "lottie-react-native";
 import { ChevronDown, ChevronRight, Crown, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BarcodeResult from "../../components/BarcodeResult";
 import CameraSheet from "../../components/CameraSheet";
+import Icon, { IconName } from "../../components/Icon";
 import IsoM from "../../components/IsoM";
 import MealPicker from "../../components/MealPicker";
 import NoPhotoFlow from "../../components/NoPhotoFlow";
@@ -20,14 +20,6 @@ import Tap from "../../components/Tap";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
 import { FONTS, tierForStreak } from "../../constants/theme";
-
-/* the Lottie set already in assets/ — the four hub icons */
-const ANIM = {
-  camera: require("../../assets/motion-camera-green.json"),
-  pen: require("../../assets/motion-log-without-search-pen-22C55E.json"),
-  barcode: require("../../assets/motion-barcode-22C55E.json"),
-  search: require("../../assets/motion-search-line-green.json"),
-};
 
 type Stage =
   | "hub" | "camera" | "barcodecam" | "barcoderesult"
@@ -114,10 +106,18 @@ export default function CameraScreen() {
     );
   }
 
-  const options = [
+  const options: {
+    key: string;
+    icon: IconName;
+    title: string;
+    desc: string;
+    tag: string;
+    pro: boolean;
+    onPress: () => void;
+  }[] = [
     {
       key: "snap",
-      anim: ANIM.camera,
+      icon: "camera",
       title: "Snap a meal",
       desc: "Take a photo — MOTION AI estimates it.",
       tag: "AI",
@@ -126,7 +126,7 @@ export default function CameraScreen() {
     },
     {
       key: "nophoto",
-      anim: ANIM.pen,
+      icon: "logPen",
       title: "Log without a photo",
       desc: "Forgot to snap it? We'll estimate it.",
       tag: "AI",
@@ -135,7 +135,7 @@ export default function CameraScreen() {
     },
     {
       key: "barcode",
-      anim: ANIM.barcode,
+      icon: "barcode",
       title: "Scan barcode",
       desc: "Exact facts for packaged food.",
       tag: "Exact",
@@ -144,7 +144,7 @@ export default function CameraScreen() {
     },
     {
       key: "search",
-      anim: ANIM.search,
+      icon: "search",
       title: "Search food",
       desc: "Find the exact food + portion.",
       tag: "Exact",
@@ -181,7 +181,7 @@ export default function CameraScreen() {
           <Tap key={o.key} onPress={() => { H.tap(); o.onPress(); }} style={{ marginBottom: 12 }}>
             <View style={s.card}>
               <View style={s.cardIcon}>
-                <LottieView source={o.anim} autoPlay loop style={{ width: 26, height: 26 }} />
+                <Icon name={o.icon} size={26} mode="loop" />
                 {o.pro && freeLocked && (
                   <View style={s.proCrown}>
                     <Crown size={9} color="#0A0A0A" />

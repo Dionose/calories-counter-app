@@ -14,10 +14,11 @@
 //   mixed stroke + fill   → need an OUTLINE variant (fills hidden, strokes do
 //                           the drawing) or a HYBRID (fills kept at 25-45% so
 //                           a fill-only element doesn't vanish)
-//   pure fill, no strokes → can't be recoloured; fall back to Lucide
-// Calendar, Stats and Snacks were the mixed case: flattening everything to one
-// green turned them into solid blobs because the fills swallowed the internal
-// detail. They use the outline / hybrid files below.
+//   pure fill, no strokes → dimming just gives a fainter block; the element
+//                           has to be hidden outright, or fall back to Lucide
+// Calendar, Stats, Snacks and the log-pen were all the mixed case: flattening
+// everything to one green turned them into solid blobs because the fills
+// swallowed the internal detail. They use the variants below.
 import LottieView from "lottie-react-native";
 import React, { useEffect, useRef } from "react";
 import { View } from "react-native";
@@ -51,8 +52,15 @@ export const ANIMATIONS = {
   search: require("../assets/motion-search-line-green.json"),
   searchOutline: require("../assets/motion-search-outline-green.json"),
   searchFood: require("../assets/motion-search-food-22C55E.json"),
-  logPen: require("../assets/motion-log-without-search-pen-22C55E.json"),
-  penOutline: require("../assets/motion-pen-outline-green.json"),
+
+  /* the log-without-a-photo pen. The page behind it is 8 fills with NO
+     strokes, so a flat green version renders as a solid block that swallows
+     the pen — and dimming only makes the block fainter. This is the
+     outline version made for exactly that problem. */
+  logPen: require("../assets/motion-pen-outline-green.json"),
+  logPenClean: require("../assets/motion-pen-clean-green.json"),
+  logPenFlat: require("../assets/motion-log-without-search-pen-22C55E.json"),
+
   mic: require("../assets/motion-mic-22C55E.json"),
   micDark: require("../assets/motion-mic-dark.json"),
   micLine: require("../assets/motion-mic-line-green.json"),
