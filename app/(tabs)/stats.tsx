@@ -1,398 +1,1157 @@
 // app/(tabs)/stats.tsx
-import { Activity, Check, ChevronLeft, Flame, Footprints, Lock, TrendingDown, Watch } from "lucide-react-native";
-import React, { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+// Stats is one tab holding four views — main, steps, calories, weight — swapped
+// by a single `view` state rather than routing, so the tab bar stays put.
+import * as Haptics from "expo-haptics";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import { Activity, ArrowDown, CalendarDays, ChevronLeft, Crown, Flame, Footprints, Lock, Scale, Target, TrendingDown, TrendingUp, Watch } from "lucide-react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Easing, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import BlurLock from "../../components/BlurLock";
+import { IsoMGlow } from "../../components/IsoM";
 import PageHeader from "../../components/PageHeader";
+import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS } from "../../constants/theme";
 
-const CONNECTED = true; // toggle to false to preview the "connect your watch" state
+type Range = "Week" | "Month" | "Year";
+type View_ = null | "steps" | "calories" | "weight";
+const RANGES: Range[] = ["Week", "Month", "Year"];
 
-const CAL_DAYS = [
-  { d: "Mon", v: 1500 }, { d: "Tue", v: 1820 }, { d: "Wed", v: 1450 },
-  { d: "Thu", v: 2100 }, { d: "Fri", v: 1570 }, { d: "Sat", v: 1880 }, { d: "Sun", v: 1340 },
+const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/* A month is 28–31 days, so it actually touches 4 weeks plus a few days. We
+   show the LAST FOUR WEEKS everywhere — a clean window that means the same
+   thing in every month, rather than a chart that changes shape month to month. */
+const WEEKS_IN_MONTH = 4;
+const DAYS_IN_MONTH = 30.4;   // average, for converting a monthly total back to a daily figure
+
+/* Year runs the CALENDAR year, Jan → Dec. Months after today have no data yet
+   and render as empty columns — honest, and it's what a "Year" toggle implies. */
+const THIS_MONTH = new Date().getMonth();
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+
+/** compact step counts — monthly totals run to six figures, and "251.4k"
+    doesn't fit under a 12px bar, so drop the decimal once it's that large */
+const kfmt = (n: number) => {
+  if (n >= 100000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
+
+/** the full span of a week N weeks back — "Jul 13–19", or "Jul 27 – Aug 2"
+    when it crosses a month. A bare start date reads as a single day, which is
+    the wrong idea when the bar is a whole week's average.
+    Monday + 6 = Sunday, so weeks run 13–19, 20–26: seven days, no overlap. */
+function weekSpanLabel(weeksAgo: number) {
+  const start = new Date();
+  start.setDate(start.getDate() - weeksAgo * 7 - ((start.getDay() + 6) % 7));
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+
+  return start.getMonth() === end.getMonth()
+    ? `${MSHORT[start.getMonth()]} ${start.getDate()}–${end.getDate()}`
+    : `${MSHORT[start.getMonth()]} ${start.getDate()} – ${MSHORT[end.getMonth()]} ${end.getDate()}`;
+}
+
+/* ---------- stand-in data ----------
+   Replaced by real logs + HealthKit once the backend lands. */
+
+/* Steps, as ratios of a typical day so every range stays on one scale. */
+const STEP_BASE = 8400;
+const STEP_WEEK = [0.88, 1.09, 0.74, 1.24, 0.99, 1.44, 0.61];
+const STEP_MONTH = [0.98, 1.08, 0.91, 1.22];
+const STEP_YEAR = [0.81, 0.86, 0.94, 1.00, 1.08, 1.05, 1.12, 1.02, 0.96, 0.89, 0.92, 1.03];
+
+/* Calories as FRACTIONS OF THE GOAL — the goal varies per user, so absolute
+   values would render all-green for one person and all-red for another. */
+const WEEK_RATIO = [0.76, 0.93, 0.74, 1.23, 0.82, 1.09, 0.79];
+
+/* 14 weeks of daily history, oldest first — feeds both the weekly-history
+   screen and the Month view's per-week averages. */
+const HISTORY_RATIOS: number[][] = [
+  [0.88, 1.02, 0.94, 1.31, 0.90, 1.18, 0.86],
+  [0.91, 0.97, 1.22, 0.88, 1.04, 1.27, 0.93],
+  [0.84, 1.09, 0.90, 0.96, 1.15, 1.02, 0.89],
+  [0.80, 0.95, 1.06, 0.92, 1.21, 0.88, 0.97],
+  [0.86, 0.91, 0.99, 1.14, 0.87, 1.09, 0.92],
+  [0.79, 1.03, 0.88, 0.95, 1.08, 0.91, 0.85],
+  [0.83, 0.90, 1.11, 0.86, 0.98, 1.19, 0.88],
+  [0.77, 0.94, 0.86, 1.05, 0.91, 1.02, 0.83],
+  [0.81, 0.88, 0.95, 0.90, 1.12, 0.87, 0.91],
+  [0.75, 0.92, 0.84, 0.98, 0.89, 1.06, 0.80],
+  [0.78, 0.86, 0.93, 0.85, 1.01, 0.90, 0.82],
+  [0.74, 0.89, 0.81, 0.94, 0.86, 0.99, 0.79],
+  [0.76, 0.84, 0.88, 0.82, 0.95, 0.87, 0.81],
+  WEEK_RATIO, // this week
 ];
-const STEP_BARS = [6200, 8400, 7100, 9800, 5400, 11200, 7820];
-const STEP_MAX = 12000;
-const STEP_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
-function shortSteps(n: number): string {
-  return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+/* one per calendar month, Jan → Dec */
+const YEAR_RATIOS = [1.14, 1.09, 1.05, 1.01, 0.98, 1.03, 0.96, 0.93, 0.97, 0.91, 0.88, 0.90];
+
+/* Protein as a fraction of the target, so "your typical day" moves with the
+   range instead of sitting on a constant. */
+const PROTEIN_RATIO: Record<Range, number> = { Week: 0.80, Month: 0.76, Year: 0.72 };
+
+const RANGE_WORD: Record<Range, string> = { Week: "week", Month: "month", Year: "year" };
+
+/* STEPS zoom out by TOTAL, not by average.
+   Week shows each day's steps. Month shows each week's TOTAL (~55k), Year shows
+   each month's TOTAL (~250k) — "I walked 55k that week" is a more satisfying
+   fact than an average you've already seen at the Week view.
+   Calories can't do this: a month's calorie total against a daily goal is
+   meaningless, so those stay as average days. Different quantities, different
+   right answer. */
+function stepData(range: Range) {
+  if (range === "Week") {
+    const bars = STEP_WEEK.map((r, i) => ({
+      label: DAY_LABELS[i],
+      short: DAY_LABELS[i][0],
+      v: Math.round((STEP_BASE * r) / 10) * 10,
+    }));
+    return { bars, perDay: Math.round(avg(bars.map((b) => b.v))), unit: "avg / day" };
+  }
+
+  if (range === "Month") {
+    const bars = STEP_MONTH.map((r, i) => ({
+      label: `Week ${i + 1}`,
+      short: `Wk ${i + 1}`,
+      v: Math.round((STEP_BASE * r * 7) / 100) * 100,   // a week's total
+    }));
+    const total = bars.reduce((a, b) => a + b.v, 0);
+    return { bars, perDay: Math.round(total / (WEEKS_IN_MONTH * 7)), unit: "this month" };
+  }
+
+  // calendar year — only months up to and including this one have data
+  const bars = STEP_YEAR.slice(0, THIS_MONTH + 1).map((r, i) => ({
+    label: MSHORT[i],
+    short: MSHORT[i][0],
+    v: Math.round((STEP_BASE * r * DAYS_IN_MONTH) / 100) * 100,   // a month's total
+  }));
+  const total = bars.reduce((a, b) => a + b.v, 0);
+  return { bars, perDay: Math.round(total / ((THIS_MONTH + 1) * DAYS_IN_MONTH)), unit: "this year" };
 }
 
-/* ---------- STATS MAIN ---------- */
-function StatsMain({ range, setRange, openWeight }: { range: string; setRange: (r: string) => void; openWeight: () => void }) {
-  const { T, freeLocked, openPaywall, plan } = useApp();
-  const s = styles(T);
+const STEP_DETAIL_CAPTION: Record<Range, string> = {
+  Week: "Each day vs your average day",
+  Month: "Each week vs your average week",
+  Year: "Each month vs your average month",
+};
 
-  // calorie bars are measured against the user's real daily target
-  const GOAL = plan.calories;
+const STEP_SUMMARY_LABEL: Record<Range, string> = {
+  Week: "Average / day",
+  Month: "Average / week",
+  Year: "Average / month",
+};
 
-  const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
+/** every month of the calendar year, with future months marked empty */
+function yearMonths() {
+  return MSHORT.map((label, i) => ({
+    label,
+    ratio: i <= THIS_MONTH ? YEAR_RATIOS[i] : null,
+  }));
+}
 
-  // A card that blurs + locks its content for free users, with a lock overlay.
-  const LockCard = ({ label, children, onUnlock }: { label: string; children: React.ReactNode; onUnlock: () => void }) => (
-    <View style={{ position: "relative" }}>
-      <View style={{ opacity: 0.35 }} pointerEvents="none">{children}</View>
-      <Pressable onPress={onUnlock} style={s.lockVeil}>
-        <View style={s.lockBadge}><Lock size={16} color={T.ink} /></View>
-        <Text style={s.lockLabel}>{label}</Text>
-        <Text style={s.lockSub}>Tap to unlock with Pro</Text>
-      </Pressable>
+/* Each Calories bar is ONE PERIOD'S AVERAGE DAY against the goal — a day at
+   Week, a week at Month, a month at Year. Average rather than total, because
+   a month's total (~60,000) against a 1,960 goal would collapse the
+   comparison; average day keeps every bar on the goal's scale, so the
+   green/orange/red bands mean the same thing at any zoom level. */
+function calBars(range: Range): { label: string; ratio: number | null }[] {
+  if (range === "Week") {
+    return WEEK_RATIO.map((ratio, i) => ({ label: DAY_LABELS[i], ratio }));
+  }
+  if (range === "Month") {
+    return HISTORY_RATIOS.slice(-WEEKS_IN_MONTH).map((week, i, arr) => ({
+      label: weekSpanLabel(arr.length - 1 - i),
+      ratio: avg(week),
+    }));
+  }
+  return yearMonths().map((m) => ({ label: m.label, ratio: m.ratio }));
+}
+
+const CAL_CAPTION: Record<Range, string> = {
+  Week: "Each day against your goal",
+  Month: "Each week's average day",
+  Year: "Each month's average day",
+};
+
+const BURNED = 2140;
+const ACTIVE_MIN = 52;
+const AVG_BPM = 68;
+const DAYS_LOGGED = 18;
+const WEIGHT_CHANGE = -2.1;
+
+/* ---------- the ruler picker ---------- */
+const TICK_PX = 12;
+
+function RulerPicker({
+  unit, value, setValue, recenter, T,
+}: {
+  unit: "kg" | "lbs";
+  value: number;
+  setValue: (v: number) => void;
+  recenter: number;
+  T: any;
+}) {
+  const ref = useRef<ScrollView>(null);
+  const lastIdx = useRef<number | null>(null);
+  const cfg = unit === "kg" ? { min: 30, max: 200, step: 0.1, big: 50 } : { min: 60, max: 440, step: 0.2, big: 50 };
+  const ticks = Math.round((cfg.max - cfg.min) / cfg.step);
+  const s = rulerStyles(T);
+
+  useEffect(() => {
+    const x = Math.round((value - cfg.min) / cfg.step) * TICK_PX;
+    lastIdx.current = Math.round((value - cfg.min) / cfg.step);
+    const t = setTimeout(() => ref.current?.scrollTo({ x, animated: false }), 40);
+    return () => clearTimeout(t);
+  }, [unit, recenter]);
+
+  return (
+    <View style={s.wrap}>
+      <View style={s.needle} pointerEvents="none" />
+      <ScrollView
+        ref={ref}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        snapToInterval={TICK_PX}
+        decelerationRate="fast"
+        scrollEventThrottle={16}
+        contentContainerStyle={{ paddingHorizontal: "50%" }}
+        onScroll={(e) => {
+          const idx = Math.round(e.nativeEvent.contentOffset.x / TICK_PX);
+          if (idx === lastIdx.current) return;
+          lastIdx.current = idx;
+          const v = +(cfg.min + idx * cfg.step).toFixed(1);
+          if (v >= cfg.min && v <= cfg.max) {
+            Haptics.selectionAsync();
+            setValue(v);
+          }
+        }}
+      >
+        {Array.from({ length: ticks + 1 }).map((_, i) => {
+          const big = i % cfg.big === 0;
+          return (
+            <View key={i} style={s.tickCol}>
+              <View style={{ width: big ? 2 : 1, height: big ? 40 : 24, backgroundColor: big ? T.micro : T.border, borderRadius: 2 }} />
+              {big && <Text style={s.tickLabel}>{Math.round(cfg.min + i * cfg.step)}</Text>}
+            </View>
+          );
+        })}
+      </ScrollView>
+
+      <LinearGradient colors={[T.card, "transparent"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[s.fade, { left: 0 }]} pointerEvents="none" />
+      <LinearGradient colors={["transparent", T.card]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[s.fade, { right: 0 }]} pointerEvents="none" />
     </View>
-  );
-
-  return (
-    <ScrollView contentContainerStyle={s.scroll}>
-      <PageHeader title="Stats" />
-
-      {/* range toggle */}
-      <View style={s.toggle}>
-        {["Week", "Month", "Year"].map((r) => (
-          <Pressable key={r} onPress={() => setRange(r)} style={[s.toggleBtn, range === r && s.toggleBtnOn]}>
-            <Text style={[s.toggleText, range === r && s.toggleTextOn]}>{r}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* HERO steps */}
-      {CONNECTED ? (
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
-          <View style={{ padding: 18 }}>
-            <View style={s.rowBetween}>
-              <View style={s.rowCenter}>
-                <Footprints size={15} color={T.green} />
-                <Micro>Steps · this {range.toLowerCase()}</Micro>
-              </View>
-              <View style={s.rowCenter}>
-                <Watch size={11} color={T.sub} />
-                <Text style={s.deviceText}>Garmin</Text>
-              </View>
-            </View>
-            <View style={s.heroNumRow}>
-              <Text style={s.heroNum}>7,820</Text>
-              <Text style={s.heroNumSub}>avg / day</Text>
-            </View>
-            <View style={s.chartRow}>
-              {STEP_BARS.map((st, i) => (
-                <View key={i} style={s.chartCol}>
-                  <Text style={s.chartValue}>{shortSteps(st)}</Text>
-                  <View style={[s.chartBar, { height: Math.max(4, (st / STEP_MAX) * 70) }]} />
-                  <Text style={s.chartLabel}>{STEP_LABELS[i]}</Text>
-                </View>
-              ))}
-            </View>
-            <View style={s.heroStatsRow}>
-              <View style={s.heroStat}>
-                <View style={s.rowCenter}><Flame size={13} color={T.green} /><Text style={s.heroStatNum}>2,140</Text></View>
-                <Micro>Burned</Micro>
-              </View>
-              <View style={s.heroStat}>
-                <View style={s.rowCenter}><Activity size={13} color={T.green} /><Text style={s.heroStatNum}>52</Text></View>
-                <Micro>Active min</Micro>
-              </View>
-              <View style={s.heroStat}>
-                <Text style={s.heroStatNum}>68</Text>
-                <Micro>Avg BPM</Micro>
-              </View>
-            </View>
-          </View>
-        </TravelBorder>
-      ) : (
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
-          <View style={{ padding: 22, alignItems: "center" }}>
-            <View style={s.connectIcon}><Watch size={24} color={T.green} /></View>
-            <Text style={s.connectTitle}>Connect your watch</Text>
-            <Text style={s.connectSub}>Sync steps, calories burned & heart rate from Apple Watch, Garmin, Samsung</Text>
-            <Pressable style={s.connectBtn}><Text style={s.connectBtnText}>Connect health data</Text></Pressable>
-          </View>
-        </TravelBorder>
-      )}
-
-      {/* CALORIES vs GOAL — three-tier: under / a bit over / way over */}
-      <View style={{ marginTop: 12 }}>
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-          <View style={{ padding: 16 }}>
-            <View style={[s.rowBetween, { marginBottom: 12 }]}>
-              <Micro>Calories vs goal</Micro>
-              <View style={s.rowCenter}>
-                <TrendingDown size={12} color={T.green} />
-                <Text style={s.trendText}>180 under avg</Text>
-              </View>
-            </View>
-            {CAL_DAYS.map((day, i) => {
-              const over = day.v - GOAL;
-              const barColor = over <= 0 ? T.green : over <= 200 ? T.orange : T.red;
-              const pct = Math.min(100, (day.v / GOAL) * 100);
-              return (
-                <View key={i} style={[s.calRow, { marginBottom: i === CAL_DAYS.length - 1 ? 0 : 9 }]}>
-                  <Text style={s.calDay}>{day.d}</Text>
-                  <View style={s.calTrack}>
-                    <View style={[s.calFill, { width: `${pct}%`, backgroundColor: barColor }]}>
-                      <Text style={[s.calValue, { color: over > 200 ? "#FFFFFF" : T.ink }]}>
-                        {day.v.toLocaleString()} / {GOAL.toLocaleString()}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
-            <View style={s.legendRow}>
-              <View style={s.rowCenter}><View style={[s.dot, { backgroundColor: T.green }]} /><Text style={s.legendText}>Under goal</Text></View>
-              <View style={s.rowCenter}><View style={[s.dot, { backgroundColor: T.orange }]} /><Text style={s.legendText}>A bit over</Text></View>
-              <View style={s.rowCenter}><View style={[s.dot, { backgroundColor: T.red }]} /><Text style={s.legendText}>Way over</Text></View>
-            </View>
-          </View>
-        </TravelBorder>
-      </View>
-
-      {/* consistency + weight */}
-      <View style={s.twoUp}>
-        {/* CONSISTENCY — Pro-locked for free users (blurred) */}
-        <View style={{ flex: 1 }}>
-          {freeLocked ? (
-            <LockCard label="Consistency" onUnlock={() => openPaywall("subscribe")}>
-              <TravelBorder color={T.orange} cardBg={T.card} borderColor={T.border} radius={16}>
-                <View style={{ padding: 14 }}>
-                  <Micro>Consistency</Micro>
-                  <View style={[s.rowCenter, { marginTop: 6 }]}>
-                    <Text style={s.cardBig}>18</Text>
-                    <Flame size={15} color={T.orange} fill={T.orange} style={{ marginLeft: "auto" }} />
-                  </View>
-                  <Text style={s.cardCaption}>days logged · Ultimate</Text>
-                </View>
-              </TravelBorder>
-            </LockCard>
-          ) : (
-            <TravelBorder color={T.orange} cardBg={T.card} borderColor={T.border} radius={16}>
-              <View style={{ padding: 14 }}>
-                <Micro>Consistency</Micro>
-                <View style={[s.rowCenter, { marginTop: 6 }]}>
-                  <Text style={s.cardBig}>18</Text>
-                  <Flame size={15} color={T.orange} fill={T.orange} style={{ marginLeft: "auto" }} />
-                </View>
-                <Text style={s.cardCaption}>days logged · Ultimate</Text>
-              </View>
-            </TravelBorder>
-          )}
-        </View>
-
-        {/* WEIGHT — open for everyone */}
-        <Pressable style={{ flex: 1 }} onPress={openWeight}>
-          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={16}>
-            <View style={{ padding: 14 }}>
-              <View style={s.rowBetween}>
-                <Micro>Weight</Micro>
-                <View style={s.tapBadge}><Text style={s.tapBadgeText}>TAP TO EDIT</Text></View>
-              </View>
-              <View style={[s.rowBase, { marginTop: 6 }]}>
-                <Text style={s.cardBig}>-2.1</Text>
-                <Text style={s.cardUnit}>kg</Text>
-              </View>
-              <Text style={[s.cardCaption, { color: T.green }]}>estimated · on track</Text>
-            </View>
-          </TravelBorder>
-        </Pressable>
-      </View>
-
-      {/* typical day — steps column is Pro (needs health sync) for free users */}
-      <View style={{ marginTop: 12 }}>
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-          <View style={{ padding: 16 }}>
-            <Micro>Your typical day</Micro>
-            <View style={[s.rowBetween, { marginTop: 12 }]}>
-              {[["1,720", "cal"], ["96g", "protein"], ["7,820", "steps"]].map(([v, l], i) => {
-                const stepsLocked = freeLocked && l === "steps";
-                return (
-                  <View key={i} style={s.typicalCol}>
-                    {stepsLocked ? (
-                      <Pressable onPress={() => openPaywall("subscribe")} style={{ alignItems: "center" }}>
-                        <Lock size={16} color={T.green} />
-                        <Text style={[s.typicalLabel, { marginTop: 4 }]}>{l} · Pro</Text>
-                      </Pressable>
-                    ) : (
-                      <>
-                        <Text style={s.typicalNum}>{v}</Text>
-                        <Text style={s.typicalLabel}>{l}</Text>
-                      </>
-                    )}
-                  </View>
-                );
-              })}
-            </View>
-          </View>
-        </TravelBorder>
-      </View>
-    </ScrollView>
-  );
-}
-
-/* ---------- WEIGHT CALIBRATION ---------- */
-function WeightEntry({ back }: { back: () => void }) {
-  const { T, profile } = useApp();
-  const s = styles(T);
-  const estimated = profile.startWeight;
-  const unit = profile.weightUnit;
-
-  const [val, setVal] = useState(estimated);
-  const [saved, setSaved] = useState(false);
-  const diff = +(val - estimated).toFixed(1);
-
-  const save = () => { setSaved(true); setTimeout(back, 700); };
-
-  const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
-
-  return (
-    <ScrollView contentContainerStyle={s.scroll}>
-      <Pressable onPress={back} style={s.backRow}>
-        <ChevronLeft size={22} color={T.text} />
-        <Text style={s.backTitle}>Log your real weight</Text>
-      </Pressable>
-
-      <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-        <View style={{ padding: 18 }}>
-          <Micro>What we estimated</Micro>
-          <View style={[s.rowBase, { marginTop: 6 }]}>
-            <Text style={s.estNum}>{estimated}</Text>
-            <Text style={s.estSub}>{unit} (from your plan)</Text>
-          </View>
-        </View>
-      </TravelBorder>
-
-      <Text style={s.calibHint}>
-        Weighed yourself? Enter your real number and we'll calibrate — tracking continues accurately from here.
-      </Text>
-
-      <View style={s.entryCard}>
-        <Micro>Your actual weight</Micro>
-        <View style={s.stepRow}>
-          <Pressable onPress={() => setVal((v) => +(v - 0.1).toFixed(1))} style={s.stepBtn}><Text style={s.stepBtnText}>–</Text></Pressable>
-          <View style={s.rowBase}>
-            <Text style={s.entryNum}>{val.toFixed(1)}</Text>
-            <Text style={s.entryUnit}>{unit}</Text>
-          </View>
-          <Pressable onPress={() => setVal((v) => +(v + 0.1).toFixed(1))} style={s.stepBtn}><Text style={s.stepBtnText}>+</Text></Pressable>
-        </View>
-        <Text style={s.lbsText}>
-          {unit === "kg" ? `${(val * 2.20462).toFixed(1)} lbs` : `${(val / 2.20462).toFixed(1)} kg`}
-        </Text>
-      </View>
-
-      <View style={s.diffCard}>
-        <Text style={s.diffLabel}>Difference from our estimate</Text>
-        <Text style={[s.diffValue, { color: diff <= 0 ? T.green : T.red }]}>{diff > 0 ? "+" : ""}{diff} {unit}</Text>
-      </View>
-
-      <Pressable onPress={save} style={[s.saveBtn, saved && s.saveBtnDone]}>
-        {saved ? (
-          <View style={s.rowCenter}><Check size={17} color={T.green} /><Text style={s.saveTextDone}>Saved</Text></View>
-        ) : (
-          <Text style={s.saveText}>Save & calibrate tracking</Text>
-        )}
-      </Pressable>
-    </ScrollView>
   );
 }
 
 export default function Stats() {
-  const { T } = useApp();
-  const [screen, setScreen] = useState<"stats" | "weight">("stats");
-  const [range, setRange] = useState("Week");
-  const s = styles(T);
+  const router = useRouter();
+  const { T, freeLocked, plan, profile, updateProfile, openPaywall } = useApp();
+  const [range, setRange] = useState<Range>("Week");
+  const [view, setView] = useState<View_>(null);
 
+  const s = styles(T);
+  const rangeWord = RANGE_WORD[range];
+
+  const { bars: steps, perDay: stepsPerDay, unit: stepUnit } = useMemo(() => stepData(range), [range]);
+  const maxStep = useMemo(() => Math.max(...steps.map((b) => b.v)), [steps]);
+  const avgBar = useMemo(() => Math.round(avg(steps.map((b) => b.v))), [steps]);
+  const totalStep = useMemo(() => steps.reduce((a, b) => a + b.v, 0), [steps]);
+  // headline: steps per day at Week, the period's total at Month and Year
+  const headline = range === "Week" ? stepsPerDay : totalStep;
+
+  const goal = plan.calories;
+
+  const bars = useMemo(() => calBars(range), [range]);
+  const calValues = useMemo(
+    () => bars.map((b) => (b.ratio == null ? null : Math.round((goal * b.ratio) / 10) * 10)),
+    [bars, goal]
+  );
+  const logged = useMemo(() => calValues.filter((v): v is number => v != null), [calValues]);
+  const periodAvg = useMemo(() => Math.round(avg(logged) / 10) * 10, [logged]);
+  const diff = goal - periodAvg;
+
+  // Month spans ("Jul 27 – Aug 2") need more room than "Mon" or "Aug"
+  const calLabelW = range === "Month" ? 78 : 40;
+  const stepBarW = range === "Year" ? 12 : range === "Month" ? 24 : 17;
+
+  const unit = profile.weightUnit;
+  const shownChange = unit === "kg" ? WEIGHT_CHANGE : WEIGHT_CHANGE * 2.20462;
+
+  // "your typical day" is always per-day, whatever the bars are showing
+  const typicalCal = periodAvg;
+  const typicalSteps = stepsPerDay;
+  const typicalProtein = Math.round(plan.protein * PROTEIN_RATIO[range]);
+
+  const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
+
+  const CalBar = ({ label, v, labelW }: { label: string; v: number | null; labelW: number }) => {
+    // a month that hasn't happened yet — empty track, no number
+    if (v == null) {
+      return (
+        <View style={s.calBarRow}>
+          <Text style={[s.calBarLabel, { width: labelW, color: T.micro }]} numberOfLines={1}>{label}</Text>
+          <View style={s.calBarTrack} />
+        </View>
+      );
+    }
+    const over = v - goal;
+    const color = over <= 0 ? T.green : over <= goal * 0.17 ? T.orange : T.red;
+    const pct = Math.max(30, Math.min(100, (v / (goal * 1.28)) * 100));
+    return (
+      <View style={s.calBarRow}>
+        <Text style={[s.calBarLabel, { width: labelW }]} numberOfLines={1}>{label}</Text>
+        <View style={s.calBarTrack}>
+          <View style={[s.calBarFill, { width: `${pct}%`, backgroundColor: color }]}>
+            <Text style={s.calBarInside}>{v.toLocaleString()} / {goal.toLocaleString()}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const Legend = ({ color, label }: { color: string; label: string }) => (
+    <View style={s.legendItem}>
+      <View style={{ width: 8, height: 8, borderRadius: 3, backgroundColor: color }} />
+      <Text style={s.legendText}>{label}</Text>
+    </View>
+  );
+
+  const Stat = ({ icon: Icon, v, l }: { icon?: any; v: string; l: string }) => (
+    <View style={{ alignItems: "center", flex: 1 }}>
+      <View style={s.statTop}>
+        {Icon && <Icon size={13} color={T.green} />}
+        <Text style={s.statNum}>{v}</Text>
+      </View>
+      <Text style={s.micro}>{l}</Text>
+    </View>
+  );
+
+  const BackHead = ({ title, onBack }: { title: string; onBack: () => void }) => (
+    <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
+      <ChevronLeft size={24} color={T.text} />
+      <Text style={s.backTitle}>{title}</Text>
+    </Pressable>
+  );
+
+  /* ================= STEPS DETAIL ================= */
+  if (view === "steps") {
+    const refPct = Math.min(100, (avgBar / maxStep) * 100);
+
+    return (
+      <View style={s.screen}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
+          <BackHead title={`Steps · this ${rangeWord}`} onBack={() => setView(null)} />
+
+          <View style={s.summaryRow}>
+            <View style={s.summaryCard}>
+              <Micro>{STEP_SUMMARY_LABEL[range]}</Micro>
+              <Text style={s.summaryNum}>{avgBar.toLocaleString()}</Text>
+            </View>
+            <View style={s.summaryCard}>
+              <Micro>Total this {rangeWord}</Micro>
+              <Text style={s.summaryNum}>{totalStep.toLocaleString()}</Text>
+            </View>
+          </View>
+
+          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+            <View style={{ padding: 16 }}>
+              <View style={[s.rowBetween, { marginBottom: 14 }]}>
+                <Text style={s.detailCaption}>{STEP_DETAIL_CAPTION[range]}</Text>
+                <Text style={s.detailAvg}>avg {avgBar.toLocaleString()}</Text>
+              </View>
+
+              {steps.map((b, i) => {
+                const above = b.v >= avgBar;
+                const color = above ? T.green : T.orange;
+                const pct = Math.max(34, Math.min(100, (b.v / maxStep) * 100));
+                return (
+                  <View key={i} style={s.stepBarRow}>
+                    <Text style={s.stepBarLabel} numberOfLines={1}>{b.label}</Text>
+                    <View style={s.stepBarTrack}>
+                      <View style={[s.stepBarFill, { width: `${pct}%`, backgroundColor: color }]}>
+                        <Text style={s.stepBarInside}>{b.v.toLocaleString()} / {avgBar.toLocaleString()}</Text>
+                      </View>
+                      <View style={[s.refLine, { left: `${refPct}%` }]} />
+                    </View>
+                  </View>
+                );
+              })}
+
+              <View style={s.legendRow}>
+                <Legend color={T.green} label="Above avg" />
+                <Legend color={T.orange} label="Below avg" />
+              </View>
+            </View>
+          </TravelBorder>
+
+          <Text style={s.detailFoot}>
+            {range === "Week"
+              ? "Steps come from your connected watch · MOTION doesn't estimate them"
+              : `That's about ${stepsPerDay.toLocaleString()} steps a day across the ${rangeWord}.`}
+          </Text>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  /* ================= CALORIES DETAIL ================= */
+  if (view === "calories") {
+    return (
+      <CaloriesView
+        T={T}
+        s={s}
+        goal={goal}
+        freeLocked={freeLocked}
+        onBack={() => setView(null)}
+        onGoPro={() => openPaywall("subscribe")}
+      />
+    );
+  }
+
+  /* ================= WEIGHT DETAIL ================= */
+  if (view === "weight") {
+    return (
+      <WeightView
+        T={T}
+        s={s}
+        startUnit={unit}
+        estimate={profile.startWeight}
+        onBack={() => setView(null)}
+        onSave={(v, u) => {
+          updateProfile({ startWeight: v, weightUnit: u });
+          setView(null);
+        }}
+      />
+    );
+  }
+
+  /* ================= MAIN ================= */
   return (
     <View style={s.screen}>
-      {screen === "stats"
-        ? <StatsMain range={range} setRange={setRange} openWeight={() => setScreen("weight")} />
-        : <WeightEntry back={() => setScreen("stats")} />}
+      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
+        <PageHeader title="Stats" />
+
+        <View style={s.rangeRow}>
+          {RANGES.map((r) => (
+            <Pressable key={r} onPress={() => setRange(r)} style={[s.rangeBtn, range === r && { backgroundColor: T.green }]}>
+              <Text style={[s.rangeText, range === r && { color: T.ink }]}>{r}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {/* WIDGET 1 — STEPS.
+            Week shows each day; Month shows each week's TOTAL; Year each
+            month's TOTAL. The headline follows: steps a day at Week, the
+            period's total at Month and Year. */}
+        <Tap onPress={() => setView("steps")}>
+          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
+            <View style={{ padding: 18 }}>
+              <View style={s.rowBetween}>
+                <View style={s.rowGap}>
+                  <Footprints size={15} color={T.green} />
+                  <Micro>Steps · this {rangeWord}</Micro>
+                </View>
+                <View style={s.sourceChip}>
+                  <Watch size={11} color={T.sub} />
+                  <Text style={s.sourceText}>Garmin</Text>
+                </View>
+              </View>
+
+              <View style={s.bigRow}>
+                <Text style={s.bigNum}>{headline.toLocaleString()}</Text>
+                <Text style={s.bigUnit}>{stepUnit}</Text>
+              </View>
+
+              {range !== "Week" && (
+                <Text style={s.stepSubNote}>
+                  about {stepsPerDay.toLocaleString()} a day
+                </Text>
+              )}
+
+              <View style={s.chart}>
+                {steps.map((b, i) => (
+                  <View key={i} style={s.barCol}>
+                    <Text style={s.barVal}>{kfmt(b.v)}</Text>
+                    <View style={s.barTrack}>
+                      <LinearGradient
+                        colors={["#22C55E", "#15803D"]}
+                        style={[s.bar, { width: stepBarW, height: Math.max(4, (b.v / maxStep) * 68) }]}
+                      />
+                    </View>
+                    <Text style={s.barLabel}>{b.short}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={s.statsRow}>
+                <Stat icon={Flame} v={BURNED.toLocaleString()} l="Burned" />
+                <Stat icon={Activity} v={String(ACTIVE_MIN)} l="Active min" />
+                <Stat v={String(AVG_BPM)} l="Avg BPM" />
+              </View>
+
+              <View style={s.cardFoot}>
+                <Text style={s.cardFootText}>Tap for the daily breakdown</Text>
+                <TrendingUp size={12} color={T.green} />
+              </View>
+            </View>
+          </TravelBorder>
+        </Tap>
+
+        {/* WIDGET 2 — CALORIES VS GOAL */}
+        <Tap onPress={() => setView("calories")} style={{ marginTop: 12 }}>
+          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+            <View style={{ padding: 16 }}>
+              <View style={[s.rowBetween, { marginBottom: 4 }]}>
+                <View style={s.rowGap}>
+                  <Target size={14} color={T.green} />
+                  <Micro>Calories vs goal</Micro>
+                </View>
+                <View style={s.rowGapTight}>
+                  {diff >= 0 ? <TrendingDown size={12} color={T.green} /> : <TrendingUp size={12} color={T.red} />}
+                  <Text style={[s.trendText, { color: diff >= 0 ? T.green : T.red }]}>
+                    {Math.abs(diff)} {diff >= 0 ? "under" : "over"} avg
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={s.calCaption}>{CAL_CAPTION[range]}</Text>
+
+              {calValues.map((v, i) => (
+                <CalBar key={i} label={bars[i].label} v={v} labelW={calLabelW} />
+              ))}
+
+              <View style={s.legendRow}>
+                <Legend color={T.green} label="Under goal" />
+                <Legend color={T.orange} label="A bit over" />
+                <Legend color={T.red} label="Way over" />
+                <Text style={s.historyLink}>Weekly history →</Text>
+              </View>
+            </View>
+          </TravelBorder>
+        </Tap>
+
+        {/* WIDGETS 3 + 4 — both locked on free */}
+        <View style={s.pairRow}>
+          <View style={{ flex: 1 }}>
+            <BlurLock label="Consistency" locked={freeLocked} radius={16} compact>
+              <Tap onPress={() => router.push("/(tabs)/calendar")}>
+                <TravelBorder color={T.orange} cardBg={T.card} borderColor={T.border} radius={16}>
+                  <View style={s.smallCard}>
+                    <View style={s.rowBetween}>
+                      <Micro>Consistency</Micro>
+                      <CalendarDays size={13} color={T.orange} />
+                    </View>
+                    <View style={s.smallNumRow}>
+                      <Text style={s.smallNum}>{DAYS_LOGGED}</Text>
+                      <Flame size={15} color={T.orange} fill={T.orange} style={{ marginLeft: "auto" }} />
+                    </View>
+                    <Text style={[s.smallNote, { color: T.orange }]}>days logged · view calendar</Text>
+                  </View>
+                </TravelBorder>
+              </Tap>
+            </BlurLock>
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <BlurLock label="Weight" locked={freeLocked} radius={16} compact>
+              <Tap onPress={() => setView("weight")}>
+                <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={16}>
+                  <View style={s.smallCard}>
+                    <View style={s.rowBetween}>
+                      <Micro>Weight</Micro>
+                      <View style={s.editTag}>
+                        <Text style={s.editTagText}>TAP TO EDIT</Text>
+                      </View>
+                    </View>
+                    <View style={s.smallNumRow}>
+                      <Text style={s.smallNum}>{shownChange.toFixed(1)}</Text>
+                      <Text style={s.smallUnit}>{unit}</Text>
+                      <Scale size={14} color={T.green} style={{ marginLeft: "auto" }} />
+                    </View>
+                    <Text style={[s.smallNote, { color: T.green }]}>estimated · on track</Text>
+                  </View>
+                </TravelBorder>
+              </Tap>
+            </BlurLock>
+          </View>
+        </View>
+
+        {/* WIDGET 5 — informational, deliberately not tappable. Always per-day
+            figures, whatever the charts above are showing. */}
+        <View style={{ marginTop: 12 }}>
+          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+            <View style={{ padding: 16 }}>
+              <Micro>Your typical day · this {rangeWord}</Micro>
+              <View style={s.typicalRow}>
+                {[
+                  [typicalCal.toLocaleString(), "cal"],
+                  [`${typicalProtein}g`, "protein"],
+                  [typicalSteps.toLocaleString(), "steps"],
+                ].map(([v, l]) => (
+                  <View key={l} style={{ flex: 1, alignItems: "center" }}>
+                    <Text style={s.typicalNum}>{v}</Text>
+                    <Text style={s.typicalLabel}>{l.toUpperCase()}</Text>
+                  </View>
+                ))}
+              </View>
+              <Text style={s.typicalFoot}>
+                Averaged by MOTION from your recent logs · updates on its own
+              </Text>
+            </View>
+          </TravelBorder>
+        </View>
+      </ScrollView>
     </View>
   );
 }
 
+/* ---------- one week card ---------- */
+function WeekCard({
+  T, s, wk, goal, animate, last,
+}: {
+  T: any;
+  s: any;
+  wk: { key: string; span: string; current: boolean; vals: number[] };
+  goal: number;
+  animate: boolean;
+  last: boolean;
+}) {
+  const a = useRef(new Animated.Value(animate ? 0 : 1)).current;
+
+  useEffect(() => {
+    if (!animate) return;
+    Animated.timing(a, {
+      toValue: 1,
+      duration: 460,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  const translateY = a.interpolate({ inputRange: [0, 1], outputRange: [-26, 0] });
+
+  const weekAvg = Math.round(avg(wk.vals));
+  const under = wk.vals.filter((v) => v <= goal).length;
+
+  return (
+    <Animated.View style={{ marginBottom: last ? 0 : 14, opacity: a, transform: [{ translateY }] }}>
+      <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+        <View style={{ padding: 16 }}>
+          <View style={[s.rowBetween, { marginBottom: 12 }]}>
+            <View style={s.rowGap}>
+              <Text style={s.histWeek}>{wk.span}</Text>
+              {wk.current && (
+                <View style={s.thisWeekTag}>
+                  <Text style={s.thisWeekText}>This week</Text>
+                </View>
+              )}
+            </View>
+            <Text style={s.histAvg}>avg {weekAvg.toLocaleString()} · {under}/7 under</Text>
+          </View>
+
+          {wk.vals.map((v, i) => {
+            const over = v - goal;
+            const color = over <= 0 ? T.green : over <= goal * 0.17 ? T.orange : T.red;
+            const pct = Math.max(30, Math.min(100, (v / (goal * 1.28)) * 100));
+            return (
+              <View key={i} style={s.calBarRow}>
+                <Text style={[s.calBarLabel, { width: 40 }]}>{DAY_LABELS[i]}</Text>
+                <View style={s.calBarTrack}>
+                  <View style={[s.calBarFill, { width: `${pct}%`, backgroundColor: color }]}>
+                    <Text style={s.calBarInside}>{v.toLocaleString()} / {goal.toLocaleString()}</Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      </TravelBorder>
+    </Animated.View>
+  );
+}
+
+/* ---------- weekly history ----------
+   INVERTED scroll: newest week at the bottom, older above.
+   Loading is DELIBERATE — reaching the top shows a hint, and the user pulls
+   down to fetch. Weeks then arrive ONE AT A TIME, a second apart, each falling
+   into place, so the whole batch takes ~5s and reads as loading rather than
+   popping.
+   RefreshControl's own spinner is hidden because the M is MOTION's loading state.
+   React Native has no scrollHeight, so position is preserved by tracking
+   content height via onContentSizeChange and shifting the offset by the growth. */
+function CaloriesView({
+  T, s, goal, freeLocked, onBack, onGoPro,
+}: {
+  T: any;
+  s: any;
+  goal: number;
+  freeLocked: boolean;
+  onBack: () => void;
+  onGoPro: () => void;
+}) {
+  const BATCH = 4;
+  const FREE_CAP = 2;
+  const HOLD_MS = 1200;
+  const STEP_MS = 1000;
+
+  const total = HISTORY_RATIOS.length;
+  const cap = freeLocked ? Math.min(FREE_CAP, total) : total;
+  const initialCount = Math.min(BATCH, cap);
+
+  const ref = useRef<ScrollView>(null);
+  const contentH = useRef(0);
+  const pendingH = useRef<number | null>(null);
+  const offsetY = useRef(0);
+  const didInit = useRef(false);
+  const shownRef = useRef(initialCount);
+  const initialKeys = useRef<Set<string>>(new Set());
+
+  const [shown, setShown] = useState(initialCount);
+  const [loading, setLoading] = useState(false);
+  const [atTop, setAtTop] = useState(false);
+  const [wall, setWall] = useState(false);
+
+  const hasMore = shown < total;
+  const atFreeWall = freeLocked && shown >= cap && cap < total;
+
+  useEffect(() => { shownRef.current = shown; }, [shown]);
+
+  const weeks = useMemo(() => {
+    const start = Math.max(0, total - shown);
+    return HISTORY_RATIOS.slice(start).map((ratios, i) => {
+      const idxFromEnd = HISTORY_RATIOS.length - start - 1 - i;
+      return {
+        key: `w${start + i}`,
+        span: weekSpanLabel(idxFromEnd),
+        current: idxFromEnd === 0,
+        vals: ratios.map((r) => Math.round((goal * r) / 10) * 10),
+      };
+    });
+  }, [shown, goal, total]);
+
+  if (initialKeys.current.size === 0 && weeks.length) {
+    weeks.forEach((w) => initialKeys.current.add(w.key));
+  }
+
+  const onContentSize = useCallback((_: number, h: number) => {
+    contentH.current = h;
+
+    if (!didInit.current) {
+      didInit.current = true;
+      requestAnimationFrame(() => ref.current?.scrollTo({ y: h, animated: false }));
+      return;
+    }
+
+    if (pendingH.current != null) {
+      const grew = h - pendingH.current;
+      pendingH.current = null;
+      if (grew > 0) {
+        requestAnimationFrame(() =>
+          ref.current?.scrollTo({ y: offsetY.current + grew, animated: false })
+        );
+      }
+    }
+  }, []);
+
+  const onScroll = useCallback((e: any) => {
+    offsetY.current = e.nativeEvent.contentOffset.y;
+    const top = offsetY.current < 60;
+    setAtTop((cur) => (cur === top ? cur : top));
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    if (loading || !hasMore) return;
+
+    if (atFreeWall) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setWall(true);
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLoading(true);
+    await sleep(HOLD_MS);
+
+    for (let i = 0; i < BATCH; i++) {
+      if (shownRef.current >= cap) break;
+      pendingH.current = contentH.current;
+      setShown((c) => Math.min(cap, c + 1));
+      await sleep(STEP_MS);
+    }
+
+    setLoading(false);
+  }, [loading, hasMore, atFreeWall, cap]);
+
+  return (
+    <View style={s.screen}>
+      <View style={s.histHead}>
+        <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
+          <ChevronLeft size={24} color={T.text} />
+          <Text style={s.backTitle}>Calories · weekly history</Text>
+        </Pressable>
+        <View style={s.histLegend}>
+          <View style={s.legendItem}>
+            <View style={{ width: 8, height: 8, borderRadius: 3, backgroundColor: T.green }} />
+            <Text style={s.legendText}>Under goal</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={{ width: 8, height: 8, borderRadius: 3, backgroundColor: T.orange }} />
+            <Text style={s.legendText}>A bit over</Text>
+          </View>
+          <View style={s.legendItem}>
+            <View style={{ width: 8, height: 8, borderRadius: 3, backgroundColor: T.red }} />
+            <Text style={s.legendText}>Way over</Text>
+          </View>
+          <Text style={s.histGoal}>goal {goal.toLocaleString()}</Text>
+        </View>
+      </View>
+
+      <ScrollView
+        ref={ref}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: 28 }}
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={onScroll}
+        onContentSizeChange={onContentSize}
+        refreshControl={
+          <RefreshControl
+            refreshing={loading}
+            onRefresh={onRefresh}
+            tintColor="transparent"
+            colors={["transparent"]}
+            progressBackgroundColor="transparent"
+          />
+        }
+      >
+        {loading ? (
+          <View style={s.histLoading}>
+            <IsoMGlow size={56} />
+            <Text style={s.histLoadingText}>Loading earlier weeks…</Text>
+          </View>
+        ) : !hasMore ? (
+          <Text style={s.histEdge}>· your very first week ·</Text>
+        ) : atFreeWall ? (
+          <Tap onPress={() => setWall(true)} style={{ marginBottom: 14 }}>
+            <View style={s.histLockBar}>
+              <Lock size={13} color={T.gold} />
+              <Text style={s.histLockText}>See earlier weeks with Pro</Text>
+            </View>
+          </Tap>
+        ) : atTop ? (
+          <View style={s.pullHint}>
+            <ArrowDown size={14} color={T.green} />
+            <Text style={s.pullHintText}>Pull down to load earlier weeks</Text>
+          </View>
+        ) : (
+          <Text style={s.histEdge}>↑ earlier weeks above</Text>
+        )}
+
+        {weeks.map((wk, wi) => (
+          <WeekCard
+            key={wk.key}
+            T={T}
+            s={s}
+            wk={wk}
+            goal={goal}
+            animate={!initialKeys.current.has(wk.key)}
+            last={wi === weeks.length - 1}
+          />
+        ))}
+      </ScrollView>
+
+      {wall && (
+        <View style={s.wallWrap}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setWall(false)} />
+          <View style={s.wallCard}>
+            <View style={s.wallIcon}>
+              <Crown size={24} color={T.gold} />
+            </View>
+            <Text style={s.wallTitle}>Your full history is waiting</Text>
+            <Text style={s.wallBody}>
+              Free shows your last two weeks. Pro opens every week you've ever logged, so you can see
+              how far you've actually come.
+            </Text>
+            <Tap onPress={onGoPro} style={{ width: "100%", marginTop: 16 }}>
+              <View style={s.wallCta}>
+                <Text style={s.wallCtaText}>Unlock full history</Text>
+              </View>
+            </Tap>
+            <Pressable onPress={() => setWall(false)} style={{ marginTop: 12 }} hitSlop={10}>
+              <Text style={s.wallDismiss}>Not now</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/* ---------- weight calibration ---------- */
+function WeightView({
+  T, s, startUnit, estimate, onBack, onSave,
+}: {
+  T: any;
+  s: any;
+  startUnit: "kg" | "lbs";
+  estimate: number;
+  onBack: () => void;
+  onSave: (v: number, u: "kg" | "lbs") => void;
+}) {
+  const [unit, setUnit] = useState<"kg" | "lbs">(startUnit);
+  const [val, setVal] = useState(estimate);
+  const [typing, setTyping] = useState(false);
+  const [draft, setDraft] = useState(String(estimate));
+  const [rc, setRc] = useState(0);
+
+  const lim = unit === "kg" ? [30, 200] : [60, 440];
+  const est = unit === startUnit ? estimate : startUnit === "kg" ? estimate * 2.20462 : estimate / 2.20462;
+  const secondary = unit === "kg" ? `${(val * 2.20462).toFixed(1)} lbs` : `${(val / 2.20462).toFixed(1)} kg`;
+
+  const switchUnit = (u: "kg" | "lbs") => {
+    if (u === unit) return;
+    setVal(+(u === "kg" ? val / 2.20462 : val * 2.20462).toFixed(1));
+    setUnit(u);
+    setRc((x) => x + 1);
+  };
+
+  const commit = () => {
+    const n = parseFloat(draft);
+    const v = Math.min(lim[1], Math.max(lim[0], isNaN(n) ? val : +n.toFixed(1)));
+    setVal(v);
+    setTyping(false);
+    setRc((x) => x + 1);
+  };
+
+  const save = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    onSave(+val.toFixed(1), unit);
+  };
+
+  return (
+    <View style={s.screen}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
+        <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
+          <ChevronLeft size={24} color={T.text} />
+          <Text style={s.backTitle}>Log your real weight</Text>
+        </Pressable>
+
+        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+          <View style={{ padding: 16 }}>
+            <Text style={s.micro}>WHAT WE ESTIMATED</Text>
+            <View style={s.estRow}>
+              <Text style={s.estNum}>{est.toFixed(1)}</Text>
+              <Text style={s.estUnit}>{unit} (from your plan)</Text>
+            </View>
+          </View>
+        </TravelBorder>
+
+        <Text style={s.weightLead}>
+          Scroll to your real number — tracking continues accurately from here.
+        </Text>
+
+        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
+          <View style={{ padding: 18, paddingTop: 16 }}>
+            <View style={s.rowBetween}>
+              <Text style={s.micro}>CURRENT WEIGHT</Text>
+              <View style={s.unitToggle}>
+                {(["kg", "lbs"] as const).map((u) => (
+                  <Pressable key={u} onPress={() => switchUnit(u)} style={[s.unitBtn, unit === u && { backgroundColor: T.green }]}>
+                    <Text style={[s.unitText, unit === u && { color: T.ink }]}>{u}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {typing ? (
+              <View style={s.bigWeightRow}>
+                <TextInput
+                  autoFocus
+                  keyboardType="decimal-pad"
+                  value={draft}
+                  onChangeText={setDraft}
+                  onBlur={commit}
+                  onSubmitEditing={commit}
+                  style={s.weightInput}
+                />
+                <Text style={s.weightUnitBig}>{unit}</Text>
+              </View>
+            ) : (
+              <Pressable onPress={() => { setDraft(val.toFixed(1)); setTyping(true); }} style={s.bigWeightRow}>
+                <Text style={s.weightBig}>{val.toFixed(1)}</Text>
+                <Text style={s.weightUnitBig}>{unit}</Text>
+              </Pressable>
+            )}
+
+            <Text style={s.weightSecondary}>{secondary}</Text>
+
+            <RulerPicker unit={unit} value={val} setValue={setVal} recenter={rc} T={T} />
+
+            <Text style={s.rulerHint}>Scroll left or right — it clicks as you go</Text>
+            <Text style={s.rulerAlt}>Or tap the number to type it</Text>
+          </View>
+        </TravelBorder>
+
+        <Tap onPress={save} style={{ marginTop: 18 }}>
+          <View style={s.saveBtn}>
+            <Text style={s.saveText}>Save {val.toFixed(1)} {unit}</Text>
+          </View>
+        </Tap>
+
+        <Text style={s.weightFoot}>
+          Your estimate updates from here. MOTION keeps projecting between weigh-ins.
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+const rulerStyles = (T: any) =>
+  StyleSheet.create({
+    wrap: { width: "100%", height: 78, marginTop: 10, position: "relative" },
+    needle: {
+      position: "absolute", left: "50%", marginLeft: -1.5, top: 2,
+      width: 3, height: 50, borderRadius: 3, backgroundColor: T.green, zIndex: 3,
+    },
+    tickCol: { width: TICK_PX, alignItems: "center" },
+    tickLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading, marginTop: 4 },
+    fade: { position: "absolute", top: 0, bottom: 0, width: 50, zIndex: 2 },
+  });
+
 const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
-    scroll: { padding: 16, paddingTop: 60, paddingBottom: 40 },
 
-    micro: { fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
+    micro: { fontSize: 10, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
     rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-    rowCenter: { flexDirection: "row", alignItems: "center", gap: 6 },
-    rowBase: { flexDirection: "row", alignItems: "baseline", gap: 5 },
+    rowGap: { flexDirection: "row", alignItems: "center", gap: 7 },
+    rowGapTight: { flexDirection: "row", alignItems: "center", gap: 4 },
 
-    lockVeil: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, alignItems: "center", justifyContent: "center", gap: 4 },
-    lockBadge: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
-    lockLabel: { fontSize: 12, color: T.text, fontFamily: FONTS.headingMed, marginTop: 2 },
-    lockSub: { fontSize: 9, color: T.green, fontFamily: FONTS.headingMed },
+    rangeRow: { flexDirection: "row", gap: 4, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 12, padding: 4, marginBottom: 16 },
+    rangeBtn: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 9 },
+    rangeText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.headingMed },
 
-    toggle: { flexDirection: "row", gap: 4, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 11, padding: 4, marginBottom: 14 },
-    toggleBtn: { flex: 1, paddingVertical: 8, borderRadius: 9, alignItems: "center" },
-    toggleBtnOn: { backgroundColor: T.green },
-    toggleText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.headingMed },
-    toggleTextOn: { color: T.ink },
+    sourceChip: { flexDirection: "row", alignItems: "center", gap: 4 },
+    sourceText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
 
-    deviceText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
-    heroNumRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
-    heroNum: { fontSize: 40, color: T.text, fontFamily: FONTS.heading, letterSpacing: -1 },
-    heroNumSub: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
+    bigRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
+    bigNum: { fontSize: 40, color: T.text, fontFamily: FONTS.heading },
+    bigUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
+    stepSubNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
 
-    chartRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", height: 104, marginTop: 14 },
-    chartCol: { flex: 1, alignItems: "center", gap: 5 },
-    chartValue: { fontSize: 9, color: T.sub, fontFamily: FONTS.heading },
-    chartBar: { width: 18, borderRadius: 6, backgroundColor: T.green },
-    chartLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading },
+    chart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: 12 },
+    barCol: { flex: 1, alignItems: "center", gap: 5 },
+    barVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },
+    barTrack: { height: 68, justifyContent: "flex-end" },
+    bar: { borderRadius: 6 },
+    barLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading },
 
-    heroStatsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
-    heroStat: { alignItems: "center", gap: 3 },
-    heroStatNum: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
+    statsRow: { flexDirection: "row", marginTop: 12, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
+    statTop: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
+    statNum: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
 
-    connectIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center" },
-    connectTitle: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 4, marginTop: 12 },
-    connectSub: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18, marginBottom: 14 },
-    connectBtn: { backgroundColor: T.green, borderRadius: 11, paddingVertical: 11, paddingHorizontal: 20 },
-    connectBtnText: { color: T.ink, fontFamily: FONTS.headingMed, fontSize: 13 },
+    cardFoot: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 12 },
+    cardFootText: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
 
-    trendText: { fontSize: 11, color: T.green, fontFamily: FONTS.heading },
-    calRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-    calDay: { width: 30, fontSize: 10.5, color: T.sub, fontFamily: FONTS.heading },
-    calTrack: { flex: 1, height: 26, borderRadius: 8, backgroundColor: T.track, overflow: "hidden" },
-    calFill: { height: "100%", borderRadius: 8, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", paddingRight: 8 },
-    calValue: { fontSize: 11, fontFamily: FONTS.heading },
-    legendRow: { flexDirection: "row", gap: 14, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: T.border },
-    dot: { width: 9, height: 9, borderRadius: 3 },
-    legendText: { fontSize: 10, color: T.sub, fontFamily: FONTS.body },
+    trendText: { fontSize: 11, fontFamily: FONTS.headingMed },
+    calCaption: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginBottom: 12 },
 
-    twoUp: { flexDirection: "row", gap: 10, marginTop: 12 },
-    cardBig: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
-    cardUnit: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
-    cardCaption: { fontSize: 10, color: T.sub, fontFamily: FONTS.body, marginTop: 4 },
-    tapBadge: { borderWidth: 1, borderColor: T.greenBorder, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 2 },
-    tapBadgeText: { fontSize: 8, color: T.green, fontFamily: FONTS.body },
+    calBarRow: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 7 },
+    calBarLabel: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
+    calBarTrack: { flex: 1, height: 26, borderRadius: 8, backgroundColor: T.track, overflow: "hidden" },
+    calBarFill: { height: "100%", borderRadius: 8, alignItems: "flex-end", justifyContent: "center", paddingRight: 10 },
+    calBarInside: { fontSize: 10.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
 
-    typicalCol: { flex: 1, alignItems: "center" },
-    typicalNum: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
-    typicalLabel: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 2, textTransform: "uppercase" },
+    legendRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: T.border, flexWrap: "wrap" },
+    legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
+    legendText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
+    historyLink: { marginLeft: "auto", fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
 
-    backRow: { flexDirection: "row", alignItems: "center", marginBottom: 18, marginLeft: -6 },
-    backTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginLeft: 2 },
-    estNum: { fontSize: 28, color: T.sub, fontFamily: FONTS.heading },
-    estSub: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-    calibHint: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, marginTop: 18, marginBottom: 10, lineHeight: 19 },
+    pairRow: { flexDirection: "row", gap: 10, marginTop: 12 },
+    smallCard: { padding: 14, minHeight: 92 },
+    smallNumRow: { flexDirection: "row", alignItems: "baseline", gap: 5, marginTop: 6 },
+    smallNum: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
+    smallUnit: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
+    smallNote: { fontSize: 10, fontFamily: FONTS.body, marginTop: 10 },
+    editTag: { borderWidth: 1, borderColor: `${T.green}55`, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1 },
+    editTagText: { fontSize: 8.5, color: T.green, fontFamily: FONTS.body },
 
-    entryCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, padding: 20, alignItems: "center" },
-    stepRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 18, marginTop: 12 },
-    stepBtn: { width: 40, height: 40, borderRadius: 12, borderWidth: 1, borderColor: T.border, backgroundColor: T.cardHi, alignItems: "center", justifyContent: "center" },
-    stepBtnText: { color: T.text, fontSize: 22, fontFamily: FONTS.heading },
-    entryNum: { fontSize: 42, color: T.text, fontFamily: FONTS.heading, letterSpacing: -1 },
-    entryUnit: { fontSize: 15, color: T.sub, fontFamily: FONTS.body },
-    lbsText: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 10 },
+    typicalRow: { flexDirection: "row", marginTop: 12 },
+    typicalNum: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
+    typicalLabel: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 2, letterSpacing: 0.6 },
+    typicalFoot: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 13, textAlign: "center", lineHeight: 13.5 },
 
-    diffCard: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 14, marginTop: 12, alignItems: "center" },
-    diffLabel: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
-    diffValue: { fontSize: 14, fontFamily: FONTS.heading, marginTop: 2 },
+    /* detail screens */
+    backRow: { flexDirection: "row", alignItems: "center", marginBottom: 16, marginLeft: -6 },
+    backTitle: { fontSize: 19, color: T.text, fontFamily: FONTS.heading, marginLeft: 2 },
 
-    saveBtn: { marginTop: 18, backgroundColor: T.green, borderRadius: 14, padding: 15, alignItems: "center" },
-    saveBtnDone: { backgroundColor: T.cardHi },
-    saveText: { color: T.ink, fontFamily: FONTS.headingMed, fontSize: 14 },
-    saveTextDone: { color: T.green, fontFamily: FONTS.headingMed, fontSize: 14 },
+    summaryRow: { flexDirection: "row", gap: 10, marginBottom: 16 },
+    summaryCard: { flex: 1, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 13, paddingHorizontal: 15 },
+    summaryNum: { fontSize: 23, color: T.text, fontFamily: FONTS.heading, marginTop: 6 },
+
+    detailCaption: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, flex: 1 },
+    detailAvg: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed },
+    detailFoot: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 16, lineHeight: 15 },
+
+    stepBarRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+    stepBarLabel: { width: 52, fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
+    stepBarTrack: { flex: 1, height: 28, borderRadius: 8, backgroundColor: T.track, overflow: "hidden", position: "relative" },
+    stepBarFill: { height: "100%", borderRadius: 8, alignItems: "flex-end", justifyContent: "center", paddingRight: 8 },
+    stepBarInside: { fontSize: 11, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    refLine: { position: "absolute", top: 0, bottom: 0, width: 2, backgroundColor: T.text, opacity: 0.5, borderRadius: 2 },
+
+    /* weekly history */
+    histHead: { paddingHorizontal: 16, paddingTop: 60, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: T.border },
+    histLegend: { flexDirection: "row", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: -4 },
+    histGoal: { marginLeft: "auto", fontSize: 10, color: T.micro, fontFamily: FONTS.body },
+    histEdge: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", paddingBottom: 14 },
+    histLoading: { alignItems: "center", gap: 6, paddingBottom: 18, paddingTop: 6 },
+    histLoadingText: { fontSize: 11, color: T.micro, fontFamily: FONTS.body },
+    pullHint: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 13, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, marginBottom: 14 },
+    pullHintText: { fontSize: 12, color: T.green, fontFamily: FONTS.headingMed },
+    histLockBar: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 11, paddingHorizontal: 12, borderRadius: 13, backgroundColor: "rgba(251,191,36,0.08)", borderWidth: 1, borderColor: `${T.gold}55` },
+    histLockText: { fontSize: 12, color: T.gold, fontFamily: FONTS.headingMed },
+    histWeek: { fontSize: 14, color: T.text, fontFamily: FONTS.heading },
+    histAvg: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
+    thisWeekTag: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
+    thisWeekText: { fontSize: 9, color: T.green, fontFamily: FONTS.headingMed },
+
+    wallWrap: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, zIndex: 20, alignItems: "center", justifyContent: "center", padding: 26, backgroundColor: "rgba(10,10,10,0.72)" },
+    wallCard: { width: "100%", maxWidth: 320, backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}55`, borderRadius: 20, padding: 22, alignItems: "center" },
+    wallIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: "rgba(251,191,36,0.12)", alignItems: "center", justifyContent: "center", marginBottom: 14 },
+    wallTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
+    wallBody: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5, marginTop: 8 },
+    wallCta: { backgroundColor: T.gold, borderRadius: 13, paddingVertical: 13, alignItems: "center" },
+    wallCtaText: { fontSize: 14, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    wallDismiss: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
+
+    /* weight */
+    estRow: { flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 6 },
+    estNum: { fontSize: 26, color: T.sub, fontFamily: FONTS.heading },
+    estUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
+    weightLead: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, marginVertical: 16, lineHeight: 19 },
+
+    unitToggle: { flexDirection: "row", gap: 2, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 11, padding: 3 },
+    unitBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8 },
+    unitText: { fontSize: 12, color: T.sub, fontFamily: FONTS.headingMed },
+
+    bigWeightRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "center", gap: 6, marginTop: 8 },
+    weightBig: { fontSize: 44, color: T.text, fontFamily: FONTS.heading },
+    weightInput: { width: 130, fontSize: 44, color: T.text, fontFamily: FONTS.heading, textAlign: "center", borderBottomWidth: 2, borderBottomColor: T.green, padding: 0 },
+    weightUnitBig: { fontSize: 16, color: T.sub, fontFamily: FONTS.body },
+    weightSecondary: { fontSize: 12, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 2 },
+
+    rulerHint: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 4 },
+    rulerAlt: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed, textAlign: "center", marginTop: 6 },
+
+    saveBtn: { backgroundColor: T.green, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
+    saveText: { fontSize: 15, color: T.ink, fontFamily: FONTS.headingMed },
+    weightFoot: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 14, lineHeight: 15 },
   });

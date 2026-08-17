@@ -1,26 +1,106 @@
 // app/(tabs)/calendar.tsx
 import { LinearGradient } from "expo-linear-gradient";
-import { CalendarDays, ChevronLeft, ChevronRight, Flame, Lock, Mic, Sparkles } from "lucide-react-native";
-import React, { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { CalendarDays, ChevronLeft, ChevronRight, Flame, Lock, Mic, Sparkles, X } from "lucide-react-native";
+import React, { useMemo, useRef, useState } from "react";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import PageHeader from "../../components/PageHeader";
+import StreakReel from "../../components/StreakReel";
+import StreakWarnCard from "../../components/StreakWarnCard";
+import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { FONTS, TIERS, ULT_COLORS } from "../../constants/theme";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DOW = ["S", "M", "T", "W", "T", "F", "S"];
+const TILE_SIZE = 52;
 
-const TODAY = 18;
-function dayTier(d: number | null): number {
-  if (d == null || d > TODAY) return 0;
-  if (d <= 4) return 1;
-  if (d <= 8) return 2;
-  if (d <= 12) return 3;
-  if (d <= 16) return 4;
+/* ---------- the real calendar maths ----------
+   Everything below is derived from actual dates. No hardcoded month length,
+   no fixed weekday offset, no constant "today". */
+
+const TODAY = new Date();
+const TODAY_Y = TODAY.getFullYear();
+const TODAY_M = TODAY.getMonth();
+const TODAY_D = TODAY.getDate();
+
+const key = (y: number, m: number, d: number) => `${y}-${m}-${d}`;
+
+function daysInMonth(year: number, month: number) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function firstWeekday(year: number, month: number) {
+  return new Date(year, month, 1).getDay();
+}
+
+/** the grid: leading blanks so the 1st lands under the right weekday */
+function buildGrid(year: number, month: number): (number | null)[] {
+  return [
+    ...Array.from({ length: firstWeekday(year, month) }, () => null),
+    ...Array.from({ length: daysInMonth(year, month) }, (_, i) => i + 1),
+  ];
+}
+
+function isFuture(year: number, month: number, day: number) {
+  if (year !== TODAY_Y) return year > TODAY_Y;
+  if (month !== TODAY_M) return month > TODAY_M;
+  return day > TODAY_D;
+}
+
+function isToday(year: number, month: number, day: number) {
+  return year === TODAY_Y && month === TODAY_M && day === TODAY_D;
+}
+
+/* ---------- logged days ----------
+   Stand-in until the backend stores real logs. 74 days of history counting
+   back from today, with deliberate gaps: the current run reaches 19 days
+   (Ultimate), and the misses show what a broken streak looks like and how the
+   run restarts at Spark. Replace MISSED_AGO + HISTORY_DAYS with real data and
+   every tile, tier and flame below follows automatically. */
+const HISTORY_DAYS = 74;
+const MISSED_AGO = [19, 20, 41]; // days before today that were NOT logged
+
+function buildLogged(): Set<string> {
+  const set = new Set<string>();
+  const d = new Date(TODAY_Y, TODAY_M, TODAY_D);
+  for (let i = 0; i < HISTORY_DAYS; i++) {
+    if (!MISSED_AGO.includes(i)) set.add(key(d.getFullYear(), d.getMonth(), d.getDate()));
+    d.setDate(d.getDate() - 1);
+  }
+  return set;
+}
+
+/** how many consecutive days had been logged up to and including this one —
+    that run length is what decides the tier the tile wears */
+function runLengthAt(logged: Set<string>, year: number, month: number, day: number) {
+  let run = 0;
+  const d = new Date(year, month, day);
+  while (logged.has(key(d.getFullYear(), d.getMonth(), d.getDate()))) {
+    run++;
+    d.setDate(d.getDate() - 1);
+  }
+  return run;
+}
+
+function tierIndexForRun(run: number): 0 | 1 | 2 | 3 | 4 | 5 {
+  if (run <= 0) return 0;
+  if (run <= 4) return 1;
+  if (run <= 8) return 2;
+  if (run <= 12) return 3;
+  if (run <= 16) return 4;
   return 5;
 }
-const DOW = ["S", "M", "T", "W", "T", "F", "S"];
-const CELLS: (number | null)[] = [null, null, null, ...Array.from({ length: 25 }, (_, i) => i + 1)];
+
+/* ---------- the free colour window ----------
+   Free users keep tier colours for 30 days from signup, then the calendar goes
+   plain while the streak keeps counting. Stand-in signup date until the backend
+   stores the real one — set 24 days ago so the countdown reads 6 days. */
+const SIGNUP = new Date(TODAY_Y, TODAY_M, TODAY_D - 24);
+const FREE_WINDOW_DAYS = 30;
+const FADE_DATE = new Date(SIGNUP.getFullYear(), SIGNUP.getMonth(), SIGNUP.getDate() + FREE_WINDOW_DAYS);
+const DAYS_LEFT = Math.ceil((FADE_DATE.getTime() - TODAY.getTime()) / 86400000);
 
 const DAY_MEALS = [
   { name: "Breakfast", time: "8:15 AM", title: "Scrambled eggs & avocado", cal: 430, pct: 22, voice: true },
@@ -28,96 +108,208 @@ const DAY_MEALS = [
   { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, pct: 35, voice: true },
 ];
 
-const TILE_SIZE = 52;
+/* ---------- the date jump ----------
+   Three wheels — day, month, year — same feel as the birthday picker in
+   onboarding. Lands on a specific day, so it opens that month with the day
+   already selected and goes straight to its recap. */
+const ROW_H = 38;
+const YEARS = Array.from({ length: 6 }, (_, i) => TODAY_Y - 4 + i);
 
-// `plain` = free user: no tier colours, just a green check on logged days
-function DayTile({ d, onSelect, plain, T }: { d: number | null; onSelect: (d: number) => void; plain: boolean; T: any }) {
-  const s = styles(T);
-  if (d == null) return <View style={s.cell} />;
-  const tier = dayTier(d);
-  const t = TIERS[tier as 1 | 2 | 3 | 4 | 5];
-  const happened = d <= TODAY;
-  const isUlt = t && t.color === "ultimate";
-
-  if (!happened) {
-    return (
-      <View style={s.cell}>
-        <View style={[s.tileBox, { backgroundColor: T.emptyTile, borderWidth: 1, borderColor: T.border }]}>
-          <Text style={[s.dayNum, { color: T.micro }]}>{d}</Text>
-        </View>
-      </View>
-    );
-  }
-
-  if (plain) {
-    return (
-      <Pressable style={s.cell} onPress={() => onSelect(d)}>
-        <View style={[s.tileBox, { backgroundColor: T.card, borderWidth: 1, borderColor: T.border }]}>
-          <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
-          <Text style={s.plainCheck}>✓</Text>
-        </View>
-      </Pressable>
-    );
-  }
-
-  if (isUlt) {
-    return (
-      <Pressable style={s.cell} onPress={() => onSelect(d)}>
-        <View style={s.tileWrap}>
-          <TravelBorder colors={ULT_COLORS} cardBg="#3B1A4A" borderColor={T.border} radius={12} strokeWidth={2.5}>
-            <View style={s.tileInner} />
-          </TravelBorder>
-          <Text style={[s.dayNum, s.dayNumOverlay, { color: "#FFFFFF" }]}>{d}</Text>
-          <Flame size={12} color="#FACC15" fill="#FB923C" style={s.flameOverlay} />
-        </View>
-      </Pressable>
-    );
-  }
+function Wheel({
+  values,
+  labels,
+  value,
+  onChange,
+  disabled,
+  width,
+  T,
+}: {
+  values: number[];
+  labels: string[];
+  value: number;
+  onChange: (v: number) => void;
+  disabled?: (v: number) => boolean;
+  width: number;
+  T: any;
+}) {
+  const ref = useRef<ScrollView>(null);
+  const idx = Math.max(0, values.indexOf(value));
+  const s = wheelStyles(T);
 
   return (
-    <Pressable style={s.cell} onPress={() => onSelect(d)}>
-      <View style={s.tileWrap}>
-        <TravelBorder color={t.color} cardBg={`${t.color}33`} borderColor={T.border} radius={12} strokeWidth={2.5}>
-          <View style={s.tileInner} />
-        </TravelBorder>
-        <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
-        <Flame size={12} color={t.color} fill={t.color} style={s.flameOverlay} />
-      </View>
-    </Pressable>
+    <ScrollView
+      ref={ref}
+      style={{ width, height: ROW_H * 5 }}
+      contentContainerStyle={{ paddingVertical: ROW_H * 2 }}
+      showsVerticalScrollIndicator={false}
+      snapToInterval={ROW_H}
+      decelerationRate="fast"
+      contentOffset={{ x: 0, y: idx * ROW_H }}
+      onMomentumScrollEnd={(e) => {
+        const i = Math.round(e.nativeEvent.contentOffset.y / ROW_H);
+        const v = values[Math.min(values.length - 1, Math.max(0, i))];
+        if (v != null && !disabled?.(v)) onChange(v);
+        else ref.current?.scrollTo({ y: idx * ROW_H, animated: true });
+      }}
+    >
+      {values.map((v, i) => {
+        const off = disabled?.(v);
+        const active = v === value;
+        return (
+          <View key={v} style={{ height: ROW_H, alignItems: "center", justifyContent: "center" }}>
+            <Text style={[s.wheelText, active && s.wheelActive, off && s.wheelOff]}>{labels[i]}</Text>
+          </View>
+        );
+      })}
+    </ScrollView>
   );
 }
 
 export default function Calendar() {
   const { T, freeLocked, openPaywall, plan } = useApp();
+
+  const [year, setYear] = useState(TODAY_Y);
+  const [month, setMonth] = useState(TODAY_M);
   const [day, setDay] = useState<number | null>(null);
-  const [monthIdx, setMonthIdx] = useState(7); // 7 = August
-  const [year, setYear] = useState(2026);
+
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pY, setPY] = useState(TODAY_Y);
+  const [pM, setPM] = useState(TODAY_M);
+  const [pD, setPD] = useState(TODAY_D);
+
+  const [reelOpen, setReelOpen] = useState(false);
 
   const s = styles(T);
-  const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
+
+  const logged = useMemo(() => buildLogged(), []);
+  const cells = useMemo(() => buildGrid(year, month), [year, month]);
 
   const prevMonth = () => {
-    if (monthIdx === 0) { setMonthIdx(11); setYear((y) => y - 1); }
-    else setMonthIdx((m) => m - 1);
+    setDay(null);
+    if (month === 0) { setMonth(11); setYear((y) => y - 1); }
+    else setMonth((m) => m - 1);
   };
   const nextMonth = () => {
-    if (monthIdx === 11) { setMonthIdx(0); setYear((y) => y + 1); }
-    else setMonthIdx((m) => m + 1);
+    setDay(null);
+    if (month === 11) { setMonth(0); setYear((y) => y + 1); }
+    else setMonth((m) => m + 1);
   };
 
+  const atCurrentMonth = year === TODAY_Y && month === TODAY_M;
+  const canGoNext = !atCurrentMonth;
+
+  const openPicker = () => {
+    setPY(year);
+    setPM(month);
+    setPD(Math.min(day ?? TODAY_D, daysInMonth(year, month)));
+    setPickerOpen(true);
+  };
+
+  const applyPicker = () => {
+    const maxD = daysInMonth(pY, pM);
+    const d = Math.min(pD, maxD);
+    setYear(pY);
+    setMonth(pM);
+    // land straight on the day's recap if there's something logged there
+    setDay(logged.has(key(pY, pM, d)) && !isFuture(pY, pM, d) ? d : null);
+    setPickerOpen(false);
+  };
+
+  const jumpToday = () => {
+    setYear(TODAY_Y);
+    setMonth(TODAY_M);
+    setDay(null);
+    setPickerOpen(false);
+  };
+
+  // months ahead of today are unreachable — nothing is logged in the future
+  const monthDisabled = (m: number) => pY > TODAY_Y || (pY === TODAY_Y && m > TODAY_M);
+  const yearDisabled = (y: number) => y > TODAY_Y;
+  const dayDisabled = (d: number) => {
+    if (d > daysInMonth(pY, pM)) return true;
+    return isFuture(pY, pM, d);
+  };
+
+  const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
+
+  /* ---------- one day tile ---------- */
+  const DayTile = ({ d }: { d: number | null }) => {
+    if (d == null) return <View style={s.cell} />;
+
+    const future = isFuture(year, month, d);
+    const today = isToday(year, month, d);
+    const isLogged = logged.has(key(year, month, d));
+
+    if (future || !isLogged) {
+      return (
+        <View style={s.cell}>
+          <View style={[
+            s.tileBox,
+            { backgroundColor: T.emptyTile, borderWidth: 1, borderColor: today ? T.green : T.border },
+          ]}>
+            <Text style={[s.dayNum, { color: today ? T.green : T.micro }]}>{d}</Text>
+          </View>
+        </View>
+      );
+    }
+
+    if (freeLocked) {
+      return (
+        <Tap onPress={() => setDay(d)} style={s.cell}>
+          <View style={[s.tileBox, { backgroundColor: T.card, borderWidth: 1, borderColor: today ? T.green : T.border }]}>
+            <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
+            <Text style={s.plainCheck}>✓</Text>
+          </View>
+        </Tap>
+      );
+    }
+
+    const run = runLengthAt(logged, year, month, d);
+    const t = TIERS[tierIndexForRun(run) as 1 | 2 | 3 | 4 | 5];
+    const isUlt = t.color === "ultimate";
+
+    if (isUlt) {
+      return (
+        <Tap onPress={() => setDay(d)} style={s.cell}>
+          <View style={s.tileWrap}>
+            <TravelBorder colors={ULT_COLORS} cardBg="#3B1A4A" borderColor={T.border} radius={12} strokeWidth={2.5}>
+              <View style={s.tileInner} />
+            </TravelBorder>
+            <Text style={[s.dayNum, s.dayNumOverlay, { color: "#FFFFFF" }]}>{d}</Text>
+            <Flame size={12} color="#FACC15" fill="#FB923C" style={s.flameOverlay} />
+          </View>
+        </Tap>
+      );
+    }
+
+    return (
+      <Tap onPress={() => setDay(d)} style={s.cell}>
+        <View style={s.tileWrap}>
+          <TravelBorder color={t.color} cardBg={`${t.color}33`} borderColor={T.border} radius={12} strokeWidth={2.5}>
+            <View style={s.tileInner} />
+          </TravelBorder>
+          <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
+          <Flame size={12} color={t.color} fill={t.color} style={s.flameOverlay} />
+        </View>
+      </Tap>
+    );
+  };
+
+  /* ---------- the day recap ---------- */
   if (day != null) {
-    const tier = dayTier(day);
-    const t = TIERS[tier as 1 | 2 | 3 | 4 | 5];
+    const run = runLengthAt(logged, year, month, day);
+    const t = TIERS[tierIndexForRun(run) as 1 | 2 | 3 | 4 | 5];
     const isUlt = !freeLocked && t.color === "ultimate";
     const total = DAY_MEALS.reduce((sum, m) => sum + m.cal, 0);
     const goal = plan.calories;
+    const diff = goal - total;
 
     return (
       <View style={s.screen}>
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-          <Pressable onPress={() => setDay(null)} style={s.backRow}>
+          <Pressable onPress={() => setDay(null)} style={s.backRow} hitSlop={10}>
             <ChevronLeft size={22} color={T.text} />
-            <Text style={s.backTitle}>{MONTHS[monthIdx].slice(0, 3)} {day}, {year}</Text>
+            <Text style={s.backTitle}>{MSHORT[month]} {day}, {year}</Text>
           </Pressable>
 
           {freeLocked ? (
@@ -127,12 +319,12 @@ export default function Calendar() {
           ) : isUlt ? (
             <LinearGradient colors={ULT_COLORS} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.tierPill}>
               <Flame size={12} color="#fff" fill="#fff" />
-              <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: "#fff" }}>Ultimate streak day</Text>
+              <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: "#fff" }}>Day {run} · Ultimate</Text>
             </LinearGradient>
           ) : (
             <View style={[s.tierPill, { backgroundColor: `${t.color}22` }]}>
               <Flame size={12} color={t.color} fill={t.color} />
-              <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: t.color }}>{t.name} streak day</Text>
+              <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: t.color }}>Day {run} · {t.name}</Text>
             </View>
           )}
 
@@ -180,7 +372,9 @@ export default function Calendar() {
               <View style={s.totalRow}>
                 <Text style={s.totalBig}>{total.toLocaleString()}</Text>
                 <Text style={s.totalSub}>of {goal.toLocaleString()} cal</Text>
-                <Text style={s.totalUnder}>{Math.abs(goal - total)} {goal - total >= 0 ? "under" : "over"}</Text>
+                <Text style={[s.totalUnder, { color: diff >= 0 ? T.green : T.orange }]}>
+                  {Math.abs(diff)} {diff >= 0 ? "under" : "over"}
+                </Text>
               </View>
             </View>
           </TravelBorder>
@@ -189,25 +383,39 @@ export default function Calendar() {
     );
   }
 
+  /* ---------- the month grid ---------- */
   return (
     <View style={s.screen}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-        <PageHeader title="Calendar" />
+        <PageHeader
+          title="Calendar"
+          right={
+            <Tap onPress={openPicker}>
+              <View style={s.jumpChip}>
+                <CalendarDays size={17} color={T.text} />
+              </View>
+            </Tap>
+          }
+        />
 
         <View style={s.monthRow}>
-          <Pressable onPress={prevMonth} hitSlop={10}><ChevronLeft size={18} color={T.sub} /></Pressable>
-          <Text style={s.monthText}>{MONTHS[monthIdx]} {year}</Text>
-          <Pressable onPress={nextMonth} hitSlop={10}><ChevronRight size={18} color={T.sub} /></Pressable>
-          <Pressable hitSlop={10} style={{ marginLeft: 6 }}><CalendarDays size={17} color={T.green} /></Pressable>
+          <Pressable onPress={prevMonth} hitSlop={12} style={s.monthArrow}>
+            <ChevronLeft size={18} color={T.sub} />
+          </Pressable>
+          <Text style={s.monthText}>{MONTHS[month]} {year}</Text>
+          <Pressable onPress={canGoNext ? nextMonth : undefined} hitSlop={12} style={s.monthArrow}>
+            <ChevronRight size={18} color={canGoNext ? T.sub : T.border} />
+          </Pressable>
         </View>
 
-        {/* FREE users see a "colours are Pro" bar instead of the tier legend */}
         {freeLocked ? (
           <>
-            <Pressable onPress={() => openPaywall("subscribe")} style={s.plainBar}>
-              <Lock size={13} color={T.green} />
-              <Text style={s.plainBarText}>Your streak's still running — unlock tier colours with Pro</Text>
-            </Pressable>
+            <Tap onPress={() => openPaywall("subscribe")}>
+              <View style={s.plainBar}>
+                <Lock size={13} color={T.green} />
+                <Text style={s.plainBarText}>Your streak's still running — unlock tier colours with Pro</Text>
+              </View>
+            </Tap>
             <View style={s.legend}>
               <View style={s.legendItem}>
                 <View style={{ width: 11, height: 11, borderRadius: 4, backgroundColor: T.green }} />
@@ -234,31 +442,120 @@ export default function Calendar() {
         )}
 
         <View style={s.dowRow}>
-          {DOW.map((d, i) => (
-            <Text key={i} style={s.dow}>{d}</Text>
-          ))}
+          {DOW.map((d, i) => <Text key={i} style={s.dow}>{d}</Text>)}
         </View>
 
         <View style={s.grid}>
-          {CELLS.map((d, i) => (
-            <DayTile key={i} d={d} onSelect={setDay} plain={freeLocked} T={T} />
-          ))}
+          {cells.map((d, i) => <DayTile key={`${year}-${month}-${i}`} d={d} />)}
         </View>
 
         <Text style={s.hint}>
           {freeLocked ? "Tap any logged day to open its recap →" : "Tap any lit day to open its recap →"}
         </Text>
+
+        {/* the free-tier countdown — Pro users never see this */}
+        {freeLocked && (
+          <StreakWarnCard daysLeft={DAYS_LEFT} fadeDate={FADE_DATE} onTap={() => setReelOpen(true)} />
+        )}
       </ScrollView>
+
+      <StreakReel visible={reelOpen} onClose={() => setReelOpen(false)} />
+
+      {/* ---------- DATE JUMP ---------- */}
+      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+        <View style={{ flex: 1 }}>
+          <Pressable style={s.backdrop} onPress={() => setPickerOpen(false)} />
+          <View style={s.pickerCentre} pointerEvents="box-none">
+            <View style={s.pickerCard}>
+              <View style={s.pickerHead}>
+                <View style={{ width: 34 }} />
+                <Text style={s.pickerTitle}>Jump to</Text>
+                <Pressable onPress={() => setPickerOpen(false)} hitSlop={14} style={s.pickerClose}>
+                  <X size={17} color={T.sub} />
+                </Pressable>
+              </View>
+
+              <View style={s.wheelLabels}>
+                <Text style={[s.wheelLabel, { flex: 0.8 }]}>Day</Text>
+                <Text style={[s.wheelLabel, { flex: 1.3 }]}>Month</Text>
+                <Text style={[s.wheelLabel, { flex: 1 }]}>Year</Text>
+              </View>
+
+              <View style={s.wheelRow}>
+                <View style={s.wheelBand} pointerEvents="none" />
+                <View style={{ flex: 0.8, alignItems: "center" }}>
+                  <Wheel
+                    T={T}
+                    width={60}
+                    values={Array.from({ length: 31 }, (_, i) => i + 1)}
+                    labels={Array.from({ length: 31 }, (_, i) => String(i + 1))}
+                    value={pD}
+                    onChange={setPD}
+                    disabled={dayDisabled}
+                  />
+                </View>
+                <View style={{ flex: 1.3, alignItems: "center" }}>
+                  <Wheel
+                    T={T}
+                    width={120}
+                    values={Array.from({ length: 12 }, (_, i) => i)}
+                    labels={MONTHS}
+                    value={pM}
+                    onChange={setPM}
+                    disabled={monthDisabled}
+                  />
+                </View>
+                <View style={{ flex: 1, alignItems: "center" }}>
+                  <Wheel
+                    T={T}
+                    width={80}
+                    values={YEARS}
+                    labels={YEARS.map(String)}
+                    value={pY}
+                    onChange={setPY}
+                    disabled={yearDisabled}
+                  />
+                </View>
+              </View>
+
+              <View style={s.pickerFooter}>
+                <Tap onPress={jumpToday} style={{ flex: 1 }}>
+                  <View style={s.pickerGhost}>
+                    <Text style={s.pickerGhostText}>Today</Text>
+                  </View>
+                </Tap>
+                <Tap onPress={applyPicker} style={{ flex: 1.5 }}>
+                  <View style={s.pickerGo}>
+                    <Text style={s.pickerGoText}>
+                      Go to {MSHORT[pM]} {Math.min(pD, daysInMonth(pY, pM))}
+                    </Text>
+                  </View>
+                </Tap>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
+
+const wheelStyles = (T: any) =>
+  StyleSheet.create({
+    wheelText: { fontSize: 15, color: T.sub, fontFamily: FONTS.body },
+    wheelActive: { fontSize: 18, color: T.green, fontFamily: FONTS.headingMed },
+    wheelOff: { color: T.border },
+  });
 
 const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
 
-    monthRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, marginBottom: 16 },
-    monthText: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, minWidth: 130, textAlign: "center" },
+    jumpChip: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, alignItems: "center", justifyContent: "center" },
+
+    monthRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 16 },
+    monthArrow: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
+    monthText: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, minWidth: 140, textAlign: "center" },
 
     legend: { flexDirection: "row", flexWrap: "wrap", gap: 12, marginBottom: 16, justifyContent: "center" },
     legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
@@ -306,5 +603,23 @@ const styles = (T: any) =>
     totalRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
     totalBig: { fontSize: 34, color: T.text, fontFamily: FONTS.heading },
     totalSub: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
-    totalUnder: { marginLeft: "auto", fontSize: 12, color: T.green, fontFamily: FONTS.headingMed },
+    totalUnder: { marginLeft: "auto", fontSize: 12, fontFamily: FONTS.headingMed },
+
+    backdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(0,0,0,0.62)" },
+    pickerCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 18 },
+    pickerCard: { width: "100%", maxWidth: 360, backgroundColor: T.bg, borderWidth: 1, borderColor: T.border, borderRadius: 22, overflow: "hidden" },
+    pickerHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 10 },
+    pickerTitle: { flex: 1, textAlign: "center", fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
+    pickerClose: { width: 34, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
+
+    wheelLabels: { flexDirection: "row", paddingHorizontal: 16, paddingBottom: 4 },
+    wheelLabel: { textAlign: "center", fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
+    wheelRow: { flexDirection: "row", paddingHorizontal: 16, position: "relative" },
+    wheelBand: { position: "absolute", left: 16, right: 16, top: ROW_H * 2, height: ROW_H, borderRadius: 10, backgroundColor: T.greenBg, borderTopWidth: 1, borderBottomWidth: 1, borderColor: T.greenBorder, zIndex: 0 },
+
+    pickerFooter: { flexDirection: "row", gap: 8, padding: 16 },
+    pickerGhost: { alignItems: "center", paddingVertical: 12, borderRadius: 13, backgroundColor: T.card, borderWidth: 1, borderColor: T.border },
+    pickerGhostText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
+    pickerGo: { alignItems: "center", paddingVertical: 12, borderRadius: 13, backgroundColor: T.green },
+    pickerGoText: { fontSize: 13, color: T.ink, fontFamily: FONTS.headingMed },
   });

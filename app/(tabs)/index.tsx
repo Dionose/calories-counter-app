@@ -105,15 +105,15 @@ export default function Home() {
   const [crownPlay, setCrownPlay] = useState(0);
   const board = useRef(new Animated.Value(0)).current;
 
-  // guards against rapid repeat taps. Switching scope swaps 30 text rows for
-  // ten crown SVGs and restarts the reveal — hammering it faster than a frame
-  // queues that work over and over until the thread stalls.
+  // guards against rapid repeat taps
   const scopeLock = useRef(false);
   const sheetBusy = useRef(false);
 
   const tier = tierForStreak(streakDays);
   const isUlt = tier.color === "ultimate";
-  const flameColor = isUlt ? T.orange : tier.color;
+  // FREE users see the streak in plain green — the day count is the truth and
+  // stays visible, but the tier, its colour and the points are the product.
+  const flameColor = freeLocked ? T.green : isUlt ? T.orange : tier.color;
 
   const eaten = MEALS.reduce((sum, m) => sum + m.cal, 0);
   const burned = 320;
@@ -165,8 +165,6 @@ export default function Home() {
       .start(() => { setBoardMounted(false); setHowOpen(false); sheetBusy.current = false; });
   }, []);
 
-  // ignore a tap on the scope you're already on, and ignore anything that
-  // lands inside the swap window
   const pickScope = useCallback((sc: Scope) => {
     setScope((cur) => {
       if (sc === cur || scopeLock.current) return cur;
@@ -247,7 +245,6 @@ export default function Home() {
     );
   };
 
-  // the row lists are built once, not on every scope tap
   const seasonRows = useMemo(() => BOARD_FULL.map((r) => <BoardRow key={r.rank} r={r} />), [T, streakDays]);
   const totalTopRows = useMemo(() => TOTAL_TOP.map((r) => <TotalRow key={r.rank} r={r} />), [T]);
   const totalNearRows = useMemo(() => TOTAL_NEAR.map((r) => <TotalRow key={r.rank} r={r} />), [T]);
@@ -413,7 +410,13 @@ export default function Home() {
           </View>
         )}
 
-        {/* SECONDARY chips */}
+        {/* SECONDARY chips.
+            STREAK stays readable on free — the day count is the user's own
+            truth and the Calendar shows it anyway; only the tier, its colour
+            and the points are held back.
+            EXPECTED WEIGHT is blur-locked, and so is the Stats weight card —
+            locking one and leaving the other open just sends people the long
+            way round to the same number. */}
         <View style={s.strip}>
           <Tap onPress={() => router.push("/(tabs)/calendar")} style={{ flex: 1 }}>
             <View style={s.chipCard}>
@@ -426,7 +429,10 @@ export default function Home() {
                 <Text style={s.wUnit}>days</Text>
                 <Flame size={16} color={flameColor} fill={flameColor} style={{ marginLeft: "auto" }} />
               </View>
-              {isUlt ? (
+
+              {freeLocked ? (
+                <Text style={[s.chipNote, { color: T.green }]}>Streak running · unlock tiers</Text>
+              ) : isUlt ? (
                 <View style={{ marginTop: 4 }}>
                   <GradientText text="Ultimate · +5 pts today" colors={ULT_COLORS} fontSize={9.5} fontFamily={FONTS.headingMed} />
                 </View>
