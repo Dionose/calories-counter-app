@@ -1,131 +1,129 @@
 // app/(tabs)/_layout.tsx
+// The tab bar. The camera sits in the middle as a raised button, and tapping
+// the tab you're already on fires resetTab() so that tab drops back to its
+// root — Stats leaves its detail view, Profile leaves the account screen.
 import { Tabs } from "expo-router";
-import LottieView from "lottie-react-native";
+import { BarChart3, CalendarDays, Camera, Home, User } from "lucide-react-native";
 import React from "react";
-import { StyleSheet, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
+import Paywall from "../../components/Paywall";
 import { useApp } from "../../constants/AppState";
-import { FONTS } from "../../constants/theme";
-
-// ---- animated tab icons ----
-const ICONS = {
-  home: require("../../assets/motion-home-22C55E.json"),
-  calendar: require("../../assets/motion-calendar-outline-green.json"),
-  cameraDark: require("../../assets/motion-camera-dark.json"), // dark = shows on the green button
-  stats: require("../../assets/motion-stats-hybrid-green.json"),
-  profile: require("../../assets/motion-profile-22C55E.json"),
-};
-
-// A tab icon that always loops. Dimmed when the tab is not focused.
-function TabLottie({ source, focused, size = 28 }: { source: any; focused: boolean; size?: number }) {
-  return (
-    <LottieView
-      source={source}
-      autoPlay
-      loop
-      style={{ width: size, height: size, opacity: focused ? 1 : 0.55 }}
-    />
-  );
-}
-
-// the raised center camera button (dark icon on the green button)
-function CameraTabIcon({ T }: { T: any }) {
-  const s = styles(T);
-  return (
-    <View style={s.cameraWrap}>
-      <View style={s.cameraButton}>
-        <LottieView
-          source={ICONS.cameraDark}
-          autoPlay
-          loop
-          style={{ width: 30, height: 30 }}
-        />
-      </View>
-    </View>
-  );
-}
+import * as H from "../../constants/haptics";
 
 export default function TabsLayout() {
-  const { T } = useApp();
+  const { T, resetTab } = useApp();
+  const s = styles(T);
+
+  /* Fires on every tab press. If the tab is already focused, we bump the reset
+     key instead of navigating — that's what lets a sub-view close from the tab
+     bar rather than trapping you until you find the back arrow. */
+  const listeners = ({ navigation, route }: any) => ({
+    tabPress: () => {
+      const focused = navigation.isFocused();
+      if (focused) {
+        H.tap();
+        resetTab();
+      }
+    },
+  });
 
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarShowLabel: true,
-        tabBarActiveTintColor: T.green,
-        tabBarInactiveTintColor: T.micro,
-        tabBarStyle: {
-          backgroundColor: T.card,
-          borderTopColor: T.border,
-          borderTopWidth: 1,
-          height: 88,
-          paddingTop: 8,
-          paddingBottom: 28,
-        },
-        tabBarLabelStyle: {
-          fontFamily: FONTS.bodyMed,
-          fontSize: 10,
-          marginTop: 2,
-        },
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Home",
-          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.home} focused={focused} />,
+    <View style={{ flex: 1, backgroundColor: T.bg }}>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarShowLabel: true,
+          tabBarActiveTintColor: T.green,
+          tabBarInactiveTintColor: T.micro,
+          tabBarStyle: s.bar,
+          tabBarLabelStyle: s.label,
+          tabBarItemStyle: { paddingTop: 6 },
+          sceneStyle: { backgroundColor: T.bg },
         }}
-      />
-      <Tabs.Screen
-        name="calendar"
-        options={{
-          title: "Calendar",
-          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.calendar} focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="camera"
-        options={{
-          title: "",
-          tabBarIcon: () => <CameraTabIcon T={T} />,
-        }}
-      />
-      <Tabs.Screen
-        name="stats"
-        options={{
-          title: "Stats",
-          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.stats} focused={focused} />,
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: "Profile",
-          tabBarIcon: ({ focused }) => <TabLottie source={ICONS.profile} focused={focused} />,
-        }}
-      />
-    </Tabs>
+      >
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: "Home",
+            tabBarIcon: ({ color }) => <Home size={22} color={color} />,
+          }}
+          listeners={listeners}
+        />
+
+        <Tabs.Screen
+          name="calendar"
+          options={{
+            title: "Calendar",
+            tabBarIcon: ({ color }) => <CalendarDays size={22} color={color} />,
+          }}
+          listeners={listeners}
+        />
+
+        {/* the raised camera button */}
+        <Tabs.Screen
+          name="camera"
+          options={{
+            title: "",
+            tabBarIcon: () => (
+              <View style={s.camWrap}>
+                <View style={s.camBtn}>
+                  <Camera size={26} color={T.ink} />
+                </View>
+              </View>
+            ),
+          }}
+          listeners={listeners}
+        />
+
+        <Tabs.Screen
+          name="stats"
+          options={{
+            title: "Stats",
+            tabBarIcon: ({ color }) => <BarChart3 size={22} color={color} />,
+          }}
+          listeners={listeners}
+        />
+
+        <Tabs.Screen
+          name="profile"
+          options={{
+            title: "Profile",
+            tabBarIcon: ({ color }) => <User size={22} color={color} />,
+          }}
+          listeners={listeners}
+        />
+      </Tabs>
+
+      {/* the paywall lives above the tabs so it covers the bar too */}
+      <Paywall />
+    </View>
   );
 }
 
 const styles = (T: any) =>
   StyleSheet.create({
-    cameraWrap: {
-      alignItems: "center",
-      justifyContent: "center",
+    bar: {
+      backgroundColor: T.bg,
+      borderTopWidth: 1,
+      borderTopColor: T.border,
+      height: Platform.OS === "ios" ? 88 : 68,
+      paddingBottom: Platform.OS === "ios" ? 28 : 10,
+      paddingTop: 6,
     },
-    cameraButton: {
-      width: 52,
-      height: 52,
-      borderRadius: 18,
+    label: { fontSize: 10, marginTop: 2 },
+    camWrap: { alignItems: "center", justifyContent: "center" },
+    camBtn: {
+      width: 58,
+      height: 58,
+      borderRadius: 20,
       backgroundColor: T.green,
       alignItems: "center",
       justifyContent: "center",
-      marginTop: -20,
+      marginBottom: 18,
       shadowColor: T.green,
-      shadowOpacity: 0.4,
-      shadowRadius: 12,
-      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.5,
+      shadowRadius: 14,
+      shadowOffset: { width: 0, height: 4 },
       elevation: 8,
     },
   });

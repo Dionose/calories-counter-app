@@ -137,7 +137,10 @@ const LANGUAGES = [
 
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
 
-/* ===================== THE PLAN CALCULATION ===================== */
+/* ===================== THE PLAN CALCULATION =====================
+   The NUMBER comes from a formula (Mifflin-St Jeor + activity factor),
+   not from the AI — same inputs always give the same target, and it's
+   clinically grounded. Motion supplies the coaching around it. */
 function buildPlan(a: Record<string, any>) {
   const wUnit = a.weight?.unit || "kg";
   const wRaw = parseFloat(a.weight?.val) || 75;
@@ -184,7 +187,9 @@ function buildPlan(a: Record<string, any>) {
   const fat = Math.round((calories * 0.25) / 9);
   const carbs = Math.round((calories - protein * 4 - fat * 9) / 4);
 
-  return { calories, protein, carbs, fat, tdee: Math.round(tdee), hitFloor, kg };
+  // cm is returned so finish() can store it — Profile's Goal screen needs
+  // height to recompute BMR later without guessing
+  return { calories, protein, carbs, fat, tdee: Math.round(tdee), hitFloor, kg, cm: Math.round(cm) };
 }
 
 function goalTimeline(a: Record<string, any>) {
@@ -226,8 +231,11 @@ export default function Onboarding() {
   const goBack = () => { if (i > 0) { setDir(-1); setI(i - 1); } };
 
   const finish = (pro: boolean) => {
+    // hand the generated plan to the rest of the app before we leave onboarding
     const p = buildPlan(answers);
     const tl = goalTimeline(answers);
+    const b = answers.birthday || { d: 12, m: 2, y: 2001 };
+
     savePlan(
       {
         calories: p.calories,
@@ -239,6 +247,15 @@ export default function Onboarding() {
       },
       {
         name: "Dion",
+        /* SEX and HEIGHT are stored because Profile → Goal recomputes BMR from
+           the body when you change your goal. Without them it would have to
+           guess, and the female constant differs by 166 calories. */
+        sex: (answers.sex || "male") as "male" | "female",
+        heightCm: p.cm,
+        heightUnit: (answers.height?.unit === "cm" ? "cm" : "ft") as "cm" | "ft",
+        dobDay: b.d,
+        dobMonth: b.m,
+        dobYear: b.y,
         goal: (answers.goal || "lose") as "lose" | "maintain" | "gain",
         weightUnit: (tl.unit || "kg") as "kg" | "lbs",
         startWeight: tl.cur,
@@ -354,7 +371,9 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
   );
 }
 
-/* ===================== HEALTH SYNC ===================== */
+/* ===================== HEALTH SYNC =====================
+   UI + explanation only. The real HealthKit / Health Connect call needs a
+   development build (it does NOT work in Expo Go) — wire at backend phase. */
 function HealthStep({ value, onChange, onNext }: any) {
   const connected = value === "yes";
   return (
@@ -542,7 +561,9 @@ function SignInStep({ onNext }: { onNext: () => void }) {
   );
 }
 
-/* ===================== YOUR WEIGHT OVER TIME ===================== */
+/* ===================== YOUR WEIGHT OVER TIME =====================
+   Direction-aware: losing starts high and comes down, gaining starts low
+   and goes up, maintaining runs flat. */
 function GraphStep({ answers, onNext }: any) {
   const { unit, cur, target, weeks, losing, maintaining } = goalTimeline(answers);
   const fade = useRef(new Animated.Value(0)).current;
@@ -963,7 +984,10 @@ function WeightStep({ step, value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== DESIRED WEIGHT ===================== */
+/* ===================== DESIRED WEIGHT =====================
+   A target that contradicts the stated goal is a HARD BLOCK, not a note —
+   letting it through would make the plan, the timeline and the graph all
+   disagree with each other. */
 function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
   const unit = current?.unit || "kg";
   const cur = parseFloat(current?.val) || (unit === "kg" ? 78 : 172);

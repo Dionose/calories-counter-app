@@ -1,7 +1,6 @@
 // app/(tabs)/stats.tsx
 // Stats is one tab holding four views — main, steps, calories, weight — swapped
 // by a single `view` state rather than routing, so the tab bar stays put.
-import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { Activity, ArrowDown, CalendarDays, ChevronLeft, Crown, Flame, Footprints, Lock, Scale, Target, TrendingDown, TrendingUp, Watch } from "lucide-react-native";
@@ -13,6 +12,8 @@ import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
+// every buzz goes through here so Profile → Haptics actually governs them
+import * as H from "../../constants/haptics";
 import { FONTS } from "../../constants/theme";
 
 type Range = "Week" | "Month" | "Year";
@@ -100,8 +101,8 @@ const PROTEIN_RATIO: Record<Range, number> = { Week: 0.80, Month: 0.76, Year: 0.
 const RANGE_WORD: Record<Range, string> = { Week: "week", Month: "month", Year: "year" };
 
 /* STEPS zoom out by TOTAL, not by average.
-   Week shows each day's steps. Month shows each week's TOTAL (~55k), Year shows
-   each month's TOTAL (~250k) — "I walked 55k that week" is a more satisfying
+   Week shows each day's steps. Month shows each week's TOTAL (~58k), Year shows
+   each month's TOTAL (~255k) — "I walked 58k that week" is a more satisfying
    fact than an average you've already seen at the Week view.
    Calories can't do this: a month's calorie total against a daily goal is
    meaningless, so those stay as average days. Different quantities, different
@@ -228,7 +229,7 @@ function RulerPicker({
           lastIdx.current = idx;
           const v = +(cfg.min + idx * cfg.step).toFixed(1);
           if (v >= cfg.min && v <= cfg.max) {
-            Haptics.selectionAsync();
+            H.tick();
             setValue(v);
           }
         }}
@@ -252,12 +253,20 @@ function RulerPicker({
 
 export default function Stats() {
   const router = useRouter();
-  const { T, freeLocked, plan, profile, updateProfile, openPaywall } = useApp();
+  const { T, freeLocked, plan, profile, updateProfile, openPaywall, tabResetKey } = useApp();
   const [range, setRange] = useState<Range>("Week");
   const [view, setView] = useState<View_>(null);
 
   const s = styles(T);
   const rangeWord = RANGE_WORD[range];
+
+  /* tapping the Stats tab while already on it drops back to the main view —
+     skip the first render, which isn't a tap */
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) { didMount.current = true; return; }
+    setView(null);
+  }, [tabResetKey]);
 
   const { bars: steps, perDay: stepsPerDay, unit: stepUnit } = useMemo(() => stepData(range), [range]);
   const maxStep = useMemo(() => Math.max(...steps.map((b) => b.v)), [steps]);
@@ -446,10 +455,7 @@ export default function Stats() {
           ))}
         </View>
 
-        {/* WIDGET 1 — STEPS.
-            Week shows each day; Month shows each week's TOTAL; Year each
-            month's TOTAL. The headline follows: steps a day at Week, the
-            period's total at Month and Year. */}
+        {/* WIDGET 1 — STEPS */}
         <Tap onPress={() => setView("steps")}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
             <View style={{ padding: 18 }}>
@@ -470,9 +476,7 @@ export default function Stats() {
               </View>
 
               {range !== "Week" && (
-                <Text style={s.stepSubNote}>
-                  about {stepsPerDay.toLocaleString()} a day
-                </Text>
+                <Text style={s.stepSubNote}>about {stepsPerDay.toLocaleString()} a day</Text>
               )}
 
               <View style={s.chart}>
@@ -770,12 +774,12 @@ function CaloriesView({
     if (loading || !hasMore) return;
 
     if (atFreeWall) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      H.warn();
       setWall(true);
       return;
     }
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    H.tap();
     setLoading(true);
     await sleep(HOLD_MS);
 
@@ -931,7 +935,7 @@ function WeightView({
   };
 
   const save = () => {
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    H.success();
     onSave(+val.toFixed(1), unit);
   };
 

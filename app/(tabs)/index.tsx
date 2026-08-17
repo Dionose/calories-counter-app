@@ -93,7 +93,7 @@ const SCOPES: Scope[] = ["General", "Regional", "Total"];
 
 export default function Home() {
   const router = useRouter();
-  const { T, freeLocked, togglePro, isPro, plan, profile, streakDays } = useApp();
+  const { T, freeLocked, togglePro, isPro, plan, profile, streakDays, tabResetKey } = useApp();
   const [scope, setScope] = useState<Scope>("General");
 
   const [heroOpen, setHeroOpen] = useState(false);
@@ -109,6 +109,16 @@ export default function Home() {
   const scopeLock = useRef(false);
   const sheetBusy = useRef(false);
 
+  /* tapping the Home tab while already here closes any open sheet */
+  const didMount = useRef(false);
+  React.useEffect(() => {
+    if (!didMount.current) { didMount.current = true; return; }
+    setHeroOpen(false);
+    setBoardMounted(false);
+    setBoardBody(false);
+    setHowOpen(false);
+  }, [tabResetKey]);
+
   const tier = tierForStreak(streakDays);
   const isUlt = tier.color === "ultimate";
   // FREE users see the streak in plain green — the day count is the truth and
@@ -117,7 +127,11 @@ export default function Home() {
 
   const eaten = MEALS.reduce((sum, m) => sum + m.cal, 0);
   const burned = 320;
-  const goal = plan.calories + (plan.addBurned ? burned : 0);
+  /* The base target from your plan, plus what you burned IF you asked for that
+     in onboarding. Showing only the sum made the hero look wrong after a
+     rebuild — the breakdown below the number is what makes it legible. */
+  const base = plan.calories;
+  const goal = base + (plan.addBurned ? burned : 0);
   const remaining = Math.max(0, goal - eaten);
   const over = eaten - goal;
   const pct = Math.min(100, (eaten / goal) * 100);
@@ -317,6 +331,14 @@ export default function Home() {
                 <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
               </View>
 
+              {/* why today's goal is higher than your plan — otherwise the
+                  number looks wrong after changing your goal */}
+              {plan.addBurned && (
+                <Text style={s.goalBreakdown}>
+                  {base.toLocaleString()} target + {burned} burned today
+                </Text>
+              )}
+
               <CalorieBar />
 
               <View style={[s.rowBetween, { marginTop: 8 }]}>
@@ -410,13 +432,7 @@ export default function Home() {
           </View>
         )}
 
-        {/* SECONDARY chips.
-            STREAK stays readable on free — the day count is the user's own
-            truth and the Calendar shows it anyway; only the tier, its colour
-            and the points are held back.
-            EXPECTED WEIGHT is blur-locked, and so is the Stats weight card —
-            locking one and leaving the other open just sends people the long
-            way round to the same number. */}
+        {/* SECONDARY chips */}
         <View style={s.strip}>
           <Tap onPress={() => router.push("/(tabs)/calendar")} style={{ flex: 1 }}>
             <View style={s.chipCard}>
@@ -502,6 +518,12 @@ export default function Home() {
                       <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
                     </View>
 
+                    {plan.addBurned && (
+                      <Text style={s.goalBreakdown}>
+                        {base.toLocaleString()} target + {burned} burned today
+                      </Text>
+                    )}
+
                     <CalorieBar height={12} />
 
                     <View style={[s.rowBetween, { marginTop: 8, marginBottom: 20 }]}>
@@ -534,7 +556,8 @@ export default function Home() {
 
                     {plan.addBurned && (
                       <Text style={s.burnedNote}>
-                        Burned calories are added to your target — that's why today's goal is {goal.toLocaleString()}.
+                        You asked MOTION to add burned calories back, so training days give you more to
+                        eat. Turn it off in Profile → Goals.
                       </Text>
                     )}
                   </ScrollView>
@@ -751,6 +774,7 @@ const styles = (T: any) =>
     calRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
     calBig: { fontSize: 46, color: T.text, fontFamily: FONTS.heading },
     calSub: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
+    goalBreakdown: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
     track: { marginTop: 14, borderRadius: 99, backgroundColor: T.track, overflow: "hidden" },
     fillFlat: { height: "100%", borderRadius: 99 },
     eatenLine: { fontSize: 11, color: T.green, fontFamily: FONTS.headingMed },
@@ -764,7 +788,7 @@ const styles = (T: any) =>
     statsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 8, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
     statNum: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
     statLabel: { fontSize: 9, color: T.micro, marginTop: 2, fontFamily: FONTS.body, letterSpacing: 0.6 },
-    burnedNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 14, lineHeight: 15, textAlign: "center" },
+    burnedNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 14, lineHeight: 15.5, textAlign: "center" },
 
     sheetFooter: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1, borderTopColor: T.border },
     sheetCta: { backgroundColor: T.green, borderRadius: 14, padding: 14, alignItems: "center" },
