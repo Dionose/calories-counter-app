@@ -1,17 +1,41 @@
 // app/onboarding.tsx
 import { useRouter } from "expo-router";
-import { Activity, AlertTriangle, Apple, Bell, Check, ChevronLeft, Flame, Globe, Heart, Mail, Sparkles, TrendingDown } from "lucide-react-native";
+import { AlertTriangle, Check, ChevronLeft, Crown, Sparkles } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
+import AppleFruit from "../components/AppleFruit";
+import BroccoliIcon from "../components/BroccoliIcon";
+import CutleryIcon from "../components/CutleryIcon";
+import EggIcon from "../components/EggIcon";
+import Icon, { IconName } from "../components/Icon";
 import IsoM, { IsoMGlow } from "../components/IsoM";
+import SheenIcon from "../components/SheenIcon";
+import SteakIcon from "../components/SteakIcon";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
 import { DARK, FONTS } from "../constants/theme";
 
 const T = DARK;
 
-type Choice = { key: string; label: string; sub?: string };
+/* A choice's icon can come from three places, because no single source covers
+   everything the app needs:
+     icon        — one of our Lottie animations
+     lucide      — a Lucide icon, wrapped in SheenIcon so it still has life
+     lucideColor — a colour for that Lucide icon
+     custom      — a component of its own, for real artwork. The diet rows all
+                   use this: food reads far better as food than as a tinted
+                   line drawing. */
+type Choice = {
+  key: string;
+  label: string;
+  sub?: string;
+  icon?: IconName;
+  lucide?: any;
+  lucideColor?: string;
+  custom?: any;
+};
+
 type Step =
   | { kind: "welcome"; id: string }
   | { kind: "single"; id: string; title: string; sub?: string; choices: Choice[] }
@@ -37,41 +61,54 @@ const STEPS: Step[] = [
   { kind: "welcome", id: "welcome" },
 
   { kind: "single", id: "sex", title: "What's your sex?", sub: "This helps us calculate your daily energy needs accurately.", choices: [
-    { key: "male", label: "Male" }, { key: "female", label: "Female" },
+    { key: "male", label: "Male", icon: "male" },
+    { key: "female", label: "Female", icon: "female" },
   ]},
 
   { kind: "single", id: "workouts", title: "How many workouts do you do per week?", sub: "This will be used to calibrate your custom plan.", choices: [
-    { key: "0-2", label: "0 – 2", sub: "Workouts now and then" },
-    { key: "3-5", label: "3 – 5", sub: "A few workouts per week" },
-    { key: "6+", label: "6 +", sub: "Dedicated athlete" },
+    { key: "0-2", label: "0 – 2", sub: "Workouts now and then", icon: "dumbbell" },
+    { key: "3-5", label: "3 – 5", sub: "A few workouts per week", icon: "dumbbell" },
+    { key: "6+", label: "6 +", sub: "Dedicated athlete", icon: "dumbbell" },
   ]},
 
   { kind: "wheel", id: "birthday", title: "When were you born?", sub: "This helps us calculate your daily energy needs accurately." },
 
+  /* the brand logos keep their OWN colours — a green Google or Instagram is
+     wrong, and for Google it breaches their guidelines */
   { kind: "single", id: "heard", title: "Where did you hear about us?", choices: [
-    { key: "tv", label: "TV" }, { key: "youtube", label: "YouTube" }, { key: "google", label: "Google" },
-    { key: "facebook", label: "Facebook" }, { key: "x", label: "X" }, { key: "tiktok", label: "TikTok" },
-    { key: "instagram", label: "Instagram" }, { key: "appstore", label: "App Store" },
-    { key: "friends", label: "Friends / Family" }, { key: "other", label: "Other" },
+    { key: "tv", label: "TV", icon: "tv" },
+    { key: "youtube", label: "YouTube", icon: "youtube" },
+    { key: "google", label: "Google", icon: "google" },
+    { key: "facebook", label: "Facebook", icon: "facebook" },
+    { key: "x", label: "X", icon: "xTwitter" },
+    { key: "tiktok", label: "TikTok", icon: "tiktok" },
+    { key: "instagram", label: "Instagram", icon: "instagram" },
+    { key: "appstore", label: "App Store", icon: "appStore" },
+    { key: "friends", label: "Friends / Family", icon: "friendsFamily" },
+    { key: "other", label: "Other", icon: "otherDots" },
   ]},
 
   { kind: "single", id: "tried", title: "Have you tried other calorie apps?", choices: [
-    { key: "no", label: "No", sub: "This is my first one" },
-    { key: "yes", label: "Yes", sub: "I've used one before" },
+    { key: "no", label: "No", sub: "This is my first one", icon: "no" },
+    { key: "yes", label: "Yes", sub: "I've used one before", icon: "yes" },
   ]},
 
   { kind: "height", id: "height", title: "How tall are you?", sub: "We use this to work out your daily energy needs." },
   { kind: "weight", id: "weight", title: "What's your weight?", sub: "Be honest — this shapes your whole plan. You can update it anytime." },
 
   { kind: "single", id: "goal", title: "What's your goal?", sub: "We'll shape your whole plan around this — you can change it anytime.", choices: [
-    { key: "lose", label: "Lose weight" }, { key: "maintain", label: "Maintain" }, { key: "gain", label: "Gain weight" },
+    { key: "lose", label: "Lose weight", icon: "goalChartDown" },
+    { key: "maintain", label: "Maintain", icon: "goalFlat" },
+    { key: "gain", label: "Gain weight", icon: "goalChartUp" },
   ]},
+
   { kind: "single", id: "activity", title: "How active are you?", sub: "Outside of workouts, day to day.", choices: [
     { key: "low", label: "Little to no exercise" },
     { key: "light", label: "Light — 1–3 days/week" },
     { key: "mod", label: "Moderate — 3–5 days/week" },
     { key: "high", label: "Very active — 6–7 days/week" },
   ]},
+
   { kind: "single", id: "pace", title: "How fast do you want to go?", sub: "You can change this anytime.", choices: [
     { key: "slow", label: "Steady", sub: "Slow & sustainable · 0.25 kg a week" },
     { key: "mod", label: "Balanced", sub: "Our recommendation · 0.5 kg a week" },
@@ -79,8 +116,8 @@ const STEPS: Step[] = [
   ]},
 
   { kind: "single", id: "trainer", title: "Do you work with a personal trainer or dietitian?", sub: "We'll keep your plan in step with their advice.", choices: [
-    { key: "no", label: "No", sub: "Just me" },
-    { key: "yes", label: "Yes", sub: "I work with someone" },
+    { key: "no", label: "No", sub: "Just me", icon: "no" },
+    { key: "yes", label: "Yes", sub: "I work with someone", icon: "yes" },
   ]},
 
   { kind: "desired", id: "desired", title: "What's your desired weight?", sub: "Pick a target that feels realistic — you can change it later." },
@@ -88,6 +125,9 @@ const STEPS: Step[] = [
   { kind: "graph", id: "graph" },
   { kind: "histogram", id: "histogram" },
 
+  /* NO ICONS HERE, deliberately. "Unhealthy eating habits" and "lack of
+     support" are things people find hard to admit — a cheerful animated icon
+     beside them would read as the app being breezy about it. */
   { kind: "multi", id: "stopping", title: "What's stopping you from reaching your goal?", sub: "Pick all that apply — we'll build around them.", choices: [
     { key: "consistency", label: "Staying consistent", sub: "Starting is easy, keeping it up isn't" },
     { key: "habits", label: "Unhealthy eating habits", sub: "Snacking, late meals, portion creep" },
@@ -96,28 +136,32 @@ const STEPS: Step[] = [
     { key: "inspiration", label: "Not knowing what to eat", sub: "Same meals on repeat" },
   ]},
 
+  /* every option carries real artwork now. Broccoli for vegetarian rather
+     than a second carrot — vegan already has one, and two carrots in one
+     list is a coin-flip for the user rather than a choice. */
   { kind: "single", id: "diet", title: "Do you follow a specific diet?", choices: [
-    { key: "none", label: "No specific diet" },
-    { key: "balanced", label: "Balanced" },
-    { key: "wholefood", label: "Wholefood" },
-    { key: "lowcarb", label: "Low carb" },
-    { key: "keto", label: "Keto" },
-    { key: "vegetarian", label: "Vegetarian" },
-    { key: "vegan", label: "Vegan" },
-    { key: "pescatarian", label: "Pescatarian" },
+    { key: "none", label: "No specific diet", custom: CutleryIcon },
+    { key: "balanced", label: "Balanced", icon: "dietSalad" },
+    { key: "wholefood", label: "Wholefood", custom: AppleFruit },
+    { key: "lowcarb", label: "Low carb", custom: SteakIcon },
+    { key: "keto", label: "Keto", custom: EggIcon },
+    { key: "vegetarian", label: "Vegetarian", custom: BroccoliIcon },
+    { key: "vegan", label: "Vegan", icon: "dietVegan" },
+    { key: "pescatarian", label: "Pescatarian", icon: "dietFish" },
   ]},
+
   { kind: "multi", id: "accomplish", title: "What would you like to accomplish?", sub: "Pick all that apply.", choices: [
-    { key: "healthier", label: "Eat healthier" },
-    { key: "energy", label: "Boost my energy" },
-    { key: "body", label: "Feel better about my body" },
-    { key: "consistent", label: "Stay consistent" },
+    { key: "healthier", label: "Eat healthier", icon: "heart" },
+    { key: "energy", label: "Boost my energy", icon: "strongArm" },
+    { key: "body", label: "Feel better about my body", icon: "accomplishSmile" },
+    { key: "consistent", label: "Stay consistent", icon: "accomplishCalendar" },
   ]},
 
   { kind: "health", id: "health" },
 
   { kind: "single", id: "burned", title: "Add burned calories back to your day?", sub: "When you train, MOTION can top up your target by what you burned.", choices: [
-    { key: "yes", label: "Yes, add them back", sub: "Train hard, eat a little more that day" },
-    { key: "no", label: "No, keep it fixed", sub: "Same target every day — simpler to follow" },
+    { key: "yes", label: "Yes, add them back", sub: "Train hard, eat a little more that day", icon: "yes" },
+    { key: "no", label: "No, keep it fixed", sub: "Same target every day — simpler to follow", icon: "no" },
   ]},
 
   { kind: "notifications", id: "notifications" },
@@ -325,7 +369,8 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
     <View style={styles.screen}>
       <View style={styles.welcomeTop}>
         <Pressable onPress={() => setPicker(true)} style={styles.langChip} hitSlop={8}>
-          <Globe size={13} color={T.sub} />
+          {/* the same globe the Region row uses in Profile */}
+          <Icon name="region" size={15} mode="loop" />
           <Text style={styles.langText}>{lang}</Text>
         </Pressable>
       </View>
@@ -376,22 +421,28 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
    development build (it does NOT work in Expo Go) — wire at backend phase. */
 function HealthStep({ value, onChange, onNext }: any) {
   const connected = value === "yes";
+
+  /* each row shows what it actually reads. The heart stays RED — health data
+     is red across all of iOS, and a green heart beside "Apple Health" fights
+     the platform's own convention. */
+  const rows: { anim: IconName; t: string; d: string }[] = [
+    { anim: "stopwatch", t: "Steps and active minutes", d: "Shown on your Stats tab" },
+    { anim: "flameUltimate", t: "Calories burned", d: "Feeds your daily energy balance" },
+    { anim: "heartRed", t: "Heart rate", d: "Average resting rate over the week" },
+  ];
+
   return (
     <ScrollView contentContainerStyle={styles.body}>
-      <View style={styles.permIcon}><Heart size={26} color={T.green} /></View>
+      <View style={styles.permIcon}><Icon name="heartRed" size={38} mode="loop" /></View>
       <Text style={[styles.title, { fontSize: 26, marginTop: 20 }]}>Connect Apple Health</Text>
       <Text style={styles.sub}>
         MOTION reads your steps, active minutes and calories burned so your daily numbers reflect what you actually did.
       </Text>
 
       <View style={styles.permCard}>
-        {[
-          { icon: Activity, t: "Steps and active minutes", d: "Shown on your Stats tab" },
-          { icon: Flame, t: "Calories burned", d: "Feeds your daily energy balance" },
-          { icon: Heart, t: "Heart rate", d: "Average resting rate over the week" },
-        ].map((r, k) => (
+        {rows.map((r, k) => (
           <View key={k} style={[styles.permRow, k > 0 && styles.permRowBorder]}>
-            <View style={styles.permRowIcon}><r.icon size={16} color={T.green} /></View>
+            <View style={styles.permRowIcon}><Icon name={r.anim} size={22} mode="loop" /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.permRowTitle}>{r.t}</Text>
               <Text style={styles.permRowSub}>{r.d}</Text>
@@ -423,7 +474,10 @@ function HealthStep({ value, onChange, onNext }: any) {
 function NotificationsStep({ value, onChange, onNext }: any) {
   return (
     <ScrollView contentContainerStyle={styles.body}>
-      <View style={styles.permIcon}><Bell size={26} color={T.green} /></View>
+      {/* the gold bell — it's an alert, not an app control, so it keeps its
+          own palette. It sits smaller in its canvas than the line icons,
+          hence the larger size. */}
+      <View style={styles.permIcon}><Icon name="notification" size={44} mode="loop" /></View>
       <Text style={[styles.title, { fontSize: 26, marginTop: 20 }]}>Don't lose your streak</Text>
       <Text style={styles.sub}>
         A quick nudge before the day ends if you haven't logged. That one reminder is what keeps most people's streaks alive.
@@ -505,13 +559,15 @@ function SignInStep({ onNext }: { onNext: () => void }) {
       <Text style={styles.sub}>Create an account so your plan, streak and history follow you to any device.</Text>
 
       <View style={{ marginTop: 26, gap: 10 }}>
+        {/* the DARK Apple mark — this button is white, and the standard
+            near-white logo all but disappears on it */}
         <Pressable onPress={agreed ? onNext : undefined} style={[styles.authBtn, { backgroundColor: "#FFFFFF" }, !agreed && styles.authDim]}>
-          <Apple size={17} color="#0A0A0A" />
+          <Icon name="appleDark" size={20} mode="loop" />
           <Text style={[styles.authText, { color: "#0A0A0A" }]}>Continue with Apple</Text>
         </Pressable>
 
         <Pressable onPress={agreed ? onNext : undefined} style={[styles.authBtn, { backgroundColor: T.card, borderWidth: 1, borderColor: T.border }, !agreed && styles.authDim]}>
-          <Globe size={17} color={T.text} />
+          <Icon name="google" size={19} mode="loop" />
           <Text style={[styles.authText, { color: T.text }]}>Continue with Google</Text>
         </Pressable>
       </View>
@@ -523,7 +579,7 @@ function SignInStep({ onNext }: { onNext: () => void }) {
       </View>
 
       <View style={styles.emailBox}>
-        <Mail size={16} color={T.micro} />
+        <Icon name="email" size={18} mode="loop" />
         <TextInput
           value={email}
           onChangeText={setEmail}
@@ -561,9 +617,7 @@ function SignInStep({ onNext }: { onNext: () => void }) {
   );
 }
 
-/* ===================== YOUR WEIGHT OVER TIME =====================
-   Direction-aware: losing starts high and comes down, gaining starts low
-   and goes up, maintaining runs flat. */
+/* ===================== YOUR WEIGHT OVER TIME ===================== */
 function GraphStep({ answers, onNext }: any) {
   const { unit, cur, target, weeks, losing, maintaining } = goalTimeline(answers);
   const fade = useRef(new Animated.Value(0)).current;
@@ -774,7 +828,8 @@ function PlanStep({ answers, onNext }: any) {
 
       {answers.burned === "yes" && (
         <View style={styles.coachCard}>
-          <Flame size={14} color={T.green} />
+          {/* the rainbow flame — this line is about earning more food */}
+          <Icon name="flameUltimate" size={20} mode="loop" />
           <Text style={styles.coachText}>
             On days you train, MOTION adds your burned calories on top of this — so a hard session earns you a little more food.
           </Text>
@@ -890,7 +945,9 @@ function UnitToggle({ options, value, onPick }: { options: string[]; value: stri
   );
 }
 
-/* ===================== HEIGHT ===================== */
+/* ===================== HEIGHT =====================
+   No hero icon here. These two screens are a number and a keyboard — an icon
+   above them adds nothing and pushes the input further from the thumb. */
 function HeightStep({ step, value, onChange, onNext }: any) {
   const v = value || { unit: "cm", cm: "", ft: "", inch: "" };
   const set = (patch: any) => onChange({ ...v, ...patch });
@@ -1008,16 +1065,12 @@ function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
   const canContinue = inRange && !contradicts;
 
   let note = "";
-  let noteBad = false;
   if (v.val.length > 0 && !inRange) {
     note = `Enter a target between ${min} and ${max} ${unit}.`;
-    noteBad = true;
   } else if (contradictsGain) {
     note = `You chose to gain weight, so your target has to be above ${cur} ${unit}. Enter a higher number, or go back and change your goal.`;
-    noteBad = true;
   } else if (contradictsLose) {
     note = `You chose to lose weight, so your target has to be below ${cur} ${unit}. Enter a lower number, or go back and change your goal.`;
-    noteBad = true;
   } else if (inRange && pctChange > 0.25) {
     note = "That's a big change from where you are now. It's doable, but it'll take a while — you can always adjust later.";
   } else if (inRange) {
@@ -1028,6 +1081,9 @@ function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
 
   return (
     <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+      {/* the bullseye stays — this screen is about aiming at something */}
+      <View style={styles.stepHero}><Icon name="targetBullseye" size={46} mode="loop" /></View>
+
       <Text style={styles.title}>{step.title}</Text>
       {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
 
@@ -1083,7 +1139,11 @@ function GoalDateStep({ answers, onNext }: any) {
         <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
           <View style={{ padding: 18 }}>
             <View style={styles.goalRow}>
-              <TrendingDown size={15} color={T.green} />
+              <Icon
+                name={maintaining ? "goalFlat" : losing ? "goalChartDown" : "goalChartUp"}
+                size={22}
+                mode="loop"
+              />
               <Text style={styles.goalRowText}>
                 {maintaining
                   ? "Your plan will hold you steady at your current weight."
@@ -1091,7 +1151,7 @@ function GoalDateStep({ answers, onNext }: any) {
               </Text>
             </View>
             <View style={[styles.goalRow, { marginTop: 12 }]}>
-              <Sparkles size={15} color={T.green} />
+              <Icon name="accomplishCalendar" size={22} mode="loop" />
               <Text style={styles.goalRowText}>
                 That's roughly {weeks} {weeks === 1 ? "week" : "weeks"} of steady logging. MOTION keeps you on pace.
               </Text>
@@ -1112,17 +1172,38 @@ function GoalDateStep({ answers, onNext }: any) {
   );
 }
 
-/* ===================== SHARED STEPS ===================== */
+/* ===================== SHARED STEPS =====================
+   A choice's icon comes from whichever source suits it: an animation, a
+   sheened Lucide icon, a component of its own, or nothing at all when the
+   screen is deliberately plain. The sheen is staggered by row so a list
+   doesn't sweep in lockstep. */
+function ChoiceIcon({ c, idx }: { c: Choice; idx: number }) {
+  if (!c.icon && !c.lucide && !c.custom) return null;
+  const Custom = c.custom;
+  return (
+    <View style={styles.choiceIcon}>
+      {c.icon ? (
+        <Icon name={c.icon} size={23} mode="loop" />
+      ) : Custom ? (
+        <Custom size={24} />
+      ) : (
+        <SheenIcon icon={c.lucide} size={20} color={c.lucideColor} delay={idx * 240} />
+      )}
+    </View>
+  );
+}
+
 function SingleStep({ step, value, onPick }: any) {
   return (
     <ScrollView contentContainerStyle={styles.body}>
       <Text style={styles.title}>{step.title}</Text>
       {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
       <View style={{ marginTop: 24, gap: 10 }}>
-        {step.choices.map((c: Choice) => {
+        {step.choices.map((c: Choice, idx: number) => {
           const on = value === c.key;
           return (
             <Pressable key={c.key} onPress={() => onPick(c.key)} style={[styles.choice, on && styles.choiceOn]}>
+              <ChoiceIcon c={c} idx={idx} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.choiceLabel, on && { color: T.green }]}>{c.label}</Text>
                 {c.sub ? <Text style={styles.choiceSub}>{c.sub}</Text> : null}
@@ -1143,10 +1224,11 @@ function MultiStep({ step, value, onChange, onNext }: any) {
       <Text style={styles.title}>{step.title}</Text>
       {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
       <View style={{ marginTop: 24, gap: 10 }}>
-        {step.choices.map((c: Choice) => {
+        {step.choices.map((c: Choice, idx: number) => {
           const on = value.includes(c.key);
           return (
             <Pressable key={c.key} onPress={() => toggle(c.key)} style={[styles.choice, on && styles.choiceOn]}>
+              <ChoiceIcon c={c} idx={idx} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.choiceLabel, on && { color: T.green }]}>{c.label}</Text>
                 {c.sub ? <Text style={styles.choiceSub}>{c.sub}</Text> : null}
@@ -1185,42 +1267,122 @@ function BuildingStep({ step }: any) {
   );
 }
 
+/* ===================== TRIAL PAYWALL =====================
+   Every feature carries the icon it maps to in the app, so the list reads as
+   "these exact things" rather than generic ticks.
+   The PLANS are shown but not required: whichever is selected is what the
+   trial rolls into on day 4. NO CARD FORM — on iOS, subscriptions must go
+   through Apple's IAP sheet, so "Start free trial" hands off to StoreKit and
+   Apple charges the card already on the user's Apple ID. There is no screen
+   for us to build there; `onStartTrial` becomes the StoreKit call. */
+const PLANS = [
+  { key: "monthly", name: "Pro · Monthly", price: "$9.99", per: "/mo", note: "3 days free, then $9.99/mo" },
+  { key: "yearly", name: "Pro · Yearly", price: "$99.99", per: "/yr", note: "3 days free, then $99.99/yr", tag: "Popular" },
+  { key: "lifetime", name: "Pro · Lifetime", price: "$499.99", per: "once", note: "Pay once — yours for life", tag: "Best value" },
+];
+
 function TrialPaywall({ onStartTrial, onSkip }: { onStartTrial: () => void; onSkip: () => void }) {
+  const [plan, setPlan] = useState("yearly");
+  const chosen = PLANS.find((p) => p.key === plan) || PLANS[1];
+
+  const feats: { anim: IconName; label: string }[] = [
+    { anim: "camera", label: "Unlimited photo logging" },
+    { anim: "mic", label: "Motion Voice AI — describe meals, no typing" },
+    { anim: "barcode", label: "Barcode scanner for exact facts" },
+    { anim: "watchHealth", label: "Apple Watch & Health sync" },
+    { anim: "trophy", label: "Leaderboard & streak badges" },
+    { anim: "support", label: "Priority support, 24/7" },
+  ];
+
+  const timeline: { anim?: IconName; lucide?: any; day: string; text: string }[] = [
+    { lucide: Sparkles, day: "Today", text: "Full access unlocked — every Pro feature." },
+    { anim: "notification", day: "Day 3", text: "We'll remind you your trial ends tomorrow." },
+    { anim: "creditCard", day: "Day 4", text: `${chosen.price} begins — unless you cancel.` },
+  ];
+
   return (
     <ScrollView contentContainerStyle={[styles.body, { paddingBottom: 40 }]}>
       <View style={{ alignItems: "center", marginBottom: 4 }}>
         <IsoMGlow size={78} />
       </View>
-      <Text style={[styles.title, { fontSize: 26 }]}>Start your 3-day free trial</Text>
-      <Text style={[styles.sub, { marginTop: 8 }]}>Then $9.99 US/month. Cancel anytime before day 4 and you won't be charged.</Text>
+      <Text style={[styles.title, { fontSize: 26 }]}>Unlock everything</Text>
+      <Text style={[styles.sub, { marginTop: 8 }]}>Try MOTION Pro free for 3 days.</Text>
 
-      <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-        <View style={{ padding: 18, gap: 12 }}>
-          {[
-            "Unlimited photo logging",
-            "Motion Voice AI — describe meals, no typing",
-            "Barcode scanner for exact facts",
-            "Full history & tier colours",
-            "Leaderboard & streak badges",
-          ].map((f: string, k: number) => (
-            <View key={k} style={styles.featureRow}>
-              <View style={styles.featureCheck}><Check size={13} color="#0A0A0A" /></View>
-              <Text style={styles.featureText}>{f}</Text>
-            </View>
-          ))}
-        </View>
-      </TravelBorder>
-
-      <View style={styles.trialTimeline}>
-        <Sparkles size={13} color={T.green} />
-        <Text style={styles.trialTimelineText}>Today: full access · Day 3: reminder · Day 4: $9.99 US/month begins unless you cancel</Text>
+      <View style={{ marginTop: 20 }}>
+        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+          <View style={{ padding: 18, gap: 14 }}>
+            {feats.map((f, k) => (
+              <View key={k} style={styles.featureRow}>
+                <View style={styles.featureIcon}>
+                  <Icon name={f.anim} size={21} mode="loop" />
+                </View>
+                <Text style={styles.featureText}>{f.label}</Text>
+              </View>
+            ))}
+          </View>
+        </TravelBorder>
       </View>
 
-      <Pressable onPress={onStartTrial} style={[styles.primaryBtn, { marginTop: 20 }]}>
-        <Text style={styles.primaryBtnText}>Start free trial</Text>
+      <Text style={[styles.micro, { marginTop: 24, marginBottom: 10 }]}>CHOOSE YOUR PLAN</Text>
+
+      <View style={{ gap: 9 }}>
+        {PLANS.map((p) => {
+          const on = p.key === plan;
+          return (
+            <Pressable key={p.key} onPress={() => setPlan(p.key)} style={[styles.planRow, on && styles.planRowOn]}>
+              <View style={styles.planCrown}>
+                <Crown size={17} color="#0A0A0A" />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <View style={styles.planNameRow}>
+                  <Text style={styles.planName}>{p.name}</Text>
+                  {p.tag && (
+                    <View style={styles.planTag}>
+                      <Text style={styles.planTagText}>{p.tag}</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.planNote}>{p.note}</Text>
+              </View>
+              <Text style={styles.planPrice}>
+                {p.price} <Text style={styles.planPer}>{p.per}</Text>
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={styles.planFine}>
+        All plans unlock the same Pro — cancel monthly or yearly anytime; lifetime is a one-time payment.
+      </Text>
+
+      <Text style={[styles.micro, { marginTop: 22, marginBottom: 10 }]}>HOW YOUR FREE TRIAL WORKS</Text>
+
+      <View style={styles.trialCard}>
+        {timeline.map((r, k) => (
+          <View key={k} style={[styles.trialRow, k > 0 && styles.trialRowBorder]}>
+            <View style={styles.trialIcon}>
+              {r.anim
+                ? <Icon name={r.anim} size={r.anim === "notification" ? 28 : 21} mode="loop" />
+                : <r.lucide size={17} color={T.green} />}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.trialDay}>{r.day}</Text>
+              <Text style={styles.trialText}>{r.text}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
+      <Text style={styles.trialFootText}>
+        3 days free, then <Text style={{ color: T.green }}>{chosen.price} US{chosen.per}</Text> · cancel anytime
+      </Text>
+
+      <Pressable onPress={onStartTrial} style={[styles.primaryBtn, { marginTop: 14 }]}>
+        <Text style={styles.primaryBtnText}>Start 3-day free trial</Text>
       </Pressable>
       <Pressable onPress={onSkip} style={{ alignItems: "center", marginTop: 14 }}>
-        <Text style={styles.skipText}>Maybe later — continue with the free plan</Text>
+        <Text style={styles.skipText}>Continue with the free version</Text>
       </Pressable>
     </ScrollView>
   );
@@ -1236,6 +1398,8 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, color: T.text, fontFamily: FONTS.heading, lineHeight: 32 },
   sub: { fontSize: 14, color: T.sub, fontFamily: FONTS.body, marginTop: 8, lineHeight: 20 },
   micro: { fontSize: 9.5, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body },
+
+  stepHero: { alignItems: "center", marginBottom: 16 },
 
   welcomeTop: { paddingTop: 60, paddingHorizontal: 20, alignItems: "flex-end" },
   langChip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 99, paddingHorizontal: 12, paddingVertical: 7 },
@@ -1338,8 +1502,9 @@ const styles = StyleSheet.create({
   goalRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
   goalRowText: { flex: 1, fontSize: 13.5, color: T.text, fontFamily: FONTS.body, lineHeight: 20 },
 
-  choice: { flexDirection: "row", alignItems: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 16 },
+  choice: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 16 },
   choiceOn: { borderColor: T.green, backgroundColor: T.greenBg },
+  choiceIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, alignItems: "center", justifyContent: "center" },
   choiceLabel: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
   choiceSub: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
   checkbox: { width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: T.border, alignItems: "center", justifyContent: "center" },
@@ -1349,10 +1514,31 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: "#0A0A0A", fontFamily: FONTS.heading, fontSize: 15 },
   skipText: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
 
-  featureRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  featureCheck: { width: 22, height: 22, borderRadius: 7, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
+  featureRow: { flexDirection: "row", alignItems: "center", gap: 13 },
+  featureIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center" },
   featureText: { flex: 1, fontSize: 13.5, color: T.text, fontFamily: FONTS.body },
 
-  trialTimeline: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 16, backgroundColor: T.cardHi, borderRadius: 12, padding: 12 },
-  trialTimelineText: { flex: 1, fontSize: 11, color: T.sub, fontFamily: FONTS.body },
+  planRow: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+    borderRadius: 15, paddingVertical: 13, paddingHorizontal: 14,
+  },
+  planRowOn: { borderColor: T.green, backgroundColor: T.greenBg },
+  planCrown: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.gold, alignItems: "center", justifyContent: "center" },
+  planNameRow: { flexDirection: "row", alignItems: "center", gap: 7 },
+  planName: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed },
+  planTag: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 1 },
+  planTagText: { fontSize: 9, color: T.green, fontFamily: FONTS.headingMed },
+  planNote: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+  planPrice: { fontSize: 15, color: T.text, fontFamily: FONTS.heading },
+  planPer: { fontSize: 10, color: T.micro, fontFamily: FONTS.body },
+  planFine: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 10, lineHeight: 15 },
+
+  trialCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, overflow: "hidden" },
+  trialRow: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
+  trialRowBorder: { borderTopWidth: 1, borderTopColor: T.border },
+  trialIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.cardHi, alignItems: "center", justifyContent: "center" },
+  trialDay: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed },
+  trialText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 2, lineHeight: 17 },
+  trialFootText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginTop: 16 },
 });

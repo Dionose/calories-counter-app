@@ -3,10 +3,11 @@
 // by a single `view` state rather than routing, so the tab bar stays put.
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import { Activity, ArrowDown, CalendarDays, ChevronLeft, Crown, Flame, Footprints, Lock, Scale, Target, TrendingDown, TrendingUp, Watch } from "lucide-react-native";
+import { Activity, ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
+import Icon, { IconName } from "../../components/Icon";
 import { IsoMGlow } from "../../components/IsoM";
 import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
@@ -14,7 +15,7 @@ import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 // every buzz goes through here so Profile → Haptics actually governs them
 import * as H from "../../constants/haptics";
-import { FONTS } from "../../constants/theme";
+import { FONTS, tierForStreak } from "../../constants/theme";
 
 type Range = "Week" | "Month" | "Year";
 type View_ = null | "steps" | "calories" | "weight";
@@ -22,6 +23,16 @@ const RANGES: Range[] = ["Week", "Month", "Year"];
 
 const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** the flame animation for a tier — a dedicated file per tier reads far better
+    than one generic flame tinted five ways */
+const FLAME_FOR_TIER: Record<string, IconName> = {
+  Spark: "flameSpark",
+  Warming: "flameWarming",
+  Hot: "flameHot",
+  "Red-hot": "flameRedhot",
+  Ultimate: "flameUltimate",
+};
 
 /* A month is 28–31 days, so it actually touches 4 weeks plus a few days. We
    show the LAST FOUR WEEKS everywhere — a clean window that means the same
@@ -46,8 +57,7 @@ const kfmt = (n: number) => {
 
 /** the full span of a week N weeks back — "Jul 13–19", or "Jul 27 – Aug 2"
     when it crosses a month. A bare start date reads as a single day, which is
-    the wrong idea when the bar is a whole week's average.
-    Monday + 6 = Sunday, so weeks run 13–19, 20–26: seven days, no overlap. */
+    the wrong idea when the bar is a whole week's average. */
 function weekSpanLabel(weeksAgo: number) {
   const start = new Date();
   start.setDate(start.getDate() - weeksAgo * 7 - ((start.getDay() + 6) % 7));
@@ -62,7 +72,6 @@ function weekSpanLabel(weeksAgo: number) {
 /* ---------- stand-in data ----------
    Replaced by real logs + HealthKit once the backend lands. */
 
-/* Steps, as ratios of a typical day so every range stays on one scale. */
 const STEP_BASE = 8400;
 const STEP_WEEK = [0.88, 1.09, 0.74, 1.24, 0.99, 1.44, 0.61];
 const STEP_MONTH = [0.98, 1.08, 0.91, 1.22];
@@ -72,8 +81,7 @@ const STEP_YEAR = [0.81, 0.86, 0.94, 1.00, 1.08, 1.05, 1.12, 1.02, 0.96, 0.89, 0
    values would render all-green for one person and all-red for another. */
 const WEEK_RATIO = [0.76, 0.93, 0.74, 1.23, 0.82, 1.09, 0.79];
 
-/* 14 weeks of daily history, oldest first — feeds both the weekly-history
-   screen and the Month view's per-week averages. */
+/* 14 weeks of daily history, oldest first */
 const HISTORY_RATIOS: number[][] = [
   [0.88, 1.02, 0.94, 1.31, 0.90, 1.18, 0.86],
   [0.91, 0.97, 1.22, 0.88, 1.04, 1.27, 0.93],
@@ -91,22 +99,13 @@ const HISTORY_RATIOS: number[][] = [
   WEEK_RATIO, // this week
 ];
 
-/* one per calendar month, Jan → Dec */
 const YEAR_RATIOS = [1.14, 1.09, 1.05, 1.01, 0.98, 1.03, 0.96, 0.93, 0.97, 0.91, 0.88, 0.90];
 
-/* Protein as a fraction of the target, so "your typical day" moves with the
-   range instead of sitting on a constant. */
 const PROTEIN_RATIO: Record<Range, number> = { Week: 0.80, Month: 0.76, Year: 0.72 };
-
 const RANGE_WORD: Record<Range, string> = { Week: "week", Month: "month", Year: "year" };
 
-/* STEPS zoom out by TOTAL, not by average.
-   Week shows each day's steps. Month shows each week's TOTAL (~58k), Year shows
-   each month's TOTAL (~255k) — "I walked 58k that week" is a more satisfying
-   fact than an average you've already seen at the Week view.
-   Calories can't do this: a month's calorie total against a daily goal is
-   meaningless, so those stay as average days. Different quantities, different
-   right answer. */
+/* STEPS zoom out by TOTAL, not by average. Calories can't: a month's calorie
+   total against a daily goal is meaningless, so those stay average days. */
 function stepData(range: Range) {
   if (range === "Week") {
     const bars = STEP_WEEK.map((r, i) => ({
@@ -121,17 +120,16 @@ function stepData(range: Range) {
     const bars = STEP_MONTH.map((r, i) => ({
       label: `Week ${i + 1}`,
       short: `Wk ${i + 1}`,
-      v: Math.round((STEP_BASE * r * 7) / 100) * 100,   // a week's total
+      v: Math.round((STEP_BASE * r * 7) / 100) * 100,
     }));
     const total = bars.reduce((a, b) => a + b.v, 0);
     return { bars, perDay: Math.round(total / (WEEKS_IN_MONTH * 7)), unit: "this month" };
   }
 
-  // calendar year — only months up to and including this one have data
   const bars = STEP_YEAR.slice(0, THIS_MONTH + 1).map((r, i) => ({
     label: MSHORT[i],
     short: MSHORT[i][0],
-    v: Math.round((STEP_BASE * r * DAYS_IN_MONTH) / 100) * 100,   // a month's total
+    v: Math.round((STEP_BASE * r * DAYS_IN_MONTH) / 100) * 100,
   }));
   const total = bars.reduce((a, b) => a + b.v, 0);
   return { bars, perDay: Math.round(total / ((THIS_MONTH + 1) * DAYS_IN_MONTH)), unit: "this year" };
@@ -149,7 +147,6 @@ const STEP_SUMMARY_LABEL: Record<Range, string> = {
   Year: "Average / month",
 };
 
-/** every month of the calendar year, with future months marked empty */
 function yearMonths() {
   return MSHORT.map((label, i) => ({
     label,
@@ -157,11 +154,6 @@ function yearMonths() {
   }));
 }
 
-/* Each Calories bar is ONE PERIOD'S AVERAGE DAY against the goal — a day at
-   Week, a week at Month, a month at Year. Average rather than total, because
-   a month's total (~60,000) against a 1,960 goal would collapse the
-   comparison; average day keeps every bar on the goal's scale, so the
-   green/orange/red bands mean the same thing at any zoom level. */
 function calBars(range: Range): { label: string; ratio: number | null }[] {
   if (range === "Week") {
     return WEEK_RATIO.map((ratio, i) => ({ label: DAY_LABELS[i], ratio }));
@@ -253,15 +245,17 @@ function RulerPicker({
 
 export default function Stats() {
   const router = useRouter();
-  const { T, freeLocked, plan, profile, updateProfile, openPaywall, tabResetKey } = useApp();
+  const { T, freeLocked, plan, profile, updateProfile, openPaywall, tabResetKey, streakDays, settings } = useApp();
   const [range, setRange] = useState<Range>("Week");
   const [view, setView] = useState<View_>(null);
 
   const s = styles(T);
   const rangeWord = RANGE_WORD[range];
 
-  /* tapping the Stats tab while already on it drops back to the main view —
-     skip the first render, which isn't a tap */
+  const tier = tierForStreak(streakDays);
+  const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
+
+  /* tapping the Stats tab while already on it drops back to the main view */
   const didMount = useRef(false);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
@@ -272,7 +266,6 @@ export default function Stats() {
   const maxStep = useMemo(() => Math.max(...steps.map((b) => b.v)), [steps]);
   const avgBar = useMemo(() => Math.round(avg(steps.map((b) => b.v))), [steps]);
   const totalStep = useMemo(() => steps.reduce((a, b) => a + b.v, 0), [steps]);
-  // headline: steps per day at Week, the period's total at Month and Year
   const headline = range === "Week" ? stepsPerDay : totalStep;
 
   const goal = plan.calories;
@@ -286,14 +279,12 @@ export default function Stats() {
   const periodAvg = useMemo(() => Math.round(avg(logged) / 10) * 10, [logged]);
   const diff = goal - periodAvg;
 
-  // Month spans ("Jul 27 – Aug 2") need more room than "Mon" or "Aug"
   const calLabelW = range === "Month" ? 78 : 40;
   const stepBarW = range === "Year" ? 12 : range === "Month" ? 24 : 17;
 
   const unit = profile.weightUnit;
   const shownChange = unit === "kg" ? WEIGHT_CHANGE : WEIGHT_CHANGE * 2.20462;
 
-  // "your typical day" is always per-day, whatever the bars are showing
   const typicalCal = periodAvg;
   const typicalSteps = stepsPerDay;
   const typicalProtein = Math.round(plan.protein * PROTEIN_RATIO[range]);
@@ -301,7 +292,6 @@ export default function Stats() {
   const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
 
   const CalBar = ({ label, v, labelW }: { label: string; v: number | null; labelW: number }) => {
-    // a month that hasn't happened yet — empty track, no number
     if (v == null) {
       return (
         <View style={s.calBarRow}>
@@ -332,10 +322,10 @@ export default function Stats() {
     </View>
   );
 
-  const Stat = ({ icon: Icon, v, l }: { icon?: any; v: string; l: string }) => (
+  const Stat = ({ icon: Icn, v, l }: { icon?: any; v: string; l: string }) => (
     <View style={{ alignItems: "center", flex: 1 }}>
       <View style={s.statTop}>
-        {Icon && <Icon size={13} color={T.green} />}
+        {Icn && <Icn size={13} color={T.green} />}
         <Text style={s.statNum}>{v}</Text>
       </View>
       <Text style={s.micro}>{l}</Text>
@@ -461,12 +451,16 @@ export default function Stats() {
             <View style={{ padding: 18 }}>
               <View style={s.rowBetween}>
                 <View style={s.rowGap}>
+                  {/* no footprint animation in the set — stays Lucide */}
                   <Footprints size={15} color={T.green} />
                   <Micro>Steps · this {rangeWord}</Micro>
                 </View>
-                <View style={s.sourceChip}>
-                  <Watch size={11} color={T.sub} />
-                  <Text style={s.sourceText}>Garmin</Text>
+
+                {/* the source chip — the watch pulses, since it's what's
+                    feeding the numbers. Dimmed when sync is switched off. */}
+                <View style={[s.sourceChip, !settings.watch && { opacity: 0.45 }]}>
+                  <Icon name="watchHealth" size={17} mode="loop" />
+                  <Text style={s.sourceText}>{settings.watch ? "Garmin" : "Not syncing"}</Text>
                 </View>
               </View>
 
@@ -495,7 +489,14 @@ export default function Stats() {
               </View>
 
               <View style={s.statsRow}>
-                <Stat icon={Flame} v={BURNED.toLocaleString()} l="Burned" />
+                {/* burned uses the tier flame — it's the same "energy" idea */}
+                <View style={{ alignItems: "center", flex: 1 }}>
+                  <View style={s.statTop}>
+                    <Icon name={freeLocked ? "flameSpark" : flameAnim} size={15} mode="loop" />
+                    <Text style={s.statNum}>{BURNED.toLocaleString()}</Text>
+                  </View>
+                  <Text style={s.micro}>Burned</Text>
+                </View>
                 <Stat icon={Activity} v={String(ACTIVE_MIN)} l="Active min" />
                 <Stat v={String(AVG_BPM)} l="Avg BPM" />
               </View>
@@ -514,7 +515,7 @@ export default function Stats() {
             <View style={{ padding: 16 }}>
               <View style={[s.rowBetween, { marginBottom: 4 }]}>
                 <View style={s.rowGap}>
-                  <Target size={14} color={T.green} />
+                  <Icon name="targetBullseye" size={18} mode="loop" />
                   <Micro>Calories vs goal</Micro>
                 </View>
                 <View style={s.rowGapTight}>
@@ -550,11 +551,15 @@ export default function Stats() {
                   <View style={s.smallCard}>
                     <View style={s.rowBetween}>
                       <Micro>Consistency</Micro>
-                      <CalendarDays size={13} color={T.orange} />
+                      {/* the calendar, since this card is the way into it */}
+                      <Icon name="calendar" size={17} mode="loop" />
                     </View>
                     <View style={s.smallNumRow}>
                       <Text style={s.smallNum}>{DAYS_LOGGED}</Text>
-                      <Flame size={15} color={T.orange} fill={T.orange} style={{ marginLeft: "auto" }} />
+                      {/* and the tier flame, matching Home's streak chip */}
+                      <View style={{ marginLeft: "auto" }}>
+                        <Icon name={freeLocked ? "flameSpark" : flameAnim} size={18} mode="loop" />
+                      </View>
                     </View>
                     <Text style={[s.smallNote, { color: T.orange }]}>days logged · view calendar</Text>
                   </View>
@@ -577,7 +582,9 @@ export default function Stats() {
                     <View style={s.smallNumRow}>
                       <Text style={s.smallNum}>{shownChange.toFixed(1)}</Text>
                       <Text style={s.smallUnit}>{unit}</Text>
-                      <Scale size={14} color={T.green} style={{ marginLeft: "auto" }} />
+                      <View style={{ marginLeft: "auto" }}>
+                        <Icon name="scale" size={18} mode="loop" />
+                      </View>
                     </View>
                     <Text style={[s.smallNote, { color: T.green }]}>estimated · on track</Text>
                   </View>
@@ -587,8 +594,7 @@ export default function Stats() {
           </View>
         </View>
 
-        {/* WIDGET 5 — informational, deliberately not tappable. Always per-day
-            figures, whatever the charts above are showing. */}
+        {/* WIDGET 5 — informational, deliberately not tappable */}
         <View style={{ marginTop: 12 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 16 }}>
@@ -682,14 +688,8 @@ function WeekCard({
 }
 
 /* ---------- weekly history ----------
-   INVERTED scroll: newest week at the bottom, older above.
-   Loading is DELIBERATE — reaching the top shows a hint, and the user pulls
-   down to fetch. Weeks then arrive ONE AT A TIME, a second apart, each falling
-   into place, so the whole batch takes ~5s and reads as loading rather than
-   popping.
-   RefreshControl's own spinner is hidden because the M is MOTION's loading state.
-   React Native has no scrollHeight, so position is preserved by tracking
-   content height via onContentSizeChange and shifting the offset by the growth. */
+   INVERTED scroll: newest week at the bottom, older above. Loading is
+   DELIBERATE — reaching the top shows a hint, and the user pulls down. */
 function CaloriesView({
   T, s, goal, freeLocked, onBack, onGoPro,
 }: {
@@ -947,6 +947,11 @@ function WeightView({
           <Text style={s.backTitle}>Log your real weight</Text>
         </Pressable>
 
+        {/* the scale, large, as the screen's mark */}
+        <View style={{ alignItems: "center", marginBottom: 16 }}>
+          <Icon name="scale" size={54} mode="loop" />
+        </View>
+
         <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
           <View style={{ padding: 16 }}>
             <Text style={s.micro}>WHAT WE ESTIMATED</Text>
@@ -964,7 +969,10 @@ function WeightView({
         <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
           <View style={{ padding: 18, paddingTop: 16 }}>
             <View style={s.rowBetween}>
-              <Text style={s.micro}>CURRENT WEIGHT</Text>
+              <View style={s.rowGap}>
+                <Icon name="ruler" size={16} mode="loop" />
+                <Text style={s.micro}>CURRENT WEIGHT</Text>
+              </View>
               <View style={s.unitToggle}>
                 {(["kg", "lbs"] as const).map((u) => (
                   <Pressable key={u} onPress={() => switchUnit(u)} style={[s.unitBtn, unit === u && { backgroundColor: T.green }]}>
@@ -1042,7 +1050,7 @@ const styles = (T: any) =>
     rangeBtn: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 9 },
     rangeText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.headingMed },
 
-    sourceChip: { flexDirection: "row", alignItems: "center", gap: 4 },
+    sourceChip: { flexDirection: "row", alignItems: "center", gap: 5 },
     sourceText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
 
     bigRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
@@ -1080,7 +1088,7 @@ const styles = (T: any) =>
 
     pairRow: { flexDirection: "row", gap: 10, marginTop: 12 },
     smallCard: { padding: 14, minHeight: 92 },
-    smallNumRow: { flexDirection: "row", alignItems: "baseline", gap: 5, marginTop: 6 },
+    smallNumRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 6 },
     smallNum: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
     smallUnit: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
     smallNote: { fontSize: 10, fontFamily: FONTS.body, marginTop: 10 },

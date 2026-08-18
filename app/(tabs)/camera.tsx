@@ -27,7 +27,7 @@ type Stage =
 
 export default function CameraScreen() {
   const router = useRouter();
-  const { T, freeLocked, streakDays, tabResetKey } = useApp();
+  const { T, freeLocked, streakDays, tabResetKey, openPaywall } = useApp();
   const s = styles(T);
 
   const [meal, setMeal] = useState("Breakfast");
@@ -140,7 +140,11 @@ export default function CameraScreen() {
       desc: "Exact facts for packaged food.",
       tag: "Exact",
       pro: true,
-      onPress: () => setStage("barcodecam"),
+      /* the crown on this card says it's Pro, so tapping it on free has to
+         land on the paywall. Letting it through made the lock decorative —
+         and a lock that doesn't lock teaches people to ignore every other
+         one in the app. */
+      onPress: () => (freeLocked ? openPaywall("subscribe") : setStage("barcodecam")),
     },
     {
       key: "search",

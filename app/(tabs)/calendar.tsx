@@ -1,8 +1,9 @@
 // app/(tabs)/calendar.tsx
 import { LinearGradient } from "expo-linear-gradient";
-import { CalendarDays, ChevronLeft, ChevronRight, Flame, Lock, Mic, Sparkles, X } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, Lock, Mic, Sparkles, X } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import Icon, { IconMode, IconName } from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import StreakReel from "../../components/StreakReel";
 import StreakWarnCard from "../../components/StreakWarnCard";
@@ -15,6 +16,30 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 const TILE_SIZE = 52;
+
+/* ---------- the tile flames ----------
+   A full month can be 30 lit tiles, and each one ALREADY runs a TravelBorder.
+   Adding a looping Lottie to every tile roughly doubles the animation load on
+   the heaviest screen in the app — so this is one switch rather than thirty:
+
+     "loop"  — every lit tile burns. What we want if the device can take it.
+     "still" — first frame only, no animation cost. The tiles still wear their
+               tier flame, they just don't move.
+
+   If the month grid stutters or scrolling back through months drags, change
+   this one word. The tier colours and everything else stay exactly as they are. */
+const TILE_FLAME_MODE: IconMode = "loop";
+const TILE_FLAME_SIZE = 15;
+
+/** the flame animation for a tier — a dedicated file per tier reads far better
+    than one generic flame tinted five ways */
+const FLAME_FOR_TIER: Record<string, IconName> = {
+  Spark: "flameSpark",
+  Warming: "flameWarming",
+  Hot: "flameHot",
+  "Red-hot": "flameRedhot",
+  Ultimate: "flameUltimate",
+};
 
 /* ---------- the real calendar maths ----------
    Everything below is derived from actual dates. No hardcoded month length,
@@ -103,9 +128,9 @@ const FADE_DATE = new Date(SIGNUP.getFullYear(), SIGNUP.getMonth(), SIGNUP.getDa
 const DAYS_LEFT = Math.ceil((FADE_DATE.getTime() - TODAY.getTime()) / 86400000);
 
 const DAY_MEALS = [
-  { name: "Breakfast", time: "8:15 AM", title: "Scrambled eggs & avocado", cal: 430, pct: 22, voice: true },
-  { name: "Lunch", time: "12:41 PM", title: "Grilled chicken & rice", cal: 620, pct: 31, voice: false },
-  { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, pct: 35, voice: true },
+  { name: "Breakfast", time: "8:15 AM", title: "Scrambled eggs & avocado", cal: 430, pct: 22, voice: true, icon: "breakfast" as IconName },
+  { name: "Lunch", time: "12:41 PM", title: "Grilled chicken & rice", cal: 620, pct: 31, voice: false, icon: "lunch" as IconName },
+  { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, pct: 35, voice: true, icon: "dinner" as IconName },
 ];
 
 /* ---------- the date jump ----------
@@ -267,6 +292,7 @@ export default function Calendar() {
     const run = runLengthAt(logged, year, month, d);
     const t = TIERS[tierIndexForRun(run) as 1 | 2 | 3 | 4 | 5];
     const isUlt = t.color === "ultimate";
+    const flame = FLAME_FOR_TIER[t.name] || "flameSpark";
 
     if (isUlt) {
       return (
@@ -276,7 +302,10 @@ export default function Calendar() {
               <View style={s.tileInner} />
             </TravelBorder>
             <Text style={[s.dayNum, s.dayNumOverlay, { color: "#FFFFFF" }]}>{d}</Text>
-            <Flame size={12} color="#FACC15" fill="#FB923C" style={s.flameOverlay} />
+            {/* the rainbow flame — Ultimate's own file, not a tinted generic */}
+            <View style={s.flameOverlay}>
+              <Icon name={flame} size={TILE_FLAME_SIZE} mode={TILE_FLAME_MODE} />
+            </View>
           </View>
         </Tap>
       );
@@ -289,7 +318,10 @@ export default function Calendar() {
             <View style={s.tileInner} />
           </TravelBorder>
           <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
-          <Flame size={12} color={t.color} fill={t.color} style={s.flameOverlay} />
+          {/* each tier burns in its own colour, straight from its own file */}
+          <View style={s.flameOverlay}>
+            <Icon name={flame} size={TILE_FLAME_SIZE} mode={TILE_FLAME_MODE} />
+          </View>
         </View>
       </Tap>
     );
@@ -300,6 +332,7 @@ export default function Calendar() {
     const run = runLengthAt(logged, year, month, day);
     const t = TIERS[tierIndexForRun(run) as 1 | 2 | 3 | 4 | 5];
     const isUlt = !freeLocked && t.color === "ultimate";
+    const flame = FLAME_FOR_TIER[t.name] || "flameSpark";
     const total = DAY_MEALS.reduce((sum, m) => sum + m.cal, 0);
     const goal = plan.calories;
     const diff = goal - total;
@@ -318,12 +351,12 @@ export default function Calendar() {
             </View>
           ) : isUlt ? (
             <LinearGradient colors={ULT_COLORS} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.tierPill}>
-              <Flame size={12} color="#fff" fill="#fff" />
+              <Icon name={flame} size={16} mode="loop" />
               <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: "#fff" }}>Day {run} · Ultimate</Text>
             </LinearGradient>
           ) : (
             <View style={[s.tierPill, { backgroundColor: `${t.color}22` }]}>
-              <Flame size={12} color={t.color} fill={t.color} />
+              <Icon name={flame} size={16} mode="loop" />
               <Text style={{ fontSize: 11, fontFamily: FONTS.headingMed, color: t.color }}>Day {run} · {t.name}</Text>
             </View>
           )}
@@ -341,7 +374,11 @@ export default function Calendar() {
               </View>
               <View style={{ padding: 15 }}>
                 <View style={s.rowBetween}>
-                  <Micro>{m.name} · {m.time}</Micro>
+                  <View style={s.mealHeadRow}>
+                    {/* the meal's own icon, matching Home's meal rows */}
+                    <Icon name={m.icon} size={17} mode="loop" />
+                    <Micro>{m.name} · {m.time}</Micro>
+                  </View>
                   <View style={s.aiTag}>
                     <Sparkles size={10} color={T.green} />
                     <Text style={s.aiText}>MOTION AI</Text>
@@ -392,7 +429,8 @@ export default function Calendar() {
           right={
             <Tap onPress={openPicker}>
               <View style={s.jumpChip}>
-                <CalendarDays size={17} color={T.text} />
+                {/* the same calendar animation the tab bar uses */}
+                <Icon name="calendar" size={19} mode="loop" />
               </View>
             </Tap>
           }
@@ -574,7 +612,7 @@ const styles = (T: any) =>
     tileInner: { height: TILE_SIZE - 5, borderRadius: 12 },
     dayNum: { fontSize: 12, fontFamily: FONTS.heading },
     dayNumOverlay: { position: "absolute", top: 5, left: 7, zIndex: 2 },
-    flameOverlay: { position: "absolute", top: 20, left: 6, zIndex: 2 },
+    flameOverlay: { position: "absolute", top: 19, left: 5, zIndex: 2 },
     plainCheck: { position: "absolute", bottom: 5, right: 7, fontSize: 12, color: T.green, fontFamily: FONTS.heading },
 
     hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 18 },
@@ -587,6 +625,7 @@ const styles = (T: any) =>
     tierPill: { flexDirection: "row", alignSelf: "flex-start", alignItems: "center", gap: 6, paddingVertical: 5, paddingHorizontal: 11, borderRadius: 10, marginBottom: 16 },
 
     mealCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, overflow: "hidden", marginBottom: 12 },
+    mealHeadRow: { flexDirection: "row", alignItems: "center", gap: 7 },
     photo: { height: 140, backgroundColor: "#2E2419", justifyContent: "flex-end", padding: 12 },
     photoLabel: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: FONTS.body },
     voiceBadge: { position: "absolute", top: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(0,0,0,0.5)", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
