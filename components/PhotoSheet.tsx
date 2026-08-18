@@ -1,12 +1,13 @@
 // components/PhotoSheet.tsx
-// The profile-photo chooser. "Take a photo" will hand off to the in-app camera
-// once that's built; for now both options are wired but inert.
-import { Camera, Image as ImageIcon, Trash2 } from "lucide-react-native";
+// The profile-photo chooser. "Take a photo" hands off to the same inline
+// camera widget used everywhere else in the app.
+import { Trash2 } from "lucide-react-native";
 import React from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
+import Icon, { IconName } from "./Icon";
 import Tap from "./Tap";
 
 export default function PhotoSheet({
@@ -25,14 +26,25 @@ export default function PhotoSheet({
   const { T, profile } = useApp();
   const s = styles(T);
 
-  const Option = ({ icon: Icon, label, sub, onPress, danger }: any) => (
+  const Option = ({
+    anim, icon: LucideIcon, label, sub, onPress, danger,
+  }: {
+    anim?: IconName;
+    icon?: any;
+    label: string;
+    sub: string;
+    onPress?: () => void;
+    danger?: boolean;
+  }) => (
     <Tap
       onPress={() => { H.tap(); onClose(); setTimeout(() => onPress?.(), 220); }}
       style={{ marginBottom: 10 }}
     >
       <View style={s.option}>
         <View style={[s.optionIcon, danger && { backgroundColor: "rgba(239,68,68,0.12)" }]}>
-          <Icon size={18} color={danger ? T.red : T.green} />
+          {anim
+            ? <Icon name={anim} size={24} mode="loop" />
+            : <LucideIcon size={18} color={danger ? T.red : T.green} />}
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[s.optionLabel, danger && { color: T.red }]}>{label}</Text>
@@ -50,8 +62,10 @@ export default function PhotoSheet({
           <View style={s.grabber} />
           <Text style={s.title}>Profile photo</Text>
 
-          <Option icon={Camera} label="Take a photo" sub="Open the camera" onPress={onTakePhoto} />
-          <Option icon={ImageIcon} label="Choose from library" sub="Pick an existing photo" onPress={onPickLibrary} />
+          {/* the same camera animation used on the hub and the tab button —
+              every camera in the app is the one icon */}
+          <Option anim="camera" label="Take a photo" sub="Open the camera" onPress={onTakePhoto} />
+          <Option anim="gallery" label="Choose from library" sub="Pick an existing photo" onPress={onPickLibrary} />
           {profile.photoUri && (
             <Option icon={Trash2} label="Remove photo" sub="Go back to your initials" onPress={onRemove} danger />
           )}

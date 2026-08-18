@@ -5,7 +5,7 @@
 import { useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
-  LogOut, Mail, Palette, Ruler, Scale, Shield, Vibrate, Watch,
+  LogOut, Palette, Ruler, Scale, Shield, Vibrate, Watch,
 } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -14,6 +14,7 @@ import AccountScreen from "../../components/AccountScreens";
 import Avatar from "../../components/Avatar";
 import { CaloriesScreen, GoalScreen, TargetWeightScreen, UnitsScreen } from "../../components/GoalScreens";
 import GradientText from "../../components/GradientText";
+import Icon, { IconName } from "../../components/Icon";
 import IsoM from "../../components/IsoM";
 import Tap from "../../components/Tap";
 import ThemePicker from "../../components/ThemePicker";
@@ -31,6 +32,16 @@ const GOAL_LABEL: Record<string, string> = {
   lose: "Lose weight",
   maintain: "Maintain",
   gain: "Gain weight",
+};
+
+/** the flame animation for a tier — a dedicated file per tier reads far better
+    than one generic flame tinted five ways */
+const FLAME_FOR_TIER: Record<string, IconName> = {
+  Spark: "flameSpark",
+  Warming: "flameWarming",
+  Hot: "flameHot",
+  "Red-hot": "flameRedhot",
+  Ultimate: "flameUltimate",
 };
 
 export default function Profile() {
@@ -54,6 +65,7 @@ export default function Profile() {
   const accent = freeLocked ? T.green : isUlt ? T.orange : tier.color;
   // IsoM takes a tier hex or the string "ultimate" for the rainbow
   const markColor = freeLocked ? T.green : tier.color;
+  const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
   // every value below falls back, so a half-filled profile renders rather than
   // crashing — onboarding doesn't supply all of these
@@ -121,10 +133,17 @@ export default function Profile() {
 
   const Divider = () => <View style={s.divider} />;
 
+  /* a row whose icon is either an ANIMATION (when we have one) or a Lucide
+     fallback (when we don't). Passing `anim` swaps it — nothing else changes.
+     `animSize` exists because not every Lottie fills its canvas the same way:
+     the notification bell is an illustration that sits smaller in its frame,
+     so it needs rendering larger to look the same size as the line icons. */
   const Row = ({
-    icon: Icon, label, value, onPress, danger, locked,
+    icon: LucideIcon, anim, animSize = 20, label, value, onPress, danger, locked,
   }: {
-    icon: any;
+    icon?: any;
+    anim?: IconName;
+    animSize?: number;
     label: string;
     value?: string;
     onPress?: () => void;
@@ -134,7 +153,9 @@ export default function Profile() {
     <Tap onPress={onPress}>
       <View style={s.row}>
         <View style={[s.rowIcon, danger && { backgroundColor: "rgba(239,68,68,0.12)" }]}>
-          <Icon size={16} color={danger ? T.red : T.green} />
+          {anim
+            ? <Icon name={anim} size={animSize} mode="loop" />
+            : <LucideIcon size={16} color={danger ? T.red : T.green} />}
         </View>
         <Text style={[s.rowLabel, danger && { color: T.red }]}>{label}</Text>
         {value ? <Text style={s.rowValue} numberOfLines={1}>{value}</Text> : null}
@@ -147,10 +168,15 @@ export default function Profile() {
     </Tap>
   );
 
+  /* the animation plays only when the toggle is ON — switched off it falls
+     back to the grey Lucide icon, which reads as inactive far more clearly
+     than a moving green one would */
   const ToggleRow = ({
-    icon: Icon, label, on, onSub, offSub, onToggle,
+    icon: LucideIcon, anim, animSize = 20, label, on, onSub, offSub, onToggle,
   }: {
-    icon: any;
+    icon?: any;
+    anim?: IconName;
+    animSize?: number;
     label: string;
     on: boolean;
     onSub: string;
@@ -159,7 +185,9 @@ export default function Profile() {
   }) => (
     <View style={s.row}>
       <View style={s.rowIcon}>
-        <Icon size={16} color={on ? T.green : T.micro} />
+        {anim && on
+          ? <Icon name={anim} size={animSize} mode="loop" />
+          : <LucideIcon size={16} color={on ? T.green : T.micro} />}
       </View>
       <View style={{ flex: 1 }}>
         <Text style={s.rowLabel}>{label}</Text>
@@ -228,12 +256,14 @@ export default function Profile() {
                 )}
 
                 <View style={s.emailRow}>
-                  <Mail size={10} color={T.micro} />
+                  {/* the animated envelope, small — it's a detail line, not a row */}
+                  <Icon name="email" size={14} mode="loop" />
                   <Text style={s.email} numberOfLines={1}>{email}</Text>
                 </View>
 
                 <View style={[s.streakPill, { backgroundColor: `${accent}1A`, borderColor: `${accent}55` }]}>
-                  <Flame size={11} color={accent} fill={accent} />
+                  {/* the tier's own flame — free users get the plain Spark one */}
+                  <Icon name={freeLocked ? "flameSpark" : flameAnim} size={14} mode="loop" />
                   <Text style={[s.streakPillText, { color: accent }]}>
                     {streakDays} days{freeLocked ? "" : ` · ${tier.name}`}
                   </Text>
@@ -268,20 +298,24 @@ export default function Profile() {
           </View>
         )}
 
-        {/* APPEARANCE */}
+        {/* APPEARANCE — the icon shows WHICH theme you're on: moon for dark,
+            sun for light. More useful than a generic palette. */}
         <Section title="Appearance">
           <Row
             icon={Palette}
+            anim={themeMode === "dark" ? "moonTheme" : "sunTheme"}
             label="Theme"
             value={themeMode === "dark" ? "Dark" : "Light"}
             onPress={() => { H.tap(); setThemeOpen(true); }}
           />
         </Section>
 
-        {/* DEVICES */}
+        {/* DEVICES — hand-built watch: a heartbeat draws across the face, since
+            this row is health sync rather than a watch setting */}
         <Section title="Devices">
           <ToggleRow
             icon={Watch}
+            anim="watchHealth"
             label="Connect watch & health"
             on={settings.watch}
             onSub="Syncing steps, calories burned & heart rate"
@@ -294,6 +328,7 @@ export default function Profile() {
         <Section title="Goals">
           <Row
             icon={CircleDot}
+            anim="targetBullseye"
             label="Goal"
             value={GOAL_LABEL[profile.goal] || "Not set"}
             onPress={() => { H.tap(); setView("goal"); }}
@@ -301,6 +336,7 @@ export default function Profile() {
           <Divider />
           <Row
             icon={Flame}
+            anim={freeLocked ? "flameSpark" : flameAnim}
             label="Daily calories"
             value={`${plan.calories.toLocaleString()} cal`}
             onPress={() => { H.tap(); setView("calories"); }}
@@ -308,6 +344,7 @@ export default function Profile() {
           <Divider />
           <Row
             icon={Scale}
+            anim="scale"
             label="Target weight"
             value={profile.targetWeight ? `${profile.targetWeight} ${profile.weightUnit}` : "Not set"}
             onPress={() => { H.tap(); setView("targetweight"); }}
@@ -315,16 +352,20 @@ export default function Profile() {
           <Divider />
           <Row
             icon={Ruler}
+            anim="ruler"
             label="Units & height"
             value={heightLabel()}
             onPress={() => { H.tap(); setView("units"); }}
           />
         </Section>
 
-        {/* PREFERENCES */}
+        {/* PREFERENCES — the notification bell is an illustration that sits
+            smaller in its canvas than the line icons, so it renders larger */}
         <Section title="Preferences">
           <ToggleRow
             icon={Bell}
+            anim="notification"
+            animSize={30}
             label="Notifications"
             on={settings.notifications}
             onSub="Milestones, badges & updates"
@@ -334,6 +375,7 @@ export default function Profile() {
           <Divider />
           <ToggleRow
             icon={BellRing}
+            anim="reminderBell"
             label="Reminders"
             on={settings.reminders}
             onSub="Nudges to log meals & protect your streak"
@@ -343,6 +385,7 @@ export default function Profile() {
           <Divider />
           <ToggleRow
             icon={Vibrate}
+            anim="haptics"
             label="Haptics"
             on={settings.haptics}
             onSub="Buzz on toggles, steppers & saves"
@@ -353,11 +396,11 @@ export default function Profile() {
 
         {/* ACCOUNT */}
         <Section title="Account">
-          <Row icon={LifeBuoy} label="Support" onPress={() => { H.tap(); setView("support"); }} />
+          <Row icon={LifeBuoy} anim="support" label="Support" onPress={() => { H.tap(); setView("support"); }} />
           <Divider />
-          <Row icon={Shield} label="Privacy" onPress={() => { H.tap(); setView("privacy"); }} />
+          <Row icon={Shield} anim="privacy" label="Privacy" onPress={() => { H.tap(); setView("privacy"); }} />
           <Divider />
-          <Row icon={LogOut} label="Log out" danger onPress={() => { H.tap(); setLogoutOpen(true); }} />
+          <Row icon={LogOut} anim="logout" label="Log out" danger onPress={() => { H.tap(); setLogoutOpen(true); }} />
         </Section>
 
         <Text style={s.memberSince}>Member since {memberSince}</Text>

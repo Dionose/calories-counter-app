@@ -2,15 +2,17 @@
 // Everything behind the Profile identity card: the account overview and its
 // six editors. Grouped in one file because they only exist for each other —
 // splitting them into seven would spread one flow across seven places.
-import { AtSign, Cake, Check, Crown, Eye, EyeOff, Globe, Lock, Mail, Search, User } from "lucide-react-native";
+import { Check, Crown, Eye, EyeOff, Globe, Lock, Search } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
 import { FONTS, ULT_COLORS, tierForStreak } from "../constants/theme";
+import AtSymbol from "./AtSymbol";
 import Avatar from "./Avatar";
 import BackRow from "./BackRow";
 import GradientText from "./GradientText";
+import Icon, { IconName } from "./Icon";
 import PhotoSheet from "./PhotoSheet";
 import SaveBtn from "./SaveBtn";
 import Tap from "./Tap";
@@ -63,7 +65,7 @@ function ProGate({ title, line, onBack }: { title: string; line: string; onBack:
 
 /* ---------- a single-field editor ---------- */
 function EditScreen({
-  title, label, initial, hint, note, keyboard, autoCapitalize, glowColor, ultimate, onBack, onSave,
+  title, label, initial, hint, note, keyboard, autoCapitalize, glowColor, ultimate, anim, onBack, onSave,
 }: {
   title: string;
   label: string;
@@ -74,6 +76,7 @@ function EditScreen({
   autoCapitalize?: "none" | "words";
   glowColor?: string;
   ultimate?: boolean;
+  anim?: IconName;
   onBack: () => void;
   onSave: (v: string) => void;
 }) {
@@ -92,6 +95,13 @@ function EditScreen({
   return (
     <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
       <BackRow title={title} onBack={onBack} />
+
+      {/* the row's own animation, large, as the screen's mark */}
+      {anim && !glowColor && (
+        <View style={s.editHeroIcon}>
+          <Icon name={anim} size={54} mode="loop" />
+        </View>
+      )}
 
       {glowColor && (
         <View style={s.glowPreview}>
@@ -152,6 +162,10 @@ function PasswordScreen({ onBack }: { onBack: () => void }) {
     <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
       <BackRow title="Change password" onBack={onBack} />
 
+      <View style={s.editHeroIcon}>
+        <Icon name="password" size={54} mode="loop" />
+      </View>
+
       <Text style={s.fieldLabel}>New password</Text>
       <View style={s.pwWrap}>
         <TextInput
@@ -202,9 +216,8 @@ function PasswordScreen({ onBack }: { onBack: () => void }) {
 }
 
 /* ---------- date of birth ----------
-   Three wheels rather than the mockup's mini calendar: a birthday is twenty-odd
-   years back, and paging a calendar there month by month is painful. This also
-   matches the picker in onboarding and on the Calendar tab. */
+   Three wheels rather than a mini calendar: a birthday is twenty-odd years
+   back, and paging a calendar there month by month is painful. */
 const ROW_H = 40;
 const THIS_YEAR = new Date().getFullYear();
 const YEARS = Array.from({ length: 90 }, (_, i) => THIS_YEAR - 13 - i); // 13+ only
@@ -272,7 +285,6 @@ function DobScreen({ onBack }: { onBack: () => void }) {
   const save = () => {
     H.success();
     setSaved(true);
-    // this was the bug: the tick showed but nothing was written
     updateProfile({ dobDay: day, dobMonth: m, dobYear: y });
     setTimeout(onBack, 750);
   };
@@ -280,6 +292,10 @@ function DobScreen({ onBack }: { onBack: () => void }) {
   return (
     <ScrollView contentContainerStyle={s.page}>
       <BackRow title="Date of birth" onBack={onBack} />
+
+      <View style={s.editHeroIcon}>
+        <Icon name="cake" size={54} mode="loop" />
+      </View>
 
       <Text style={s.note}>
         Your age is part of how we work out your calorie target. We'll also wish you happy birthday —
@@ -316,7 +332,7 @@ function DobScreen({ onBack }: { onBack: () => void }) {
       </View>
 
       <View style={s.dobSummary}>
-        <Cake size={14} color={isBirthday ? T.gold : T.green} />
+        <Icon name="cake" size={18} mode="loop" />
         <Text style={s.dobText}>
           {MSHORT[m]} {day}, {y} · {age} years old{isBirthday ? " · today! 🎂" : ""}
         </Text>
@@ -414,6 +430,7 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
         label="Your name"
         initial={profile.name || ""}
         autoCapitalize="words"
+        anim="profile"
         note="This is how MOTION greets you, and where your avatar initials come from. Only you see it."
         onBack={back}
         onSave={(v) => updateProfile({ name: v })}
@@ -446,6 +463,7 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
         label="Email address"
         initial={profile.email || ""}
         keyboard="email-address"
+        anim="email"
         note="Update this if you've lost access to your old email — we'll send a confirmation link."
         onBack={back}
         onSave={(v) => updateProfile({ email: v })}
@@ -467,13 +485,23 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
 
   const dobLabel = `${profile.dobDay} ${MSHORT[profile.dobMonth ?? 0]} ${profile.dobYear}`;
 
-  const rows = [
-    { icon: User, label: "Name · how we greet you", value: profile.name || "—", to: "name" as const },
-    { icon: AtSign, label: "Username · what others see", value: `@${handle}`, glow: true, to: "username" as const, locked: freeLocked },
-    { icon: Mail, label: "Email", value: profile.email || "—", to: "email" as const },
-    { icon: Lock, label: "Password", value: "••••••••••", mono: true, to: "password" as const },
-    { icon: Cake, label: "Date of birth", value: dobLabel, note: "🎂 birthday", to: "dob" as const },
-    { icon: Globe, label: "Region", value: profile.region || "—", note: "leaderboards", to: "region" as const },
+  const rows: {
+    anim?: IconName;
+    label: string;
+    value: string;
+    note?: string;
+    glow?: boolean;
+    mono?: boolean;
+    to: AccountSub;
+    locked?: boolean;
+  }[] = [
+    { anim: "profile", label: "Name · how we greet you", value: profile.name || "—", to: "name" },
+    // no `anim` — the @ is its own component, a masked glyph with a light streak
+    { label: "Username · what others see", value: `@${handle}`, glow: true, to: "username", locked: freeLocked },
+    { anim: "email", label: "Email", value: profile.email || "—", to: "email" },
+    { anim: "password", label: "Password", value: "••••••••••", mono: true, to: "password" },
+    { anim: "cake", label: "Date of birth", value: dobLabel, note: "birthday", to: "dob" },
+    { anim: "region", label: "Region", value: profile.region || "—", note: "leaderboards", to: "region" },
   ];
 
   return (
@@ -505,7 +533,9 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
               <Tap onPress={() => { H.tap(); setSub(r.to); }}>
                 <View style={s.accRow}>
                   <View style={s.rowIcon}>
-                    <r.icon size={15} color={T.green} />
+                    {r.anim
+                      ? <Icon name={r.anim} size={20} mode="loop" />
+                      : <AtSymbol size={19} />}
                   </View>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.accLabel}>{r.label}</Text>
@@ -559,14 +589,14 @@ const styles = (T: any) =>
     accRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, paddingHorizontal: 13 },
     rowIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: T.greenBg, alignItems: "center", justifyContent: "center" },
     accLabel: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body },
-    // Bricolage, matching every other value row in the app — this was Inter,
-    // which made the account list the only screen using the body face for values
+    // Bricolage, matching every other value row in the app
     accValue: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed, marginTop: 1 },
     accNote: { fontSize: 10, color: T.micro, fontFamily: FONTS.body },
 
     memberSince: { textAlign: "center", fontSize: 10, color: T.micro, fontFamily: FONTS.body, marginTop: 14 },
 
     /* editors */
+    editHeroIcon: { alignItems: "center", marginBottom: 18 },
     fieldLabel: { fontSize: 10, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase", marginBottom: 8, marginLeft: 2 },
     input: {
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 13,

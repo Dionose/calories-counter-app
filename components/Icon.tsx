@@ -16,9 +16,17 @@
 //                           a fill-only element doesn't vanish)
 //   pure fill, no strokes → dimming just gives a fainter block; the element
 //                           has to be hidden outright, or fall back to Lucide
-// Calendar, Stats, Snacks and the log-pen were all the mixed case: flattening
-// everything to one green turned them into solid blobs because the fills
-// swallowed the internal detail. They use the variants below.
+//   COLOURED ILLUSTRATION → a third case: several deliberate colours plus
+//                           background scenery. Hiding the scenery and keeping
+//                           the subject's own palette usually beats forcing it
+//                           green (see the notification bell).
+//   MATTE LAYERS (td:1)   → fills used as track mattes, not visible shapes.
+//                           Never recolour or hide these; it breaks the mask.
+//
+// NOT EVERYTHING IS A LOTTIE. The @ has no icon in the set and drawing one by
+// hand read badly, so it's components/AtSymbol.tsx instead: the real @ glyph
+// masked, with a light streaking across it like the M. When a shape can't be
+// sourced, a masked glyph beats a bad drawing.
 import LottieView from "lottie-react-native";
 import React, { useEffect, useRef } from "react";
 import { View } from "react-native";
@@ -53,10 +61,9 @@ export const ANIMATIONS = {
   searchOutline: require("../assets/motion-search-outline-green.json"),
   searchFood: require("../assets/motion-search-food-22C55E.json"),
 
-  /* the log-without-a-photo pen. The page behind it is 8 fills with NO
-     strokes, so a flat green version renders as a solid block that swallows
-     the pen — and dimming only makes the block fainter. This is the
-     outline version made for exactly that problem. */
+  /* the log-without-a-photo pen. The page behind it is fills with NO strokes,
+     so a flat green version renders as a solid block that swallows the pen —
+     and dimming only makes the block fainter. This is the outline version. */
   logPen: require("../assets/motion-pen-outline-green.json"),
   logPenClean: require("../assets/motion-pen-clean-green.json"),
   logPenFlat: require("../assets/motion-log-without-search-pen-22C55E.json"),
@@ -64,6 +71,11 @@ export const ANIMATIONS = {
   mic: require("../assets/motion-mic-22C55E.json"),
   micDark: require("../assets/motion-mic-dark.json"),
   micLine: require("../assets/motion-mic-line-green.json"),
+
+  /* the photo library. Two of its layers are MATTE layers that slide the
+     photos behind each other — recolouring or hiding those breaks the mask,
+     so only the strokes were touched. */
+  gallery: require("../assets/motion-gallery-22C55E.json"),
 
   /* meals */
   breakfast: require("../assets/motion-breakfast-22C55E.json"),
@@ -83,6 +95,16 @@ export const ANIMATIONS = {
   /* profile rows */
   moonTheme: require("../assets/motion-moon-theme-E5E7EB.json"),
   sunTheme: require("../assets/motion-sunrise-theme-FBBF24.json"),
+
+  /* a COLOURED ILLUSTRATION rather than a line icon — yellow bell, brown
+     outline, on a mint sky. The gold version keeps the bell's own palette and
+     just hides the scenery; an alert reading gold rather than green is fine,
+     and forcing it green loses what makes it good. NOTE: the bell sits in a
+     smaller portion of its canvas than the line icons, so it needs rendering
+     ~40% larger to match them optically. */
+  notification: require("../assets/motion-notification-bell-gold.json"),
+  notificationGreen: require("../assets/motion-notification-bell-green.json"),
+
   reminderBell: require("../assets/motion-reminder-bell-22C55E.json"),
   haptics: require("../assets/motion-haptics-22C55E.json"),
   privacy: require("../assets/motion-privacy-22C55E.json"),
@@ -93,6 +115,11 @@ export const ANIMATIONS = {
   region: require("../assets/motion-region-22C55E.json"),
   ruler: require("../assets/motion-ruler-22C55E.json"),
   scale: require("../assets/motion-scale-22C55E.json"),
+
+  /* hand-built, since the set has no watch. A heartbeat draws across the face,
+     holds, clears and repeats — the row is a HEALTH SYNC toggle, so a pulse
+     says what it does better than a static watch would. */
+  watchHealth: require("../assets/motion-watch-health-22C55E.json"),
 
   /* goals + onboarding */
   goalChartUp: require("../assets/motion-goal-chart-up-22C55E.json"),
