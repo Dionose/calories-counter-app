@@ -102,12 +102,13 @@ export default function Profile() {
     }, 1300);
   };
 
-  /* Logging out sends you back to onboarding. That's the real destination —
-     onboarding owns the welcome screen and the sign-in step, so there's no
-     separate login route to send them to. */
+  /* Logging out lands on SIGN IN, not onboarding. Someone with an account
+     shouldn't have to answer thirty questions again to get back in — and
+     onboarding's welcome screen has its own link across to sign-in for people
+     who genuinely are new. */
   const doLogout = () => {
     setLogoutOpen(false);
-    setTimeout(() => router.replace("/onboarding"), 260);
+    setTimeout(() => router.replace("/signin"), 260);
   };
 
   const toggle = (key: keyof typeof settings) => {

@@ -136,9 +136,9 @@ const STEPS: Step[] = [
     { key: "inspiration", label: "Not knowing what to eat", sub: "Same meals on repeat" },
   ]},
 
-  /* every option carries real artwork now. Broccoli for vegetarian rather
-     than a second carrot — vegan already has one, and two carrots in one
-     list is a coin-flip for the user rather than a choice. */
+  /* every option carries real artwork. Broccoli for vegetarian rather than a
+     second carrot — vegan already has one, and two carrots in one list is a
+     coin-flip for the user rather than a choice. */
   { kind: "single", id: "diet", title: "Do you follow a specific diet?", choices: [
     { key: "none", label: "No specific diet", custom: CutleryIcon },
     { key: "balanced", label: "Balanced", icon: "dietSalad" },
@@ -323,7 +323,14 @@ export default function Onboarding() {
   const set = (id: string, v: any) => setAnswers({ ...answers, [id]: v });
 
   if (step.kind === "welcome") {
-    return <Welcome onNext={goNext} lang={answers.lang || "English"} setLang={(l: string) => set("lang", l)} />;
+    return (
+      <Welcome
+        onNext={goNext}
+        onSignIn={() => router.replace("/signin")}
+        lang={answers.lang || "English"}
+        setLang={(l: string) => set("lang", l)}
+      />
+    );
   }
 
   return (
@@ -363,7 +370,14 @@ export default function Onboarding() {
 }
 
 /* ===================== WELCOME ===================== */
-function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; setLang: (l: string) => void }) {
+function Welcome({
+  onNext, onSignIn, lang, setLang,
+}: {
+  onNext: () => void;
+  onSignIn: () => void;
+  lang: string;
+  setLang: (l: string) => void;
+}) {
   const [picker, setPicker] = useState(false);
   return (
     <View style={styles.screen}>
@@ -389,7 +403,10 @@ function Welcome({ onNext, lang, setLang }: { onNext: () => void; lang: string; 
         <Pressable onPress={onNext} style={styles.primaryBtn}>
           <Text style={styles.primaryBtnText}>Get started</Text>
         </Pressable>
-        <Pressable style={{ alignItems: "center", marginTop: 16 }}>
+
+        {/* returning users cross straight to sign-in — nobody with an account
+            should have to answer thirty questions to get back in */}
+        <Pressable onPress={onSignIn} style={{ alignItems: "center", marginTop: 16 }} hitSlop={8}>
           <Text style={styles.signInText}>Already have an account? <Text style={{ color: T.green }}>Sign in</Text></Text>
         </Pressable>
       </View>
@@ -547,7 +564,7 @@ function ReferralStep({ value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== SIGN IN ===================== */
+/* ===================== CREATE ACCOUNT ===================== */
 function SignInStep({ onNext }: { onNext: () => void }) {
   const [agreed, setAgreed] = useState(false);
   const [tips, setTips] = useState(true);
