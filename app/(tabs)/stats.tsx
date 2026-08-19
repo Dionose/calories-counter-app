@@ -2,19 +2,25 @@
 // Stats is one tab holding four views — main, steps, calories, weight — swapped
 // by a single `view` state rather than routing, so the tab bar stays put.
 //
-// WHAT'S REAL AND WHAT ISN'T:
-//   Calories    — real, summed from logged meals
-//   Consistency — real, counted from logged days
-//   Weight      — real, from weigh-ins
-//   Steps       — NOT POSSIBLE YET. Needs HealthKit, which needs a
-//                 development build. Rather than show invented numbers, the
-//                 widget says what it's waiting for. A chart that lies is
-//                 worse than a chart that's empty, because you can't tell.
+// EVERYTHING HERE IS REAL:
+//   Calories    — summed from logged meals
+//   Consistency — counted from logged days
+//   Weight      — from weigh-ins
+//   Steps       — read from HealthKit / Health Connect, INCLUDING history from
+//                 before MOTION was installed. The phone has been counting
+//                 since the day it was bought.
+//
+// MOTION never estimates activity. A guessed step count looks identical to a
+// real one, which quietly makes every other number on the screen suspect.
+//
+// EVERY AXIS LABEL IS SPELLED OUT. No initials, no bare dates, no week
+// numbers — if the reader has to decode the chart before they can read it,
+// the chart has failed.
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
-import { ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
+import { Activity, ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import Icon, { IconName } from "../../components/Icon";
 import { IsoMGlow } from "../../components/IsoM";
@@ -24,6 +30,7 @@ import TravelBorder from "../../components/TravelBorder";
 import WeighInSheet from "../../components/WeighInSheet";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
+import { DayActivity, isHealthAvailable, loadActivity, recentHeartRate, requestHealthPermission } from "../../constants/health";
 import { loadDayTotals, loggedDayCount, todayLocal } from "../../constants/meals";
 import { FONTS, tierForStreak } from "../../constants/theme";
 import { actualPacePerWeek, fromKg, loadWeighIns, smoothedKg, WeighIn } from "../../constants/weight";
@@ -55,9 +62,21 @@ const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length
 const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
+/** compact step counts — a year's total runs to seven figures, and "1,284,300"
+    doesn't fit under a 12px bar */
+const kfmt = (n: number) => {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}m`;
+  if (n >= 100000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
+
 /** the full span of a week N weeks back — "Jul 13–19", or "Jul 27 – Aug 2"
-    when it crosses a month. A bare start date reads as a single day, which is
-    the wrong idea when the bar is a whole week's average. */
+    when it crosses a month.
+
+    ALWAYS the full span, never just the start date. A bar covering seven days
+    labelled "Jul 27" reads as Sunday the 27th — the reader has no way to know
+    it's a week unless the label says so. */
 function weekSpanLabel(weeksAgo: number) {
   const start = new Date();
   start.setDate(start.getDate() - weeksAgo * 7 - ((start.getDay() + 6) % 7));
@@ -88,9 +107,21 @@ const CAL_CAPTION: Record<Range, string> = {
   Year: "Each month's average day",
 };
 
+const STEP_DETAIL_CAPTION: Record<Range, string> = {
+  Week: "Each day vs your average day",
+  Month: "Each week vs your average week",
+  Year: "Each month vs your average month",
+};
+
+const STEP_SUMMARY_LABEL: Record<Range, string> = {
+  Week: "Average / day",
+  Month: "Average / week",
+  Year: "Average / month",
+};
+
 export default function Stats() {
   const router = useRouter();
-  const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, settings, userId } = useApp();
+  const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, userId } = useApp();
   const [range, setRange] = useState<Range>("Week");
   const [view, setView] = useState<View_>(null);
 
@@ -100,15 +131,33 @@ export default function Stats() {
   const tier = tierForStreak(streakDays);
   const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
-  /* ---------- REAL DATA ---------- */
-  /* every day with anything logged, across 400 days — one query feeds the
-     week, month and year charts, so switching range costs nothing */
+  /* ---------- MEALS + WEIGHT ---------- */
   const [dayTotals, setDayTotals] = useState<Record<string, number>>({});
   const [daysLogged, setDaysLogged] = useState(0);
   const [weighIns, setWeighIns] = useState<WeighIn[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [weighOpen, setWeighOpen] = useState(false);
   const [weighTick, setWeighTick] = useState(0);
+
+  /* ---------- HEALTH ----------
+     `available` is whether the device can do this at all — false on a
+     simulator or an Android phone without Health Connect. `connected` is
+     whether we've actually got data back.
+
+     iOS deliberately never tells you whether READ permission was granted:
+     Apple treats the refusal itself as private information. So "connected"
+     means "we asked, and data came back" — the only honest test.
+
+     `asked` tracks whether they've tapped Connect at least once, so we can
+     tell "hasn't tried yet" apart from "tried and nothing came back". */
+  const [available, setAvailable] = useState(false);
+  const [activity, setActivity] = useState<DayActivity[]>([]);
+  const [bpm, setBpm] = useState<number | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [healthTick, setHealthTick] = useState(0);
+  const [asked, setAsked] = useState(false);
+
+  const connected = activity.length > 0;
 
   useFocusEffect(
     useCallback(() => {
@@ -136,6 +185,45 @@ export default function Stats() {
     }, [userId, weighTick])
   );
 
+  /* ---------- READING THE PHONE ----------
+     A FULL YEAR of history, not just since signup. The phone has been counting
+     steps since the day it was bought, so someone connecting today can see
+     last January immediately — that's the whole appeal, and fetching only
+     recent days would throw it away. */
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const ok = await isHealthAvailable();
+      if (cancelled) return;
+      setAvailable(ok);
+      if (!ok) return;
+
+      setHealthLoading(true);
+      const from = new Date();
+      from.setFullYear(from.getFullYear() - 1);
+
+      const [rows, hr] = await Promise.all([loadActivity(from, new Date()), recentHeartRate()]);
+      if (cancelled) return;
+
+      setActivity(rows);
+      setBpm(hr);
+      setHealthLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [healthTick]);
+
+  const connectHealth = async () => {
+    H.tap();
+    setAsked(true);
+    setHealthLoading(true);
+    await requestHealthPermission();
+    /* re-read rather than trusting the return value — see the note above about
+       iOS never confirming read access */
+    setHealthTick((k) => k + 1);
+  };
+
   /* tapping the Stats tab while already on it drops back to the main view */
   const didMount = useRef(false);
   useEffect(() => {
@@ -146,10 +234,81 @@ export default function Stats() {
 
   const goal = plan.calories;
 
-  /* ---------- the calorie bars, from real logged days ----------
+  /* activity keyed by date, so the charts can look a day up directly */
+  const actByDay = useMemo(() => {
+    const m: Record<string, DayActivity> = {};
+    activity.forEach((a) => { m[a.date] = a; });
+    return m;
+  }, [activity]);
+
+  /* ---------- STEP BARS ----------
+     Week shows days, Month shows weeks, Year shows months — and the zoomed-out
+     views show TOTALS, because "247k steps in January" is the figure people
+     actually want. Calories can't do that: a month's calorie total against a
+     daily goal is meaningless, so those stay averages.
+
+     LABELS ARE FULL WORDS AND FULL SPANS. "J F M A M J" is unreadable and two
+     letters can't tell Jun from Jul; a bare "Jul 27" under a seven-day bar
+     reads as a single day. Four bars in the Month view leaves room for the
+     whole span over two lines, which is what it takes to be unambiguous. */
+  const stepBars = useMemo((): { label: string; short: string; v: number }[] => {
+    if (range === "Week") {
+      const monday = mondayOf(0);
+      return DAY_LABELS.map((label, i) => {
+        const d = new Date(monday);
+        d.setDate(d.getDate() + i);
+        return { label, short: label, v: actByDay[iso(d)]?.steps || 0 };
+      });
+    }
+
+    if (range === "Month") {
+      return Array.from({ length: WEEKS_IN_MONTH }, (_, i) => {
+        const weeksAgo = WEEKS_IN_MONTH - 1 - i;
+        const monday = mondayOf(weeksAgo);
+        let total = 0;
+        for (let d = 0; d < 7; d++) {
+          const day = new Date(monday);
+          day.setDate(day.getDate() + d);
+          total += actByDay[iso(day)]?.steps || 0;
+        }
+        const span = weekSpanLabel(weeksAgo);
+        return { label: span, short: span, v: total };
+      });
+    }
+
+    return MSHORT.slice(0, THIS_MONTH + 1).map((label, m) => {
+      let total = 0;
+      activity.forEach((a) => {
+        const [y, mm] = a.date.split("-").map(Number);
+        if (y === THIS_YEAR && mm - 1 === m) total += a.steps;
+      });
+      return { label, short: label, v: total };
+    });
+  }, [range, actByDay, activity]);
+
+  const maxStep = useMemo(() => Math.max(1, ...stepBars.map((b) => b.v)), [stepBars]);
+  const avgStepBar = useMemo(() => Math.round(avg(stepBars.map((b) => b.v))), [stepBars]);
+  const totalSteps = useMemo(() => stepBars.reduce((a, b) => a + b.v, 0), [stepBars]);
+
+  const stepHeadline = range === "Week"
+    ? Math.round(avg(stepBars.map((b) => b.v)))
+    : totalSteps;
+  const stepUnit = range === "Week" ? "avg / day" : `this ${rangeWord}`;
+
+  const today = actByDay[todayLocal()];
+  const burnedToday = today?.burnedCalories || 0;
+  const activeToday = today?.activeMinutes || 0;
+
+  const stepsPerDay = useMemo(() => {
+    if (range === "Week") return Math.round(avg(stepBars.map((b) => b.v)));
+    const days = range === "Month" ? WEEKS_IN_MONTH * 7 : (THIS_MONTH + 1) * 30.4;
+    return Math.round(totalSteps / days);
+  }, [range, stepBars, totalSteps]);
+
+  /* ---------- CALORIE BARS ----------
      A day with nothing logged is NULL, not zero. Zero would draw a bar
-     claiming they ate nothing, which is a different and much worse claim than
-     "we don't know about this day". */
+     claiming they ate nothing, which is a different and much worse claim
+     than "we don't know about this day". */
   const bars = useMemo((): { label: string; v: number | null }[] => {
     if (range === "Week") {
       const monday = mondayOf(0);
@@ -162,8 +321,6 @@ export default function Stats() {
     }
 
     if (range === "Month") {
-      /* last four weeks, oldest first, each bar the average of its LOGGED
-         days — averaging in the blanks would drag every week downward */
       return Array.from({ length: WEEKS_IN_MONTH }, (_, i) => {
         const weeksAgo = WEEKS_IN_MONTH - 1 - i;
         const monday = mondayOf(weeksAgo);
@@ -181,7 +338,6 @@ export default function Stats() {
       });
     }
 
-    /* the calendar year so far, each month an average logged day */
     return MSHORT.slice(0, THIS_MONTH + 1).map((label, m) => {
       const vals: number[] = [];
       Object.entries(dayTotals).forEach(([k, v]) => {
@@ -198,15 +354,12 @@ export default function Stats() {
   const hasCalData = logged.length > 0;
 
   const calLabelW = range === "Month" ? 78 : 40;
+  const stepBarW = range === "Year" ? 12 : range === "Month" ? 24 : 17;
 
   /* ---------- weight ---------- */
   const unit = profile.weightUnit;
   const currentKg = smoothedKg(weighIns);
-  const paceKg = actualPacePerWeek(weighIns);
 
-  /* change since the FIRST weigh-in, which is the only honest baseline —
-     comparing to the onboarding estimate would report a "change" that's
-     really just the gap between a guess and a measurement */
   const changeKg = weighIns.length >= 2
     ? weighIns[weighIns.length - 1].weightKg - weighIns[0].weightKg
     : null;
@@ -250,6 +403,16 @@ export default function Stats() {
     </View>
   );
 
+  const Stat = ({ icon: Icn, v, l }: { icon?: any; v: string; l: string }) => (
+    <View style={{ alignItems: "center", flex: 1 }}>
+      <View style={s.statTop}>
+        {Icn && <Icn size={13} color={T.green} />}
+        <Text style={s.statNum}>{v}</Text>
+      </View>
+      <Text style={s.micro}>{l}</Text>
+    </View>
+  );
+
   const BackHead = ({ title, onBack }: { title: string; onBack: () => void }) => (
     <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
       <ChevronLeft size={24} color={T.text} />
@@ -259,22 +422,78 @@ export default function Stats() {
 
   /* ================= STEPS DETAIL ================= */
   if (view === "steps") {
+    if (!connected) {
+      return (
+        <View style={s.screen}>
+          <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
+            <BackHead title="Steps" onBack={() => setView(null)} />
+            <ConnectPrompt
+              T={T}
+              s={s}
+              available={available}
+              loading={healthLoading}
+              asked={asked}
+              onConnect={connectHealth}
+            />
+          </ScrollView>
+        </View>
+      );
+    }
+
+    const refPct = Math.min(100, (avgStepBar / maxStep) * 100);
+
     return (
       <View style={s.screen}>
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-          <BackHead title="Steps" onBack={() => setView(null)} />
+          <BackHead title={`Steps · this ${rangeWord}`} onBack={() => setView(null)} />
 
-          <View style={s.emptyStage}>
-            <Icon name="watchHealth" size={54} mode="loop" />
-            <Text style={s.emptyTitle}>Steps come from your phone</Text>
-            <Text style={s.emptyBody}>
-              MOTION reads your step count, active minutes and calories burned straight from Apple
-              Health — it never estimates them, because a guessed step count is worse than none.
-              {"\n\n"}
-              Health sync arrives with the next build. Once it's connected, this screen fills in
-              your history — including months you walked before you ever installed MOTION.
-            </Text>
+          <View style={s.summaryRow}>
+            <View style={s.summaryCard}>
+              <Micro>{STEP_SUMMARY_LABEL[range]}</Micro>
+              <Text style={s.summaryNum}>{avgStepBar.toLocaleString()}</Text>
+            </View>
+            <View style={s.summaryCard}>
+              <Micro>Total this {rangeWord}</Micro>
+              <Text style={s.summaryNum}>{totalSteps.toLocaleString()}</Text>
+            </View>
           </View>
+
+          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+            <View style={{ padding: 16 }}>
+              <View style={[s.rowBetween, { marginBottom: 14 }]}>
+                <Text style={s.detailCaption}>{STEP_DETAIL_CAPTION[range]}</Text>
+                <Text style={s.detailAvg}>avg {avgStepBar.toLocaleString()}</Text>
+              </View>
+
+              {stepBars.map((b, i) => {
+                const above = b.v >= avgStepBar;
+                const color = above ? T.green : T.orange;
+                const pct = Math.max(34, Math.min(100, (b.v / maxStep) * 100));
+                return (
+                  <View key={i} style={s.stepBarRow}>
+                    <Text style={s.stepBarLabel} numberOfLines={2}>{b.label}</Text>
+                    <View style={s.stepBarTrack}>
+                      <View style={[s.stepBarFill, { width: `${pct}%`, backgroundColor: color }]}>
+                        <Text style={s.stepBarInside}>{b.v.toLocaleString()}</Text>
+                      </View>
+                      <View style={[s.refLine, { left: `${refPct}%` }]} />
+                    </View>
+                  </View>
+                );
+              })}
+
+              <View style={s.legendRow}>
+                <Legend color={T.green} label="Above avg" />
+                <Legend color={T.orange} label="Below avg" />
+              </View>
+            </View>
+          </TravelBorder>
+
+          <Text style={s.detailFoot}>
+            {range === "Week"
+              ? "Straight from your phone's health data · MOTION never estimates steps"
+              : `About ${stepsPerDay.toLocaleString()} steps a day across the ${rangeWord}. This includes days before you installed MOTION — your phone was already counting.`}
+          </Text>
         </ScrollView>
       </View>
     );
@@ -328,9 +547,7 @@ export default function Stats() {
           ))}
         </View>
 
-        {/* WIDGET 1 — STEPS. Empty, and says why.
-            An invented step count would be indistinguishable from a real one,
-            which makes every other number on this screen suspect too. */}
+        {/* WIDGET 1 — STEPS */}
         <Tap onPress={() => setView("steps")}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
             <View style={{ padding: 18 }}>
@@ -339,29 +556,101 @@ export default function Stats() {
                   <Footprints size={15} color={T.green} />
                   <Micro>Steps · this {rangeWord}</Micro>
                 </View>
-                <View style={[s.sourceChip, !settings.watch && { opacity: 0.45 }]}>
+                <View style={[s.sourceChip, !connected && { opacity: 0.45 }]}>
                   <Icon name="watchHealth" size={17} mode="loop" />
-                  <Text style={s.sourceText}>Not connected</Text>
+                  <Text style={s.sourceText}>
+                    {connected ? "Health" : healthLoading ? "Reading…" : "Not connected"}
+                  </Text>
                 </View>
               </View>
 
-              <View style={s.stepsEmpty}>
-                <Text style={s.stepsEmptyTitle}>Connect Apple Health for your steps</Text>
-                <Text style={s.stepsEmptyBody}>
-                  Steps, active minutes and calories burned come from your phone, not from
-                  MOTION guessing. Available in the next build.
-                </Text>
-              </View>
+              {!connected ? (
+                <View style={s.stepsEmpty}>
+                  {healthLoading ? (
+                    <ActivityIndicator size="small" color={T.green} />
+                  ) : (
+                    <>
+                      <Text style={s.stepsEmptyTitle}>
+                        {available ? "Connect Apple Health" : "Health data isn't available here"}
+                      </Text>
+                      <Text style={s.stepsEmptyBody}>
+                        {available
+                          ? "Your phone has been counting steps since the day you got it. Connect and MOTION shows all of it — including months before you installed this."
+                          : "This device doesn't have health data available. On Android you'll need the Health Connect app."}
+                      </Text>
+                      {available && (
+                        <Tap onPress={connectHealth} style={{ width: "100%", marginTop: 6 }}>
+                          <View style={s.connectBtn}>
+                            <Text style={s.connectText}>Connect</Text>
+                          </View>
+                        </Tap>
+                      )}
+                    </>
+                  )}
+                </View>
+              ) : (
+                <>
+                  <View style={s.bigRow}>
+                    <Text style={s.bigNum}>{stepHeadline.toLocaleString()}</Text>
+                    <Text style={s.bigUnit}>{stepUnit}</Text>
+                  </View>
+
+                  {range !== "Week" && (
+                    <Text style={s.stepSubNote}>about {stepsPerDay.toLocaleString()} a day</Text>
+                  )}
+
+                  <View style={s.chart}>
+                    {stepBars.map((b, i) => (
+                      <View key={i} style={s.barCol}>
+                        <Text style={s.barVal}>{kfmt(b.v)}</Text>
+                        <View style={s.barTrack}>
+                          <LinearGradient
+                            colors={["#22C55E", "#15803D"]}
+                            style={[s.bar, { width: stepBarW, height: Math.max(4, (b.v / maxStep) * 68) }]}
+                          />
+                        </View>
+                        {/* the Month view wraps to two lines so the whole span
+                            fits — four bars is ~85px each, enough for
+                            "Jul 27 – Aug 2" stacked */}
+                        <Text
+                          style={[
+                            s.barLabel,
+                            range === "Year" && s.barLabelTight,
+                            range === "Month" && s.barLabelWrap,
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {b.short}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+
+                  <View style={s.statsRow}>
+                    <View style={{ alignItems: "center", flex: 1 }}>
+                      <View style={s.statTop}>
+                        <Icon name={freeLocked ? "flameSpark" : flameAnim} size={15} mode="loop" />
+                        <Text style={s.statNum}>{burnedToday.toLocaleString()}</Text>
+                      </View>
+                      <Text style={s.micro}>Burned today</Text>
+                    </View>
+                    <Stat icon={Activity} v={String(activeToday)} l="Active min" />
+                    <Stat v={bpm != null ? String(bpm) : "—"} l="Avg BPM" />
+                  </View>
+                </>
+              )}
 
               <View style={s.cardFoot}>
-                <Text style={s.cardFootText}>Tap to read more</Text>
+                <Text style={s.cardFootText}>
+                  {connected ? "Tap for the full breakdown" : "Tap to read more"}
+                </Text>
                 <TrendingUp size={12} color={T.green} />
               </View>
             </View>
           </TravelBorder>
         </Tap>
 
-        {/* WIDGET 2 — CALORIES VS GOAL. Real, from logged meals. */}
+        {/* WIDGET 2 — CALORIES VS GOAL */}
         <Tap onPress={() => setView("calories")} style={{ marginTop: 12 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 16 }}>
@@ -442,9 +731,6 @@ export default function Stats() {
                       </View>
                     </View>
                     <View style={s.smallNumRow}>
-                      {/* the CHANGE if there's enough history for one, the
-                          current weight if there's only one reading, and a
-                          dash if they've never weighed in — each is true */}
                       <Text style={s.smallNum}>
                         {shownChange != null
                           ? `${shownChange > 0 ? "+" : ""}${shownChange.toFixed(1)}`
@@ -459,7 +745,7 @@ export default function Stats() {
                     </View>
                     <Text style={[s.smallNote, { color: T.green }]}>
                       {shownChange != null
-                        ? `since your first weigh-in`
+                        ? "since your first weigh-in"
                         : currentKg != null
                           ? "one weigh-in · log another"
                           : "no weigh-ins yet"}
@@ -480,7 +766,7 @@ export default function Stats() {
                 {[
                   [hasCalData ? typicalCal.toLocaleString() : "—", "cal"],
                   [hasCalData ? `${typicalProtein}g` : "—", "protein"],
-                  ["—", "steps"],
+                  [connected ? stepsPerDay.toLocaleString() : "—", "steps"],
                 ].map(([v, l]) => (
                   <View key={l} style={{ flex: 1, alignItems: "center" }}>
                     <Text style={s.typicalNum}>{v}</Text>
@@ -489,8 +775,8 @@ export default function Stats() {
                 ))}
               </View>
               <Text style={s.typicalFoot}>
-                {hasCalData
-                  ? "Averaged from your logged days · steps arrive with Health sync"
+                {hasCalData || connected
+                  ? "Calories from your logs · steps from your phone · never estimated"
                   : "Fills in as you log · averaged from your own days, never estimated"}
               </Text>
             </View>
@@ -504,6 +790,113 @@ export default function Stats() {
         onSaved={() => setWeighTick((k) => k + 1)}
         lastKg={weighIns.length ? weighIns[weighIns.length - 1].weightKg : null}
       />
+    </View>
+  );
+}
+
+/* ---------- the connect prompt ----------
+   Says what MOTION reads, what it does with it, and what it never does.
+   iOS shows its own permission sheet a second later, and someone who's just
+   read this is far more likely to allow it.
+
+   The line about permission being awkward to undo is deliberate but gentle.
+   It's true — iOS buries Health permissions several screens deep in Settings —
+   and knowing that up front is what makes someone read the list properly
+   rather than dismissing it. It is NOT a threat: the tone is "worth doing now
+   because it's fiddly later", not "you only get one chance". */
+function ConnectPrompt({
+  T, s, available, loading, asked, onConnect,
+}: {
+  T: any;
+  s: any;
+  available: boolean;
+  loading: boolean;
+  asked: boolean;
+  onConnect: () => void;
+}) {
+  const rows: { anim: IconName; t: string; d: string }[] = [
+    { anim: "stopwatch", t: "Steps and active minutes", d: "Every day your phone has recorded" },
+    { anim: "flameUltimate", t: "Calories burned", d: "Feeds your daily energy balance" },
+    { anim: "heartRed", t: "Heart rate", d: "Your average over the week" },
+  ];
+
+  return (
+    <View style={{ paddingTop: 10 }}>
+      <View style={{ alignItems: "center", marginBottom: 18 }}>
+        <Icon name="watchHealth" size={54} mode="loop" />
+      </View>
+
+      <Text style={s.emptyTitle}>
+        {available ? "Connect your health data" : "Health data isn't available"}
+      </Text>
+
+      <Text style={[s.emptyBody, { marginTop: 10 }]}>
+        {available
+          ? "Your phone has been counting steps since the day you bought it — long before MOTION existed. Connect and all of that history appears here, week by week and month by month."
+          : "This device doesn't expose health data. On Android that usually means the Health Connect app isn't installed."}
+      </Text>
+
+      {available && (
+        <>
+          <View style={s.permCard}>
+            {rows.map((r, k) => (
+              <View key={k} style={[s.permRow, k > 0 && s.permRowBorder]}>
+                <View style={s.permRowIcon}>
+                  <Icon name={r.anim} size={22} mode="loop" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.permRowTitle}>{r.t}</Text>
+                  <Text style={s.permRowSub}>{r.d}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+
+          <Text style={s.permNote}>
+            MOTION only READS this data. It never writes to Health, never changes anything, and
+            never shares it with anyone.
+          </Text>
+
+          {/* the honest heads-up: it's easier to allow now than to fix later */}
+          <View style={s.tipCard}>
+            <Text style={s.tipTitle}>Worth allowing all of it</Text>
+            <Text style={s.tipBody}>
+              iOS asks on the next screen. If you turn something off there, switching it back on
+              means digging through Settings → Privacy &amp; Security → Health → MOTION — several
+              screens deep, and easy to give up on.
+              {"\n\n"}
+              Allowing everything now is what makes your weekly, monthly and yearly step history
+              work.
+            </Text>
+          </View>
+
+          {/* they've tried and nothing came back — most likely a decline, so
+              offer the one thing that actually helps rather than repeating the
+              same button */}
+          {asked && !loading && (
+            <View style={s.retryCard}>
+              <Text style={s.retryTitle}>Nothing came through</Text>
+              <Text style={s.retryBody}>
+                That usually means permission is off, or this phone has no health data recorded yet.
+                You can turn it on in Settings → Privacy &amp; Security → Health → MOTION.
+              </Text>
+              <Tap onPress={() => Linking.openSettings()} style={{ marginTop: 12 }}>
+                <View style={s.retryBtn}>
+                  <Text style={s.retryBtnText}>Open Settings</Text>
+                </View>
+              </Tap>
+            </View>
+          )}
+
+          <Tap onPress={onConnect} style={{ marginTop: 18 }}>
+            <View style={[s.connectBtn, loading && { opacity: 0.6 }]}>
+              <Text style={s.connectText}>
+                {loading ? "Reading…" : asked ? "Try again" : "Connect health data"}
+              </Text>
+            </View>
+          </Tap>
+        </>
+      )}
     </View>
   );
 }
@@ -639,8 +1032,6 @@ function CaloriesView({
 
   useEffect(() => { shownRef.current = shown; }, [shown]);
 
-  /* each week built from the real day totals — a day with nothing logged
-     stays null rather than becoming a zero-calorie bar */
   const weeks = useMemo(() => {
     return Array.from({ length: shown }, (_, i) => {
       const weeksAgo = shown - 1 - i;
@@ -926,7 +1317,9 @@ function WeightView({
                             style={[s.wBar, { height: Math.max(6, h) }]}
                           />
                         </View>
-                        <Text style={s.wLabel}>{MSHORT[m - 1]?.[0]}{d}</Text>
+                        {/* "Aug 18", not "A18" — a bare number reads as
+                            nothing, and one letter doesn't help either */}
+                        <Text style={s.wLabel}>{MSHORT[m - 1]}{"\n"}{d}</Text>
                       </View>
                     );
                   })}
@@ -977,13 +1370,62 @@ const styles = (T: any) =>
     sourceChip: { flexDirection: "row", alignItems: "center", gap: 5 },
     sourceText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
 
-    stepsEmpty: { paddingVertical: 22, alignItems: "center", gap: 8 },
+    bigRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
+    bigNum: { fontSize: 40, color: T.text, fontFamily: FONTS.heading },
+    bigUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
+    stepSubNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
+
+    chart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: 12 },
+    barCol: { flex: 1, alignItems: "center", gap: 5 },
+    barVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },
+    barTrack: { height: 68, justifyContent: "flex-end" },
+    bar: { borderRadius: 6 },
+    barLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading },
+    /* twelve three-letter months across a phone is snug — this is the size
+       that fits "Sep" without clipping */
+    barLabelTight: { fontSize: 7.5 },
+    /* four bars means ~85px each — enough for the whole span over two lines,
+       which is what it takes for a week bar to read as a week */
+    barLabelWrap: { fontSize: 7.5, textAlign: "center", lineHeight: 10, paddingHorizontal: 2 },
+
+    statsRow: { flexDirection: "row", marginTop: 12, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
+    statTop: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
+    statNum: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
+
+    stepsEmpty: { paddingVertical: 22, alignItems: "center", gap: 9 },
     stepsEmptyTitle: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, textAlign: "center" },
     stepsEmptyBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 17, paddingHorizontal: 8 },
+
+    connectBtn: { backgroundColor: T.green, borderRadius: 13, paddingVertical: 13, alignItems: "center" },
+    connectText: { fontSize: 14, color: T.ink, fontFamily: FONTS.headingMed },
 
     emptyStage: { alignItems: "center", gap: 14, paddingTop: 30, paddingHorizontal: 8 },
     emptyTitle: { fontSize: 18, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
     emptyBody: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 20 },
+
+    permCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, marginTop: 22, overflow: "hidden" },
+    permRow: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
+    permRowBorder: { borderTopWidth: 1, borderTopColor: T.border },
+    permRowIcon: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.greenBg, alignItems: "center", justifyContent: "center" },
+    permRowTitle: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed },
+    permRowSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+    permNote: { fontSize: 11.5, color: T.micro, fontFamily: FONTS.body, marginTop: 14, lineHeight: 17 },
+
+    tipCard: {
+      marginTop: 18, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 14, padding: 15,
+    },
+    tipTitle: { fontSize: 13, color: T.green, fontFamily: FONTS.headingMed, marginBottom: 7 },
+    tipBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
+
+    retryCard: {
+      marginTop: 16, backgroundColor: "rgba(251,191,36,0.08)", borderWidth: 1,
+      borderColor: `${T.gold}55`, borderRadius: 14, padding: 15,
+    },
+    retryTitle: { fontSize: 13, color: T.gold, fontFamily: FONTS.headingMed, marginBottom: 6 },
+    retryBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
+    retryBtn: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 11, paddingVertical: 11, alignItems: "center" },
+    retryBtnText: { fontSize: 12.5, color: T.text, fontFamily: FONTS.headingMed },
 
     cardFoot: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 12 },
     cardFootText: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
@@ -1029,14 +1471,22 @@ const styles = (T: any) =>
 
     detailCaption: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, flex: 1 },
     detailAvg: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed },
+    detailFoot: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 16, lineHeight: 16 },
+
+    stepBarRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+    stepBarLabel: { width: 74, fontSize: 10, color: T.sub, fontFamily: FONTS.body, lineHeight: 13 },
+    stepBarTrack: { flex: 1, height: 28, borderRadius: 8, backgroundColor: T.track, overflow: "hidden", position: "relative" },
+    stepBarFill: { height: "100%", borderRadius: 8, alignItems: "flex-end", justifyContent: "center", paddingRight: 8 },
+    stepBarInside: { fontSize: 11, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    refLine: { position: "absolute", top: 0, bottom: 0, width: 2, backgroundColor: T.text, opacity: 0.5, borderRadius: 2 },
 
     /* weight chart */
-    wChart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-around", height: 130 },
+    wChart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-around", height: 138 },
     wCol: { alignItems: "center", gap: 4, flex: 1 },
     wVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },
     wTrack: { height: 90, justifyContent: "flex-end" },
     wBar: { width: 14, borderRadius: 5 },
-    wLabel: { fontSize: 8, color: T.micro, fontFamily: FONTS.heading },
+    wLabel: { fontSize: 8, color: T.micro, fontFamily: FONTS.heading, textAlign: "center", lineHeight: 10 },
 
     /* weekly history */
     histHead: { paddingHorizontal: 16, paddingTop: 60, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: T.border },
