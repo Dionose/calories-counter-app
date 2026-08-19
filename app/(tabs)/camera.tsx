@@ -5,7 +5,7 @@
 // log-without-photo. Search and no-photo share one builder; barcode and snap
 // have their own result screens because their data is different in kind
 // (exact from a label, vs estimated from a photo).
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { ChevronDown, ChevronRight, Crown, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -25,12 +25,21 @@ type Stage =
   | "hub" | "camera" | "barcodecam" | "barcoderesult"
   | "result" | "nophoto" | "search";
 
+const MEALS = ["Breakfast", "Lunch", "Dinner", "Snacks"];
+
 export default function CameraScreen() {
   const router = useRouter();
   const { T, freeLocked, streakDays, tabResetKey, openPaywall } = useApp();
   const s = styles(T);
 
+  /* WHICH MEAL. Home sends this when you tap a specific row — "Add snack" has
+     to open the camera set to Snacks, not to whatever was picked last time.
+     Without it, tapping Add snack and logging filed the food under Dinner:
+     the user thought they logged one thing and the app logged another, which
+     is the worst kind of bug because nothing looks wrong until later. */
+  const params = useLocalSearchParams<{ meal?: string }>();
   const [meal, setMeal] = useState("Breakfast");
+
   const [stage, setStage] = useState<Stage>("hub");
   const [resultStage, setResultStage] = useState<ResultStage>("analysing");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -39,6 +48,16 @@ export default function CameraScreen() {
 
   const tier = tierForStreak(streakDays);
   const markColor = freeLocked ? T.green : tier.color;
+
+  /* adopt whatever Home sent, whenever it sends it. Checking against the known
+     names means a stray param can't set the meal to something the database
+     would reject. */
+  useEffect(() => {
+    const incoming = params.meal;
+    if (typeof incoming === "string" && MEALS.includes(incoming)) {
+      setMeal(incoming);
+    }
+  }, [params.meal]);
 
   /* tapping the tab while already here closes whatever's open */
   const didMount = useRef(false);

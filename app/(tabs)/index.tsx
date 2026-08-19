@@ -1,6 +1,6 @@
 // app/(tabs)/index.tsx
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { ChevronLeft, ChevronRight, HelpCircle, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -12,6 +12,7 @@ import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
+import { loadDay, todayLocal } from "../../constants/meals";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
 const SCREEN_H = Dimensions.get("window").height;
@@ -20,13 +21,20 @@ const SCREEN_H = Dimensions.get("window").height;
 const SHEET_H = Math.round(SCREEN_H * 0.72);
 const HERO_H = Math.round(SCREEN_H * 0.62);
 
-/* each meal carries its own animated icon — identity, not state. The coloured
-   borders below still do the state work (logged / next / needs attention). */
-const MEALS: { name: string; cal: number; typical: number; icon: IconName }[] = [
-  { name: "Breakfast", cal: 215, typical: 450, icon: "breakfast" },
-  { name: "Lunch", cal: 530, typical: 600, icon: "lunch" },
-  { name: "Dinner", cal: 0, typical: 700, icon: "dinner" },
-  { name: "Snacks", cal: 0, typical: 200, icon: "snacks" },
+/* How far over the target before the wording gets firmer. Below this you've
+   essentially hit your number — estimates carry more error than 150 calories,
+   so treating 40 over as a miss would be pretending to a precision the app
+   doesn't have. */
+const OVER_THRESHOLD = 150;
+
+/* The four meal slots always show, logged or not — an empty Dinner row IS the
+   prompt to log dinner. `typical` is what a meal of that kind usually runs to,
+   used only to spot a suspiciously light entry. */
+const MEAL_SLOTS: { name: string; key: string; typical: number; icon: IconName }[] = [
+  { name: "Breakfast", key: "breakfast", typical: 450, icon: "breakfast" },
+  { name: "Lunch", key: "lunch", typical: 600, icon: "lunch" },
+  { name: "Dinner", key: "dinner", typical: 700, icon: "dinner" },
+  { name: "Snacks", key: "snacks", typical: 200, icon: "snacks" },
 ];
 
 /** the flame animation for a tier — a dedicated file per tier reads far better
@@ -39,7 +47,9 @@ const FLAME_FOR_TIER: Record<string, IconName> = {
   Ultimate: "flameUltimate",
 };
 
-/* SEASON boards — General and Regional reset every season */
+/* SEASON boards — General and Regional reset every season.
+   STILL STAND-IN DATA. A real leaderboard needs a server-side ranking query
+   across every user, which is its own piece of work. */
 const BOARD_FULL = [
   { rank: 1, handle: "amara_k", pts: 412, days: 21 },
   { rank: 2, handle: "dionj", pts: 388, days: 14, me: true },
@@ -104,7 +114,7 @@ const SCOPES: Scope[] = ["General", "Regional", "Total"];
 
 export default function Home() {
   const router = useRouter();
-  const { T, freeLocked, togglePro, isPro, plan, profile, streakDays, tabResetKey } = useApp();
+  const { T, freeLocked, togglePro, isPro, plan, profile, streakDays, tabResetKey, userId } = useApp();
   const [scope, setScope] = useState<Scope>("General");
 
   const [heroOpen, setHeroOpen] = useState(false);
@@ -115,6 +125,47 @@ export default function Home() {
   const [howOpen, setHowOpen] = useState(false);
   const [crownPlay, setCrownPlay] = useState(0);
   const board = useRef(new Animated.Value(0)).current;
+
+  /* ---------- TODAY'S REAL MEALS ----------
+     Per-slot totals, summed from what's actually in the database. */
+  const [todayCals, setTodayCals] = useState<Record<string, number>>({});
+  const [todayMacros, setTodayMacros] = useState({ p: 0, c: 0, f: 0 });
+  const [mealsLoaded, setMealsLoaded] = useState(false);
+
+  /* useFocusEffect rather than useEffect: coming BACK from the camera after
+     logging has to show the new number. A mount-only effect wouldn't re-run,
+     and the user would see their old total until they restarted the app. */
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!userId) { setMealsLoaded(true); return; }
+
+      (async () => {
+        const { meals } = await loadDay(userId, todayLocal());
+        if (cancelled) return;
+
+        const cals: Record<string, number> = {};
+        let p = 0, c = 0, f = 0;
+
+        meals.forEach((m) => {
+          const slot = m.mealType || "snacks";
+          const mealCal = m.items.reduce((a, it) => a + (it.calories || 0), 0);
+          cals[slot] = (cals[slot] || 0) + mealCal;
+          m.items.forEach((it) => {
+            p += it.protein || 0;
+            c += it.carbs || 0;
+            f += it.fat || 0;
+          });
+        });
+
+        setTodayCals(cals);
+        setTodayMacros({ p, c, f });
+        setMealsLoaded(true);
+      })();
+
+      return () => { cancelled = true; };
+    }, [userId])
+  );
 
   // guards against rapid repeat taps
   const scopeLock = useRef(false);
@@ -137,8 +188,14 @@ export default function Home() {
   const flameColor = freeLocked ? T.green : isUlt ? T.orange : tier.color;
   const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
-  const eaten = MEALS.reduce((sum, m) => sum + m.cal, 0);
+  /* the slots, each carrying whatever today's database says it holds */
+  const meals = MEAL_SLOTS.map((m) => ({ ...m, cal: todayCals[m.key] || 0 }));
+  const eaten = meals.reduce((sum, m) => sum + m.cal, 0);
+  const nothingLogged = mealsLoaded && eaten === 0;
+
+  /* still stand-in — real steps need HealthKit and a development build */
   const burned = 320;
+
   /* The base target from your plan, plus what you burned IF you asked for that
      in onboarding. Showing only the sum made the hero look wrong after a
      rebuild — the breakdown below the number is what makes it legible. */
@@ -146,15 +203,44 @@ export default function Home() {
   const goal = base + (plan.addBurned ? burned : 0);
   const remaining = Math.max(0, goal - eaten);
   const over = eaten - goal;
-  const pct = Math.min(100, (eaten / goal) * 100);
+  const pct = goal > 0 ? Math.min(100, (eaten / goal) * 100) : 0;
 
-  const nextMeal = MEALS.find((m) => m.cal === 0);
-  const lightMeal = MEALS.find((m) => m.cal > 0 && m.cal < m.typical * 0.6);
+  /* ---------- THE HERO SENTENCE ----------
+     FOUR states, because one template breaks at the edges and two would put
+     someone who landed exactly on target in the same bucket as someone 800
+     over.
 
+     Every number carries the word CALORIES. A bare figure reads as an
+     abstraction, and the whole point is that the user knows what's counted.
+
+     On the OVER wording — the firm version points at the PLAN, not the person.
+     "Your goal date moves" is true, specific and something they can act on.
+     Anything that reads as disapproval of what they ate is the wrong trade:
+     the person having a bad week is exactly the person who most needs to keep
+     logging, and an app that makes them feel judged is one they stop opening.
+     Accountability comes from showing the consequence honestly, not from
+     telling them off. */
+  let heroLine: string;
+  if (nothingLogged) {
+    heroLine = `You have ${goal.toLocaleString()} calories to eat today. This number counts down as you log your meals.`;
+  } else if (over < 0) {
+    heroLine = `You've eaten ${eaten.toLocaleString()} calories so far. That leaves ${remaining.toLocaleString()} calories for the rest of today — it counts down each time you log.`;
+  } else if (over <= OVER_THRESHOLD) {
+    /* on target, or close enough that the difference is inside the estimate's
+       own margin of error — no reason to flag it as a miss */
+    heroLine = `You've eaten ${eaten.toLocaleString()} calories today, which lands you right on your target of ${goal.toLocaleString()} calories. That's the day done.`;
+  } else {
+    heroLine = `You've eaten ${eaten.toLocaleString()} calories today — ${over.toLocaleString()} calories above your target of ${goal.toLocaleString()}. A single day like this barely moves the needle, but days like it add up, and your goal date shifts with them.`;
+  }
+
+  const nextMeal = meals.find((m) => m.cal === 0);
+  const lightMeal = meals.find((m) => m.cal > 0 && m.cal < m.typical * 0.6);
+
+  /* macros come from what was actually eaten, against the plan's targets */
   const macros = [
-    { label: "Protein", v: Math.round(plan.protein * 0.28), t: plan.protein, c: T.green },
-    { label: "Carbs", v: Math.round(plan.carbs * 0.25), t: plan.carbs, c: T.gold },
-    { label: "Fat", v: Math.round(plan.fat * 0.28), t: plan.fat, c: T.orange },
+    { label: "Protein", v: todayMacros.p, t: plan.protein, c: T.green },
+    { label: "Carbs", v: todayMacros.c, t: plan.carbs, c: T.gold },
+    { label: "Fat", v: todayMacros.f, t: plan.fat, c: T.orange },
   ];
 
   const openHero = useCallback(() => {
@@ -209,13 +295,26 @@ export default function Home() {
   const losing = profile.targetWeight < profile.startWeight;
 
   const s = styles(T);
-  const toCamera = () => router.push("/(tabs)/camera");
 
+  /* THE MEAL TRAVELS WITH THE TAP. Tapping "Add snacks" has to open the camera
+     already set to Snacks — before this, it opened on whatever was last used,
+     so food logged from the Snacks row landed in Dinner. The user saw one
+     thing and the database recorded another, which is the worst kind of bug:
+     nothing looks wrong until much later. */
+  const toCamera = (mealName?: string) =>
+    router.push(mealName ? `/(tabs)/camera?meal=${mealName}` : "/(tabs)/camera");
+
+  /* the nudge reads the real day. An empty day gets its own line — "1,850
+     calories left" is technically true on a blank day but says nothing about
+     what to do next. */
   let nudgeTitle: string;
   let nudgeSub: string;
-  if (over > 200) {
+  if (nothingLogged) {
+    nudgeTitle = "Nothing logged yet today";
+    nudgeSub = "Snap your first meal — it takes about five seconds";
+  } else if (over > OVER_THRESHOLD) {
     nudgeTitle = `${over.toLocaleString()} calories over your goal today`;
-    nudgeSub = "It happens — tomorrow's a fresh day. Your streak is safe.";
+    nudgeSub = "Keep logging — an honest record is worth more than a tidy one.";
   } else if (nextMeal) {
     nudgeTitle = `${remaining.toLocaleString()} calories left today — log ${nextMeal.name.toLowerCase()}`;
     nudgeSub = "Your next meal · tap to snap, scan or search";
@@ -280,7 +379,7 @@ export default function Home() {
   const CalorieBar = ({ height = 10 }: { height?: number }) => (
     <View style={[s.track, { height }]}>
       {over > 0 ? (
-        <View style={[s.fillFlat, { width: `${pct}%`, backgroundColor: over > 200 ? T.red : T.orange }]} />
+        <View style={[s.fillFlat, { width: `${pct}%`, backgroundColor: over > OVER_THRESHOLD ? T.red : T.orange }]} />
       ) : (
         <LinearGradient
           colors={["#15803D", "#22C55E", "#86EFAC"]}
@@ -343,6 +442,9 @@ export default function Home() {
                 <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
               </View>
 
+              {/* say which way it moves, and in what unit */}
+              <Text style={s.heroExplain}>{heroLine}</Text>
+
               {/* why today's goal is higher than your plan — otherwise the
                   number looks wrong after changing your goal */}
               {plan.addBurned && (
@@ -363,8 +465,8 @@ export default function Home() {
           </TravelBorder>
         </Tap>
 
-        {/* PRIMARY-ACTION NUDGE */}
-        <Tap onPress={toCamera} style={{ marginTop: 14 }}>
+        {/* PRIMARY-ACTION NUDGE — carries the next unlogged meal with it */}
+        <Tap onPress={() => toCamera(nextMeal?.name)} style={{ marginTop: 14 }}>
           <View style={s.nudge}>
             <View style={s.nudgeIcon}>
               <Icon name="cameraDark" size={24} mode="loop" />
@@ -380,11 +482,11 @@ export default function Home() {
         {/* TODAY'S MEALS — each carries its own icon for identity; the coloured
             borders still carry the STATE (logged / next / needs attention) */}
         <Text style={[s.micro, { marginTop: 22, marginBottom: 10 }]}>TODAY'S MEALS</Text>
-        {MEALS.map((m) => {
+        {meals.map((m) => {
           const isNext = nextMeal?.name === m.name;
           const isLight = lightMeal?.name === m.name;
           return (
-            <Tap key={m.name} onPress={toCamera} style={{ marginBottom: 10 }}>
+            <Tap key={m.name} onPress={() => toCamera(m.name)} style={{ marginBottom: 10 }}>
               <View style={[
                 s.meal,
                 isNext && { borderColor: T.greenBorder, backgroundColor: T.greenBg },
@@ -541,6 +643,8 @@ export default function Home() {
                       <Text style={s.calSub}>of {goal.toLocaleString()} cal</Text>
                     </View>
 
+                    <Text style={s.heroExplain}>{heroLine}</Text>
+
                     {plan.addBurned && (
                       <Text style={s.goalBreakdown}>
                         {base.toLocaleString()} target + {burned} burned today
@@ -561,7 +665,7 @@ export default function Home() {
                           <Text style={s.macroLabel}>{m.v}/{m.t}g</Text>
                         </View>
                         <View style={s.macroTrack}>
-                          <View style={[s.macroFill, { width: `${Math.min(100, (m.v / m.t) * 100)}%`, backgroundColor: m.c }]}>
+                          <View style={[s.macroFill, { width: `${m.t > 0 ? Math.min(100, (m.v / m.t) * 100) : 0}%`, backgroundColor: m.c }]}>
                             <Text style={s.macroInside}>{m.v}g</Text>
                           </View>
                         </View>
@@ -586,7 +690,7 @@ export default function Home() {
                   </ScrollView>
 
                   <View style={s.sheetFooter}>
-                    <Tap onPress={() => { closeHero(); setTimeout(toCamera, 220); }}>
+                    <Tap onPress={() => { closeHero(); setTimeout(() => toCamera(nextMeal?.name), 220); }}>
                       <View style={s.sheetCta}>
                         <Text style={s.sheetCtaText}>Log a meal</Text>
                       </View>
@@ -797,7 +901,8 @@ const styles = (T: any) =>
     calRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
     calBig: { fontSize: 46, color: T.text, fontFamily: FONTS.heading },
     calSub: { fontSize: 14, color: T.sub, fontFamily: FONTS.body },
-    goalBreakdown: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
+    heroExplain: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 8, lineHeight: 17 },
+    goalBreakdown: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6 },
     track: { marginTop: 14, borderRadius: 99, backgroundColor: T.track, overflow: "hidden" },
     fillFlat: { height: "100%", borderRadius: 99 },
     eatenLine: { fontSize: 11, color: T.green, fontFamily: FONTS.headingMed },
