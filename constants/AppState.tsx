@@ -9,6 +9,7 @@
 //   - settings            (the Profile toggles)
 //   - tabResetKey         (tapping the tab you're already on drops that tab
 //                          back to its root view)
+//   - devMode             (ONE switch for every piece of fake data in the app)
 //
 // THE SEAM. Every screen asks THIS file for data and never asks Supabase
 // directly. That's what let the backend arrive without rewriting a single
@@ -18,6 +19,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { currentUser } from "./auth";
+import { currentStreak } from "./meals";
 import { loadProfile, saveProfile } from "./profile";
 import { supabase } from "./supabase";
 import { DARK, LIGHT } from "./theme";
@@ -102,12 +104,28 @@ const DEFAULT_SETTINGS: Settings = {
   haptics: true,
 };
 
+/* the streak shown while demoing — long enough to reach Ultimate, so every
+   tier colour and flame in the app can be seen without logging for a month */
+const DEMO_STREAK = 19;
+
 type AppStateShape = {
   // --- who's signed in ---
   userId: string | null;
   /* true until the first profile load finishes. index.tsx waits on this so
      nobody sees a placeholder plan flash before their real one arrives. */
   loading: boolean;
+
+  /* ---------- DEV MODE ----------
+     ONE switch for every piece of fake data in the app. Two dev controls that
+     could disagree is worse than none: Profile's tier chips used to overwrite
+     the real streak while the calendar kept drawing real tiles, so the two
+     screens showed different truths and neither was obviously wrong.
+
+     Now: dev mode ON means everything is consistently fake. OFF means
+     everything is real, everywhere. Turning it off is also the pre-launch
+     check — if the app looks right with it off, nothing fake is left. */
+  devMode: boolean;
+  toggleDevMode: () => void;
 
   // --- Pro / free ---
   isPro: boolean;
@@ -129,7 +147,11 @@ type AppStateShape = {
 
   // --- streak ---
   streakDays: number;
-  setStreakDays: (n: number) => void;
+  /* only meaningful in dev mode — the real streak is computed, not set */
+  setDemoStreak: (n: number) => void;
+  /* recompute after logging or deleting a meal, so the flame updates without
+     waiting for a restart */
+  refreshStreak: () => void;
 
   // --- settings ---
   settings: Settings;
@@ -156,13 +178,26 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  /* OFF by default. The app's honest state is the one you see first. */
+  const [devMode, setDevMode] = useState(false);
+
   const [isPro, setIsPro] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>("dark");
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [paywallVariant, setPaywallVariant] = useState<"trial" | "subscribe">("subscribe");
 
-  // one value drives the M colour, the flame, the streak chip and the calendar
-  const [streakDays, setStreakDays] = useState(14);
+  /* TWO streak values, and only one is ever shown.
+
+     `realStreak` is computed from logged days and is the truth.
+     `demoStreak` is what the dev tier chips set, and it's ignored entirely
+     unless dev mode is on.
+
+     Keeping them separate is the whole fix: the dev chips can no longer
+     overwrite real data, so switching dev mode off restores the true number
+     instantly rather than leaving a fake one behind. */
+  const [realStreak, setRealStreak] = useState(0);
+  const [demoStreak, setDemoStreak] = useState(DEMO_STREAK);
+  const [streakTick, setStreakTick] = useState(0);
 
   /* Bumped when you tap the tab you're already on. Each tab watches this and
      drops back to its root — so Stats leaves its detail view and Profile
@@ -217,11 +252,38 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  /* ---------- THE STREAK ----------
+     COMPUTED from logged days, never stored. A stored counter has to be
+     updated correctly on every save, every delete, and every timezone edge —
+     and when it drifts, it stays drifted, with no way for the user to
+     understand why. Deriving it means it CANNOT disagree with the calendar
+     they're looking at.
+
+     It lives here rather than in any screen because one number feeds all of
+     them: the M's colour, the flame file, the tier name, the profile pill,
+     the calendar tiles, the leaderboard points. */
+  useEffect(() => {
+    if (!userId) { setRealStreak(0); return; }
+    let cancelled = false;
+    (async () => {
+      const n = await currentStreak(userId);
+      if (!cancelled) setRealStreak(n);
+    })();
+    return () => { cancelled = true; };
+  }, [userId, streakTick]);
+
+  /* Logging today's first meal takes the streak from 3 to 4 — and possibly
+     from Hot to Red-hot. Without this the flame stays wrong until the next
+     restart, which reads as the app not noticing what you just did. */
+  const refreshStreak = useCallback(() => setStreakTick((k) => k + 1), []);
+
+  const toggleDevMode = useCallback(() => setDevMode((v) => !v), []);
+
   /* Keep userId in step with sign-in and sign-out anywhere in the app, so
      nothing has to remember to tell AppState.
 
      SIGNING IN reloads the profile from scratch. This one is load-bearing and
-     was the bug: the effect above only runs ONCE on mount, so after a
+     was a real bug: the effect above only runs ONCE on mount, so after a
      sign-out → sign-in cycle nothing re-fetched, and the app showed
      placeholder numbers while the real row sat in the database.
 
@@ -237,6 +299,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         setPlan(DEFAULT_PLAN);
         setRecommended(DEFAULT_PLAN);
         setIsPro(false);
+        setRealStreak(0);
         return;
       }
 
@@ -332,10 +395,16 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const T = themeMode === "dark" ? DARK : LIGHT;
 
+  /* the single number every screen reads. Which of the two it is depends
+     entirely on the dev switch — nothing downstream needs to know. */
+  const streakDays = devMode ? demoStreak : realStreak;
+
   const value = useMemo<AppStateShape>(
     () => ({
       userId,
       loading,
+      devMode,
+      toggleDevMode,
       isPro,
       freeLocked: !isPro,
       setIsPro,
@@ -349,7 +418,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       openPaywall,
       closePaywall,
       streakDays,
-      setStreakDays,
+      setDemoStreak,
+      refreshStreak,
       settings,
       setSetting,
       tabResetKey,
@@ -363,7 +433,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       resetToRecommended,
       recommendedCalories: recommended.calories,
     }),
-    [userId, loading, isPro, themeMode, T, paywallOpen, paywallVariant, streakDays, settings, tabResetKey, plan, profile, recommended, togglePro, toggleTheme, openPaywall, closePaywall, setSetting, resetTab, savePlan, updateProfile, updatePlanFlag, setDailyCalories, resetToRecommended]
+    [userId, loading, devMode, toggleDevMode, isPro, themeMode, T, paywallOpen, paywallVariant, streakDays, refreshStreak, settings, tabResetKey, plan, profile, recommended, togglePro, toggleTheme, openPaywall, closePaywall, setSetting, resetTab, savePlan, updateProfile, updatePlanFlag, setDailyCalories, resetToRecommended]
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

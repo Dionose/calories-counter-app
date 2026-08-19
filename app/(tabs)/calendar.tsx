@@ -1,7 +1,8 @@
 // app/(tabs)/calendar.tsx
 import { LinearGradient } from "expo-linear-gradient";
+import { useFocusEffect } from "expo-router";
 import { ChevronLeft, ChevronRight, Lock, Mic, Sparkles, X } from "lucide-react-native";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Icon, { IconMode, IconName } from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
@@ -10,6 +11,7 @@ import StreakWarnCard from "../../components/StreakWarnCard";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
+import { loadDay, loadDayTotals } from "../../constants/meals";
 import { FONTS, TIERS, ULT_COLORS } from "../../constants/theme";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -50,7 +52,12 @@ const TODAY_Y = TODAY.getFullYear();
 const TODAY_M = TODAY.getMonth();
 const TODAY_D = TODAY.getDate();
 
+/* the grid's internal key is 0-indexed month, matching Date. The DATABASE
+   speaks YYYY-MM-DD with 1-indexed months, so the two live side by side and
+   never get mixed up. */
 const key = (y: number, m: number, d: number) => `${y}-${m}-${d}`;
+const dbKey = (y: number, m: number, d: number) =>
+  `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
 function daysInMonth(year: number, month: number) {
   return new Date(year, month + 1, 0).getDate();
@@ -78,24 +85,38 @@ function isToday(year: number, month: number, day: number) {
   return year === TODAY_Y && month === TODAY_M && day === TODAY_D;
 }
 
-/* ---------- logged days ----------
-   Stand-in until the backend stores real logs. 74 days of history counting
-   back from today, with deliberate gaps: the current run reaches 19 days
-   (Ultimate), and the misses show what a broken streak looks like and how the
-   run restarts at Spark. Replace MISSED_AGO + HISTORY_DAYS with real data and
-   every tile, tier and flame below follows automatically. */
-const HISTORY_DAYS = 74;
-const MISSED_AGO = [19, 20, 41]; // days before today that were NOT logged
+/* ================= DEMO DATA =================
+   The mock history that used to BE the calendar, kept for demos.
 
-function buildLogged(): Set<string> {
+   Why it survives: a real account two days old shows two lit tiles, which
+   demonstrates nothing about tiers, colours, or what a long streak looks
+   like. Showing the app to someone needs the full picture, and nobody's
+   going to log for three weeks first.
+
+   It's driven by the ONE dev switch in Profile — not a toggle of its own.
+   Two dev controls that could disagree is exactly the confusion this
+   replaced: the tier chips used to fake the streak while these tiles stayed
+   real, so Home said Ultimate and the calendar said Spark.
+
+   Remove this block along with Profile's dev panel before launch. */
+const DEMO_HISTORY_DAYS = 74;
+const DEMO_MISSED_AGO = [19, 20, 41]; // days before today that were NOT logged
+
+function buildDemoLogged(): Set<string> {
   const set = new Set<string>();
   const d = new Date(TODAY_Y, TODAY_M, TODAY_D);
-  for (let i = 0; i < HISTORY_DAYS; i++) {
-    if (!MISSED_AGO.includes(i)) set.add(key(d.getFullYear(), d.getMonth(), d.getDate()));
+  for (let i = 0; i < DEMO_HISTORY_DAYS; i++) {
+    if (!DEMO_MISSED_AGO.includes(i)) set.add(key(d.getFullYear(), d.getMonth(), d.getDate()));
     d.setDate(d.getDate() - 1);
   }
   return set;
 }
+
+const DEMO_MEALS = [
+  { name: "Breakfast", time: "8:15 AM", title: "Scrambled eggs & avocado", cal: 430, voice: true, icon: "breakfast" as IconName },
+  { name: "Lunch", time: "12:41 PM", title: "Grilled chicken & rice", cal: 620, voice: false, icon: "lunch" as IconName },
+  { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, voice: true, icon: "dinner" as IconName },
+];
 
 /** how many consecutive days had been logged up to and including this one —
     that run length is what decides the tier the tile wears */
@@ -120,34 +141,25 @@ function tierIndexForRun(run: number): 0 | 1 | 2 | 3 | 4 | 5 {
 
 /* ---------- the free colour window ----------
    Free users keep tier colours for 30 days from signup, then the calendar goes
-   plain while the streak keeps counting. Stand-in signup date until the backend
-   stores the real one — set 24 days ago so the countdown reads 6 days. */
-const SIGNUP = new Date(TODAY_Y, TODAY_M, TODAY_D - 24);
+   plain while the streak keeps counting. */
 const FREE_WINDOW_DAYS = 30;
-const FADE_DATE = new Date(SIGNUP.getFullYear(), SIGNUP.getMonth(), SIGNUP.getDate() + FREE_WINDOW_DAYS);
-const DAYS_LEFT = Math.ceil((FADE_DATE.getTime() - TODAY.getTime()) / 86400000);
 
-const DAY_MEALS = [
-  { name: "Breakfast", time: "8:15 AM", title: "Scrambled eggs & avocado", cal: 430, pct: 22, voice: true, icon: "breakfast" as IconName },
-  { name: "Lunch", time: "12:41 PM", title: "Grilled chicken & rice", cal: 620, pct: 31, voice: false, icon: "lunch" as IconName },
-  { name: "Dinner", time: "7:20 PM", title: "Salmon, greens & potato", cal: 700, pct: 35, voice: true, icon: "dinner" as IconName },
-];
+/* meal-slot ordering, so a day's recap reads breakfast → snacks rather than
+   whatever order the rows came back in */
+const SLOT_ORDER: Record<string, number> = { breakfast: 0, lunch: 1, dinner: 2, snacks: 3 };
+const SLOT_LABEL: Record<string, string> = {
+  breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner", snacks: "Snacks",
+};
+const SLOT_ICON: Record<string, IconName> = {
+  breakfast: "breakfast", lunch: "lunch", dinner: "dinner", snacks: "snacks",
+};
 
-/* ---------- the date jump ----------
-   Three wheels — day, month, year — same feel as the birthday picker in
-   onboarding. Lands on a specific day, so it opens that month with the day
-   already selected and goes straight to its recap. */
+/* ---------- the date jump ---------- */
 const ROW_H = 38;
 const YEARS = Array.from({ length: 6 }, (_, i) => TODAY_Y - 4 + i);
 
 function Wheel({
-  values,
-  labels,
-  value,
-  onChange,
-  disabled,
-  width,
-  T,
+  values, labels, value, onChange, disabled, width, T,
 }: {
   values: number[];
   labels: string[];
@@ -191,7 +203,9 @@ function Wheel({
 }
 
 export default function Calendar() {
-  const { T, freeLocked, openPaywall, plan } = useApp();
+  /* devMode comes from AppState, so this screen and Profile's tier chips can
+     never disagree — they're reading the same switch */
+  const { T, freeLocked, openPaywall, plan, profile, userId, devMode } = useApp();
 
   const [year, setYear] = useState(TODAY_Y);
   const [month, setMonth] = useState(TODAY_M);
@@ -204,10 +218,85 @@ export default function Calendar() {
 
   const [reelOpen, setReelOpen] = useState(false);
 
+  /* the user's REAL logged days, and the calories on each */
+  const [realLogged, setRealLogged] = useState<Set<string>>(new Set());
+  const [realTotals, setRealTotals] = useState<Record<string, number>>({});
+  const [loaded, setLoaded] = useState(false);
+
+  /* one day's meals, fetched when a tile is tapped */
+  const [dayMeals, setDayMeals] = useState<any[]>([]);
+  const [dayLoading, setDayLoading] = useState(false);
+
   const s = styles(T);
 
-  const logged = useMemo(() => buildLogged(), []);
+  /* ---------- LOAD THE HISTORY ----------
+     A wide window rather than one month: the tier a tile wears depends on the
+     RUN leading up to it, which can start in a previous month. Fetching only
+     the visible month would make a streak crossing the 1st look like it
+     restarted. 400 days covers any run and is one query. */
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!userId) { setLoaded(true); return; }
+
+      (async () => {
+        const from = new Date();
+        from.setDate(from.getDate() - 400);
+        const { totals } = await loadDayTotals(
+          userId,
+          dbKey(from.getFullYear(), from.getMonth(), from.getDate()),
+          dbKey(TODAY_Y, TODAY_M, TODAY_D)
+        );
+        if (cancelled) return;
+
+        /* translate the database's YYYY-MM-DD into the grid's own key */
+        const set = new Set<string>();
+        Object.keys(totals).forEach((iso) => {
+          const [y, m, d] = iso.split("-").map(Number);
+          set.add(key(y, m - 1, d));
+        });
+
+        setRealLogged(set);
+        setRealTotals(totals);
+        setLoaded(true);
+      })();
+
+      return () => { cancelled = true; };
+    }, [userId])
+  );
+
+  /* leaving dev mode while a demo day is open would show that day's recap
+     against real data it doesn't have — close it instead */
+  React.useEffect(() => { setDay(null); }, [devMode]);
+
+  const demoLogged = useMemo(() => buildDemoLogged(), []);
+  const logged = devMode ? demoLogged : realLogged;
   const cells = useMemo(() => buildGrid(year, month), [year, month]);
+
+  /* the free colour window counts from the REAL signup date once the profile
+     has one — the demo keeps its own so the countdown card still shows */
+  const signup = useMemo(() => {
+    if (devMode || !profile.memberSince) return new Date(TODAY_Y, TODAY_M, TODAY_D - 24);
+    const [y, m, d] = String(profile.memberSince).split("-").map(Number);
+    return isNaN(y) ? new Date(TODAY_Y, TODAY_M, TODAY_D - 24) : new Date(y, m - 1, d);
+  }, [devMode, profile.memberSince]);
+
+  const fadeDate = new Date(signup.getFullYear(), signup.getMonth(), signup.getDate() + FREE_WINDOW_DAYS);
+  const daysLeft = Math.max(0, Math.ceil((fadeDate.getTime() - TODAY.getTime()) / 86400000));
+
+  /* open a day — the demo answers instantly, real data takes a query */
+  const openDay = async (d: number) => {
+    setDay(d);
+    if (devMode) { setDayMeals([]); return; }
+    if (!userId) return;
+
+    setDayLoading(true);
+    const { meals } = await loadDay(userId, dbKey(year, month, d));
+    setDayMeals(
+      meals.sort((a, b) => (SLOT_ORDER[a.mealType] ?? 9) - (SLOT_ORDER[b.mealType] ?? 9))
+    );
+    setDayLoading(false);
+  };
 
   const prevMonth = () => {
     setDay(null);
@@ -235,9 +324,13 @@ export default function Calendar() {
     const d = Math.min(pD, maxD);
     setYear(pY);
     setMonth(pM);
-    // land straight on the day's recap if there's something logged there
-    setDay(logged.has(key(pY, pM, d)) && !isFuture(pY, pM, d) ? d : null);
     setPickerOpen(false);
+    // land straight on the day's recap if there's something logged there
+    if (logged.has(key(pY, pM, d)) && !isFuture(pY, pM, d)) {
+      setTimeout(() => openDay(d), 0);
+    } else {
+      setDay(null);
+    }
   };
 
   const jumpToday = () => {
@@ -280,7 +373,7 @@ export default function Calendar() {
 
     if (freeLocked) {
       return (
-        <Tap onPress={() => setDay(d)} style={s.cell}>
+        <Tap onPress={() => openDay(d)} style={s.cell}>
           <View style={[s.tileBox, { backgroundColor: T.card, borderWidth: 1, borderColor: today ? T.green : T.border }]}>
             <Text style={[s.dayNum, s.dayNumOverlay, { color: T.text }]}>{d}</Text>
             <Text style={s.plainCheck}>✓</Text>
@@ -296,7 +389,7 @@ export default function Calendar() {
 
     if (isUlt) {
       return (
-        <Tap onPress={() => setDay(d)} style={s.cell}>
+        <Tap onPress={() => openDay(d)} style={s.cell}>
           <View style={s.tileWrap}>
             <TravelBorder colors={ULT_COLORS} cardBg="#3B1A4A" borderColor={T.border} radius={12} strokeWidth={2.5}>
               <View style={s.tileInner} />
@@ -312,7 +405,7 @@ export default function Calendar() {
     }
 
     return (
-      <Tap onPress={() => setDay(d)} style={s.cell}>
+      <Tap onPress={() => openDay(d)} style={s.cell}>
         <View style={s.tileWrap}>
           <TravelBorder color={t.color} cardBg={`${t.color}33`} borderColor={T.border} radius={12} strokeWidth={2.5}>
             <View style={s.tileInner} />
@@ -333,8 +426,29 @@ export default function Calendar() {
     const t = TIERS[tierIndexForRun(run) as 1 | 2 | 3 | 4 | 5];
     const isUlt = !freeLocked && t.color === "ultimate";
     const flame = FLAME_FOR_TIER[t.name] || "flameSpark";
-    const total = DAY_MEALS.reduce((sum, m) => sum + m.cal, 0);
     const goal = plan.calories;
+
+    /* the demo shows its scripted plate; a real day shows what was logged */
+    const rows = devMode
+      ? DEMO_MEALS.map((m) => ({
+          label: m.name, icon: m.icon, time: m.time, title: m.title,
+          cal: m.cal, voice: m.voice,
+        }))
+      : dayMeals.map((m) => {
+          const cal = m.items.reduce((a: number, it: any) => a + (it.calories || 0), 0);
+          return {
+            label: SLOT_LABEL[m.mealType] || "Meal",
+            icon: SLOT_ICON[m.mealType] || ("snacks" as IconName),
+            time: "",
+            /* the meal's name IS its foods — there's no separate title, and
+               inventing one would mean guessing at what the plate was */
+            title: m.items.map((it: any) => it.foodName).join(", ") || "Logged meal",
+            cal,
+            voice: m.source === "voice",
+          };
+        });
+
+    const total = rows.reduce((sum, m) => sum + m.cal, 0);
     const diff = goal - total;
 
     return (
@@ -361,42 +475,55 @@ export default function Calendar() {
             </View>
           )}
 
-          {DAY_MEALS.map((m, i) => (
-            <View key={i} style={s.mealCard}>
-              <View style={s.photo}>
-                <Text style={s.photoLabel}>{m.name.toLowerCase()} photo</Text>
-                {m.voice && (
-                  <View style={s.voiceBadge}>
-                    <Mic size={11} color={T.green} />
-                    <Text style={s.voiceText}>voice added</Text>
+          {dayLoading && (
+            <Text style={s.dayLoading}>Loading that day…</Text>
+          )}
+
+          {rows.map((m, i) => {
+            const pct = total > 0 ? Math.round((m.cal / total) * 100) : 0;
+            return (
+              <View key={i} style={s.mealCard}>
+                {/* photos aren't uploaded yet — the placeholder is honest about
+                    that rather than showing an empty frame that looks broken */}
+                <View style={s.photo}>
+                  <Text style={s.photoLabel}>{m.label.toLowerCase()} photo</Text>
+                  {m.voice && (
+                    <View style={s.voiceBadge}>
+                      <Mic size={11} color={T.green} />
+                      <Text style={s.voiceText}>voice added</Text>
+                    </View>
+                  )}
+                </View>
+                <View style={{ padding: 15 }}>
+                  <View style={s.rowBetween}>
+                    <View style={s.mealHeadRow}>
+                      {/* the meal's own icon, matching Home's meal rows */}
+                      <Icon name={m.icon} size={17} mode="loop" />
+                      <Micro>{m.label}{m.time ? ` · ${m.time}` : ""}</Micro>
+                    </View>
+                    <View style={s.aiTag}>
+                      <Sparkles size={10} color={T.green} />
+                      <Text style={s.aiText}>MOTION AI</Text>
+                    </View>
                   </View>
-                )}
+                  <Text style={s.mealTitle} numberOfLines={2}>{m.title}</Text>
+                  <View style={s.rowBetween}>
+                    <Text style={s.mealCalBig}>
+                      {m.cal} <Text style={s.mealCalUnit}>cal</Text>
+                    </Text>
+                    <Text style={s.pctText}>{pct}% of your day</Text>
+                  </View>
+                  <View style={s.pctTrack}>
+                    <View style={[s.pctFill, { width: `${pct}%` }]} />
+                  </View>
+                </View>
               </View>
-              <View style={{ padding: 15 }}>
-                <View style={s.rowBetween}>
-                  <View style={s.mealHeadRow}>
-                    {/* the meal's own icon, matching Home's meal rows */}
-                    <Icon name={m.icon} size={17} mode="loop" />
-                    <Micro>{m.name} · {m.time}</Micro>
-                  </View>
-                  <View style={s.aiTag}>
-                    <Sparkles size={10} color={T.green} />
-                    <Text style={s.aiText}>MOTION AI</Text>
-                  </View>
-                </View>
-                <Text style={s.mealTitle}>{m.title}</Text>
-                <View style={s.rowBetween}>
-                  <Text style={s.mealCalBig}>
-                    {m.cal} <Text style={s.mealCalUnit}>cal</Text>
-                  </Text>
-                  <Text style={s.pctText}>{m.pct}% of your day</Text>
-                </View>
-                <View style={s.pctTrack}>
-                  <View style={[s.pctFill, { width: `${m.pct}%` }]} />
-                </View>
-              </View>
-            </View>
-          ))}
+            );
+          })}
+
+          {!dayLoading && rows.length === 0 && (
+            <Text style={s.emptyDay}>Nothing recorded for this day.</Text>
+          )}
 
           <TravelBorder
             {...(isUlt ? { colors: ULT_COLORS } : { color: freeLocked ? T.green : t.color })}
@@ -421,6 +548,8 @@ export default function Calendar() {
   }
 
   /* ---------- the month grid ---------- */
+  const nothingEver = loaded && !devMode && realLogged.size === 0;
+
   return (
     <View style={s.screen}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
@@ -435,6 +564,14 @@ export default function Calendar() {
             </Tap>
           }
         />
+
+        {/* DEV ONLY — a quiet banner so it's never a mystery why the calendar
+            is full of days nobody logged. The switch itself lives in Profile. */}
+        {devMode && (
+          <View style={s.devBanner}>
+            <Text style={s.devBannerText}>DEV MODE · showing demo history</Text>
+          </View>
+        )}
 
         <View style={s.monthRow}>
           <Pressable onPress={prevMonth} hitSlop={12} style={s.monthArrow}>
@@ -487,13 +624,22 @@ export default function Calendar() {
           {cells.map((d, i) => <DayTile key={`${year}-${month}-${i}`} d={d} />)}
         </View>
 
-        <Text style={s.hint}>
-          {freeLocked ? "Tap any logged day to open its recap →" : "Tap any lit day to open its recap →"}
-        </Text>
+        {/* an empty calendar needs to say WHY it's empty. Thirty grey squares
+            with no explanation reads as broken rather than as new. */}
+        {nothingEver ? (
+          <Text style={s.hint}>
+            Nothing logged yet. Log your first meal and this day lights up —
+            keep going and the colours climb through the tiers.
+          </Text>
+        ) : (
+          <Text style={s.hint}>
+            {freeLocked ? "Tap any logged day to open its recap →" : "Tap any lit day to open its recap →"}
+          </Text>
+        )}
 
         {/* the free-tier countdown — Pro users never see this */}
         {freeLocked && (
-          <StreakWarnCard daysLeft={DAYS_LEFT} fadeDate={FADE_DATE} onTap={() => setReelOpen(true)} />
+          <StreakWarnCard daysLeft={daysLeft} fadeDate={fadeDate} onTap={() => setReelOpen(true)} />
         )}
       </ScrollView>
 
@@ -591,6 +737,13 @@ const styles = (T: any) =>
 
     jumpChip: { width: 34, height: 34, borderRadius: 11, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, alignItems: "center", justifyContent: "center" },
 
+    devBanner: {
+      alignSelf: "center", marginBottom: 12,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: `${T.gold}55`,
+      borderRadius: 9, paddingHorizontal: 11, paddingVertical: 6,
+    },
+    devBannerText: { fontSize: 9.5, color: T.gold, fontFamily: FONTS.headingMed, letterSpacing: 0.5 },
+
     monthRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 16 },
     monthArrow: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
     monthText: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, minWidth: 140, textAlign: "center" },
@@ -615,7 +768,7 @@ const styles = (T: any) =>
     flameOverlay: { position: "absolute", top: 19, left: 5, zIndex: 2 },
     plainCheck: { position: "absolute", bottom: 5, right: 7, fontSize: 12, color: T.green, fontFamily: FONTS.heading },
 
-    hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 18 },
+    hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 18, lineHeight: 17, paddingHorizontal: 20 },
 
     micro: { fontSize: 10, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
     rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
@@ -623,6 +776,9 @@ const styles = (T: any) =>
     backRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, marginLeft: -6 },
     backTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginLeft: 2 },
     tierPill: { flexDirection: "row", alignSelf: "flex-start", alignItems: "center", gap: 6, paddingVertical: 5, paddingHorizontal: 11, borderRadius: 10, marginBottom: 16 },
+
+    dayLoading: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, textAlign: "center", paddingVertical: 24 },
+    emptyDay: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", paddingVertical: 28, lineHeight: 18 },
 
     mealCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, overflow: "hidden", marginBottom: 12 },
     mealHeadRow: { flexDirection: "row", alignItems: "center", gap: 7 },

@@ -2,6 +2,11 @@
 // Profile is the control panel for settings the rest of the app already reads.
 // Everything here writes to AppState, so a toggle flipped here changes
 // behaviour elsewhere immediately — and now persists to Supabase too.
+//
+// It also owns the app's ONE dev switch. That lives here rather than being
+// scattered across screens because two dev controls that can disagree is
+// worse than none: the tier chips used to overwrite the real streak while the
+// calendar kept drawing real tiles, and neither screen looked obviously wrong.
 import { useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
@@ -49,8 +54,9 @@ export default function Profile() {
   const router = useRouter();
   const {
     T, freeLocked, isPro, togglePro, openPaywall,
-    plan, profile, streakDays, setStreakDays,
+    plan, profile, streakDays, setDemoStreak,
     settings, setSetting, themeMode, tabResetKey,
+    devMode, toggleDevMode,
   } = useApp();
 
   const [themeOpen, setThemeOpen] = useState(false);
@@ -271,7 +277,7 @@ export default function Profile() {
                   {/* the tier's own flame — free users get the plain Spark one */}
                   <Icon name={freeLocked ? "flameSpark" : flameAnim} size={14} mode="loop" />
                   <Text style={[s.streakPillText, { color: accent }]}>
-                    {streakDays} days{freeLocked ? "" : ` · ${tier.name}`}
+                    {streakDays} {streakDays === 1 ? "day" : "days"}{freeLocked ? "" : ` · ${tier.name}`}
                   </Text>
                 </View>
               </View>
@@ -411,34 +417,66 @@ export default function Profile() {
 
         <Text style={s.memberSince}>Member since {memberSince}</Text>
 
-        {/* DEV — streak tier preview. Remove before launch. */}
-        <Text style={[s.sectionLabel, { marginTop: 24 }]}>Dev preview · streak tier</Text>
-        <View style={s.tierRow}>
-          {[1, 2, 3, 4, 5].map((i) => {
-            const t = TIERS[i as 1 | 2 | 3 | 4 | 5];
-            const days = [2, 6, 10, 14, 20][i - 1];
-            const on = tier.name === t.name;
-            const ult = t.color === "ultimate";
-            const col = ult ? "#A855F7" : t.color;
-            return (
-              <Pressable
-                key={t.name}
-                onPress={() => { H.tick(); setStreakDays(days); }}
-                style={[
-                  s.tierChip,
-                  { borderColor: on ? col : T.border, backgroundColor: on ? `${col}22` : T.card },
-                ]}
-              >
-                <Text style={[s.tierChipText, { color: on ? col : T.sub }]}>{t.name}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
+        {/* ================= DEV ONLY =================
+            ONE master switch for every piece of fake data in the app. Turning
+            it on shows a scripted streak here AND the demo history on the
+            calendar, so the whole app tells one consistent story — which is
+            what you need when showing someone the tier colours without them
+            logging for three weeks first.
 
-        {/* DEV — free/Pro flip */}
-        <Pressable onPress={togglePro} style={s.devChip}>
-          <Text style={s.devText}>DEV · {isPro ? "PRO" : "FREE"} · tap to flip</Text>
-        </Pressable>
+            Turning it OFF is also the pre-launch check: if the app looks right
+            with this off, nothing fake is left anywhere.
+
+            Remove this whole block before launch. */}
+        <View style={s.devPanel}>
+          <Pressable
+            onPress={() => { H.tick(); toggleDevMode(); }}
+            style={[s.devMaster, devMode && s.devMasterOn]}
+          >
+            <View style={[s.devDot, devMode && { backgroundColor: T.gold }]} />
+            <Text style={[s.devMasterText, devMode && { color: T.gold }]}>
+              DEV MODE · {devMode ? "ON — showing demo data" : "OFF — everything real"}
+            </Text>
+          </Pressable>
+
+          {/* the tier chips only exist in dev mode. Outside it they'd be
+              overwriting a real streak with a fake one, which is exactly the
+              confusion this switch was built to remove. */}
+          {devMode && (
+            <>
+              <Text style={s.devHint}>
+                Pick a tier to preview. The calendar switches to demo history at the same time.
+              </Text>
+              <View style={s.tierRow}>
+                {[1, 2, 3, 4, 5].map((i) => {
+                  const t = TIERS[i as 1 | 2 | 3 | 4 | 5];
+                  const days = [2, 6, 10, 14, 20][i - 1];
+                  const on = tier.name === t.name;
+                  const ult = t.color === "ultimate";
+                  const col = ult ? "#A855F7" : t.color;
+                  return (
+                    <Pressable
+                      key={t.name}
+                      onPress={() => { H.tick(); setDemoStreak(days); }}
+                      style={[
+                        s.tierChip,
+                        { borderColor: on ? col : T.border, backgroundColor: on ? `${col}22` : T.card },
+                      ]}
+                    >
+                      <Text style={[s.tierChipText, { color: on ? col : T.sub }]}>{t.name}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
+          )}
+
+          {/* the Pro flip stays OUTSIDE dev mode — free vs Pro is a real
+              product state, not fake data, and it needs testing either way */}
+          <Pressable onPress={togglePro} style={s.devChip}>
+            <Text style={s.devText}>DEV · {isPro ? "PRO" : "FREE"} · tap to flip</Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
       <ThemePicker visible={themeOpen} onClose={() => setThemeOpen(false)} />
@@ -481,6 +519,18 @@ const styles = (T: any) =>
     rowValue: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.headingMed, marginRight: 6, maxWidth: 130 },
 
     memberSince: { textAlign: "center", fontSize: 10, color: T.micro, fontFamily: FONTS.body, marginTop: 18 },
+
+    /* dev panel */
+    devPanel: { marginTop: 28, paddingTop: 18, borderTopWidth: 1, borderTopColor: T.border },
+    devMaster: {
+      flexDirection: "row", alignItems: "center", gap: 9,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 12, paddingHorizontal: 13, paddingVertical: 11,
+    },
+    devMasterOn: { borderColor: `${T.gold}66`, backgroundColor: "rgba(251,191,36,0.08)" },
+    devDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: T.border },
+    devMasterText: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed, letterSpacing: 0.4 },
+    devHint: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, marginTop: 12, marginBottom: 8, lineHeight: 15 },
 
     tierRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
     tierChip: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 6 },

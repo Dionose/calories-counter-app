@@ -114,7 +114,10 @@ const SCOPES: Scope[] = ["General", "Regional", "Total"];
 
 export default function Home() {
   const router = useRouter();
-  const { T, freeLocked, togglePro, isPro, plan, profile, streakDays, tabResetKey, userId } = useApp();
+  /* No dev controls on this screen. The Pro flip used to live down in the
+     corner AND in Profile's dev panel — two buttons doing the same job is one
+     more than needed, and the duplicate is the one that goes stale. */
+  const { T, freeLocked, plan, profile, streakDays, tabResetKey, userId } = useApp();
   const [scope, setScope] = useState<Scope>("General");
 
   const [heroOpen, setHeroOpen] = useState(false);
@@ -563,7 +566,7 @@ export default function Home() {
               </View>
               <View style={s.wRow}>
                 <Text style={s.wBig}>{streakDays}</Text>
-                <Text style={s.wUnit}>days</Text>
+                <Text style={s.wUnit}>{streakDays === 1 ? "day" : "days"}</Text>
                 {/* a dedicated flame per tier — far better than one generic
                     flame tinted five ways. Free users get the plain green one. */}
                 <View style={{ marginLeft: "auto" }}>
@@ -871,11 +874,6 @@ export default function Home() {
           </View>
         </View>
       </Modal>
-
-      {/* DEV toggle — remove before launch. */}
-      <Pressable onPress={togglePro} style={s.devChip}>
-        <Text style={s.devText}>DEV · {isPro ? "PRO" : "FREE"} · tap to flip</Text>
-      </Pressable>
     </View>
   );
 }
@@ -883,13 +881,6 @@ export default function Home() {
 const styles = (T: any) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: T.bg },
-
-    devChip: {
-      position: "absolute", bottom: 24, right: 14, zIndex: 30,
-      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
-      borderRadius: 10, paddingHorizontal: 10, paddingVertical: 7,
-    },
-    devText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body, letterSpacing: 0.5 },
 
     greeting: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, textAlign: "center" },
     avatar: { width: 36, height: 36, borderRadius: 12, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, alignItems: "center", justifyContent: "center" },
