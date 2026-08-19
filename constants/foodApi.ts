@@ -265,52 +265,52 @@ function usdaNutrient(food: any, id: number): number {
 }
 
 /** Search generic foods. Returns FoodDef objects, so the picker doesn't know
-    or care that these came off the network. */
+    or care that these came off the network.
+
+    THROWS on a network failure rather than swallowing it — searchFoodsChecked
+    needs to tell "found nothing" apart from "never reached anyone", and a
+    silent empty array makes those two indistinguishable. */
 export async function searchUSDA(query: string, limit = 20): Promise<FoodDef[]> {
   if (!USDA_KEY) return [];
 
-  try {
-    const url =
-      `${USDA_BASE}/foods/search?api_key=${USDA_KEY}` +
-      `&query=${encodeURIComponent(query)}` +
-      /* SR Legacy, Foundation and Survey are the curated, un-branded datasets.
-         SURVEY (FNDDS) carries most everyday prepared foods — without it,
-         plain searches like "broccoli" come back empty even though the food
-         obviously exists.
-         Branded stays excluded: Open Food Facts handles packaged goods better,
-         and USDA's branded rows are full of near-duplicates that bury the
-         plain answer someone was actually looking for. */
-      `&dataType=${encodeURIComponent("SR Legacy,Foundation,Survey (FNDDS)")}` +
-      `&pageSize=${limit}`;
+  const url =
+    `${USDA_BASE}/foods/search?api_key=${USDA_KEY}` +
+    `&query=${encodeURIComponent(query)}` +
+    /* SR Legacy, Foundation and Survey are the curated, un-branded datasets.
+       SURVEY (FNDDS) carries most everyday prepared foods — without it, plain
+       searches like "broccoli" come back empty even though the food obviously
+       exists.
+       Branded stays excluded: Open Food Facts handles packaged goods better,
+       and USDA's branded rows are full of near-duplicates that bury the plain
+       answer someone was actually looking for. */
+    `&dataType=${encodeURIComponent("SR Legacy,Foundation,Survey (FNDDS)")}` +
+    `&pageSize=${limit}`;
 
-    const res = await fetch(url);
-    if (!res.ok) return [];
+  const res = await fetch(url);
+  if (!res.ok) return [];
 
-    const json = await res.json();
+  const json = await res.json();
 
-    return (json.foods || []).map((f: any): FoodDef => {
-      const name = cleanUSDAName(f.description || "Food");
-      const cat = (f.foodCategory || "").toString();
-      const ladder = ladderFor(name, cat);
-      return {
-        name,
-        /* the food's category, for the second line in the list — it's what
-           tells "chicken breast, raw" apart from "chicken breast, roasted" */
-        sub: cat.toLowerCase() || "generic",
-        key: colorKeyFor(name),
-        per100: Math.round(usdaNutrient(f, N_CALORIES)),
-        p: round1(usdaNutrient(f, N_PROTEIN)),
-        c: round1(usdaNutrient(f, N_CARBS)),
-        f: round1(usdaNutrient(f, N_FAT)),
-        ...ladder,
-      };
-    })
-    /* a row with no calories is useless — usually a nutrient-analysis entry
-       rather than a food anyone eats */
-    .filter((f: FoodDef) => f.per100 > 0);
-  } catch {
-    return [];
-  }
+  return (json.foods || []).map((f: any): FoodDef => {
+    const name = cleanUSDAName(f.description || "Food");
+    const cat = (f.foodCategory || "").toString();
+    const ladder = ladderFor(name, cat);
+    return {
+      name,
+      /* the food's category, for the second line in the list — it's what
+         tells "chicken breast, raw" apart from "chicken breast, roasted" */
+      sub: cat.toLowerCase() || "generic",
+      key: colorKeyFor(name),
+      per100: Math.round(usdaNutrient(f, N_CALORIES)),
+      p: round1(usdaNutrient(f, N_PROTEIN)),
+      c: round1(usdaNutrient(f, N_CARBS)),
+      f: round1(usdaNutrient(f, N_FAT)),
+      ...ladder,
+    };
+  })
+  /* a row with no calories is useless — usually a nutrient-analysis entry
+     rather than a food anyone eats */
+  .filter((f: FoodDef) => f.per100 > 0);
 }
 
 /* USDA names are SHOUTED and comma-heavy: "CHICKEN, BROILERS OR FRYERS,
@@ -363,8 +363,8 @@ function offToFood(p: any): FoodDef | null {
 function parseServing(raw?: string): number | undefined {
   if (!raw) return undefined;
   /* prefer a bracketed weight — "1 scoop (33 g)" — since that's the real
-     measurement, and the words before it are just the manufacturer's name
-     for their own scoop */
+     measurement, and the words before it are just the manufacturer's name for
+     their own scoop */
   const bracket = raw.match(/\(\s*([\d.]+)\s*(g|ml)/i);
   const plain = raw.match(/([\d.]+)\s*(g|ml)/i);
   const m = bracket || plain;
@@ -386,41 +386,61 @@ export async function lookupBarcode(code: string): Promise<FoodDef | null> {
   }
 }
 
-/** Search packaged products by name. */
+/** Search packaged products by name.
+    Throws on a network failure, same reasoning as searchUSDA. */
 export async function searchOFF(query: string, limit = 12): Promise<FoodDef[]> {
-  try {
-    const url =
-      `${OFF_BASE}/cgi/search.pl?search_terms=${encodeURIComponent(query)}` +
-      `&search_simple=1&action=process&json=1&page_size=${limit}` +
-      /* asking for only the fields we use — the full product record is
-         enormous and most of it is irrelevant on a phone connection */
-      `&fields=product_name,brands,categories,nutriments,serving_size`;
+  const url =
+    `${OFF_BASE}/cgi/search.pl?search_terms=${encodeURIComponent(query)}` +
+    `&search_simple=1&action=process&json=1&page_size=${limit}` +
+    /* asking for only the fields we use — the full product record is enormous
+       and most of it is irrelevant on a phone connection */
+    `&fields=product_name,brands,categories,nutriments,serving_size`;
 
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const json = await res.json();
-    return (json.products || []).map(offToFood).filter(Boolean) as FoodDef[];
-  } catch {
-    return [];
-  }
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json.products || []).map(offToFood).filter(Boolean) as FoodDef[];
 }
 
 /** BOTH sources, generic first.
     Order matters: someone typing "banana" wants the fruit, not a branded
     banana-flavoured protein bar. Packaged results still appear, just below. */
 export async function searchFoods(query: string): Promise<FoodDef[]> {
+  const { foods } = await searchFoodsChecked(query);
+  return foods;
+}
+
+/** Search, and report whether the network actually worked.
+
+    "Nothing came back" and "the request never arrived" look identical from the
+    outside — an empty list either way — but they need OPPOSITE advice. One
+    says try a fuller name or add the brand; the other says check your wifi.
+    Telling someone with full signal to check their connection is the kind of
+    wrong advice that makes people distrust everything else the app says.
+
+    `online` goes true the moment either source responds at all: what's being
+    tested is whether the request reached anyone, not whether it found
+    anything. */
+export async function searchFoodsChecked(query: string): Promise<{ foods: FoodDef[]; online: boolean }> {
   const q = query.trim();
-  if (q.length < 2) return [];
+  if (q.length < 2) return { foods: [], online: true };
+
+  let online = false;
+
+  const usda = searchUSDA(q, 15)
+    .then((r) => { online = true; return r; })
+    .catch(() => [] as FoodDef[]);
+
+  const off = searchOFF(q, 10)
+    .then((r) => { online = true; return r; })
+    .catch(() => [] as FoodDef[]);
 
   /* in parallel — running them in sequence would double the wait for no
      benefit, since neither depends on the other */
-  const [generic, packaged] = await Promise.all([
-    searchUSDA(q, 15),
-    searchOFF(q, 10),
-  ]);
+  const [generic, packaged] = await Promise.all([usda, off]);
 
-  /* the same food can appear in both. Dedupe on name so the list doesn't
-     show "Banana" twice from two sources. */
+  /* the same food can appear in both. Dedupe on name so the list doesn't show
+     "Banana" twice from two sources. */
   const seen = new Set<string>();
   const out: FoodDef[] = [];
   [...generic, ...packaged].forEach((f) => {
@@ -430,5 +450,5 @@ export async function searchFoods(query: string): Promise<FoodDef[]> {
     out.push(f);
   });
 
-  return out;
+  return { foods: out, online };
 }

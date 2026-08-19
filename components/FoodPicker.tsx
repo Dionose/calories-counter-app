@@ -17,18 +17,14 @@
 // And both match WHOLE WORDS — "broc" returns nothing at all from either. A
 // local prefix list sits in front to soften that, turning three letters into a
 // word the network can actually find.
-//
-// Amounts are WORDS, anchored to physical things — "a tablespoon (tbsp), your
-// whole thumb, 15 ml about 17 g" — and every rung can be counted, so a label
-// reading "2 tsp" can be entered as exactly that.
-import { Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, Sparkles, Utensils, Wifi, X } from "lucide-react-native";
+import { Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, SearchX, Sparkles, Utensils, WifiOff, X } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { useApp } from "../constants/AppState";
-import { searchFoods } from "../constants/foodApi";
+import { searchFoodsChecked } from "../constants/foodApi";
 import { prefixMatches } from "../constants/foodNames";
 import { FOOD_DB, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
 import * as H from "../constants/haptics";
@@ -79,7 +75,11 @@ export default function FoodPicker({
 
   const [remote, setRemote] = useState<FoodDef[]>([]);
   const [searching, setSearching] = useState(false);
-  const [failed, setFailed] = useState(false);
+  /* THE REQUEST FAILED, as distinct from finding nothing. These look identical
+     from the outside and need opposite advice — one says type more, the other
+     says check your wifi. Telling someone with full signal to check their
+     connection is how an app loses trust. */
+  const [offline, setOffline] = useState(false);
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
 
   /* LOCAL FIRST. The built-in foods are matched instantly with no network at
@@ -119,13 +119,13 @@ export default function FoodPicker({
     if (needle.length < 2) {
       setRemote([]);
       setSearching(false);
-      setFailed(false);
+      setOffline(false);
       setSearchedFor(null);
       return;
     }
 
     setSearching(true);
-    setFailed(false);
+    setOffline(false);
 
     timer.current = setTimeout(async () => {
       /* every request carries a number, and only the LATEST one is allowed to
@@ -133,20 +133,20 @@ export default function FoodPicker({
          fast later one and overwrite the right answer with a stale one. */
       const mine = ++reqId.current;
 
-      let results = await searchFoods(needle);
+      let { foods, online } = await searchFoodsChecked(needle);
       let usedTerm: string | null = null;
 
       /* THE PREFIX FALLBACK. Nothing came back for what they typed, but the
          local list recognises it as the start of a real food — so try that
          whole word instead. This is what turns "broc" into results without
          the user ever knowing the API was strict about whole words. */
-      if (results.length === 0) {
+      if (foods.length === 0 && online) {
         const guess = prefixMatches(needle, 1)[0];
         if (guess && guess !== needle.toLowerCase()) {
-          const second = await searchFoods(guess);
+          const second = await searchFoodsChecked(guess);
           if (mine !== reqId.current) return;
-          if (second.length) {
-            results = second;
+          if (second.foods.length) {
+            foods = second.foods;
             usedTerm = guess;
           }
         }
@@ -154,10 +154,10 @@ export default function FoodPicker({
 
       if (mine !== reqId.current) return;
 
-      setRemote(results);
+      setRemote(foods);
       setSearchedFor(usedTerm);
       setSearching(false);
-      setFailed(results.length === 0);
+      setOffline(!online);
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timer.current);
@@ -479,8 +479,6 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* SOME results came back, but a fuller name might find better
-                  ones. Said quietly, below the list, so it doesn't nag. */}
               {!searching && list.length > 0 && q.trim().length < 14 && (
                 <Text style={s.keepTyping}>
                   Not seeing it? Add the brand name if it came in a packet.
@@ -494,32 +492,73 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* NOTHING came back. Two different situations wearing the same
-                  empty list, and they need different advice. */}
+              {/* NOTHING CAME BACK — and which of these two shows depends on
+                  whether the request actually reached anyone. Same empty list,
+                  opposite advice. */}
               {!searching && list.length === 0 && (
-                <View style={s.emptyBox}>
-                  {failed ? (
-                    <>
-                      <Wifi size={18} color={T.micro} />
-                      <Text style={s.empty}>
-                        Nothing came back for "{q}". Check your connection, then try again — the
-                        database matches whole words, not the first few letters.
+                offline ? (
+                  <View style={s.emptyBox}>
+                    <View style={s.emptyIcon}>
+                      <WifiOff size={26} color={T.sub} />
+                    </View>
+                    <Text style={s.emptyTitle}>Couldn't reach the food database</Text>
+                    <Text style={s.empty}>
+                      The search needs a connection, and this one didn't get through. Check your
+                      wifi or mobile data and try again.
+                      {"\n\n"}
+                      You can still log without it — the common foods above work offline, and you
+                      can add anything else once you're back online.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={s.emptyBox}>
+                    <View style={s.emptyIcon}>
+                      <SearchX size={26} color={T.sub} />
+                    </View>
+
+                    <Text style={s.emptyTitle}>Nothing matches "{q}" yet</Text>
+
+                    <Text style={s.empty}>
+                      The word "yet" is doing real work there — the database matches whole words,
+                      so a half-typed name genuinely finds nothing until it's finished.
+                    </Text>
+
+                    <View style={s.emptyCard}>
+                      <Text style={s.emptyHead}>Keep typing</Text>
+                      <Text style={s.emptyBody}>
+                        "honey sri" returns nothing. "honey sriracha sauce" returns plenty. Finish
+                        the name before deciding it isn't there.
                       </Text>
-                    </>
-                  ) : (
-                    <>
-                      <Text style={s.emptyTitle}>Nothing matches "{q}" yet</Text>
-                      <Text style={s.empty}>
-                        If it came in a packet, add the brand name — that's how packaged foods are
-                        listed. "Honey sriracha Lee Kum Kee" finds what "honey sriracha sauce"
-                        misses.
+                    </View>
+
+                    <View style={s.emptyCard}>
+                      <Text style={s.emptyHead}>If it came in a packet, add the brand</Text>
+                      <Text style={s.emptyBody}>
+                        This is the one that catches most people. Packaged foods are listed under
+                        the name on the front of the bottle, brand included — so "honey sriracha
+                        Lee Kum Kee" finds what "honey sriracha sauce" misses entirely.
                         {"\n\n"}
-                        If it's a plain ingredient, try fewer words: "rice" rather than "basmati
-                        rice pilaf".
+                        Look at the label and type what you see there.
                       </Text>
-                    </>
-                  )}
-                </View>
+                    </View>
+
+                    <View style={s.emptyCard}>
+                      <Text style={s.emptyHead}>If it's a plain ingredient, use fewer words</Text>
+                      <Text style={s.emptyBody}>
+                        The opposite rule, for the opposite kind of food. "Rice" is listed;
+                        "basmati rice pilaf" isn't, because the database holds ingredients rather
+                        than every dish made from them. Search the ingredient, then add the other
+                        parts of the meal separately.
+                      </Text>
+                    </View>
+
+                    <Text style={s.emptyFoot}>
+                      Still nothing? Some local and own-brand products simply aren't listed. Search
+                      for something close instead — the calories will be near enough, and you can
+                      adjust the amount afterwards.
+                    </Text>
+                  </View>
+                )
               )}
             </>
           )}
@@ -582,9 +621,24 @@ const styles = (T: any) =>
 
     searchingBox: { alignItems: "center", gap: 12, paddingVertical: 34 },
     searchingText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
-    emptyBox: { alignItems: "center", gap: 10, paddingVertical: 26, paddingHorizontal: 6 },
-    emptyTitle: { fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed, textAlign: "center" },
-    empty: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5 },
+
+    /* the empty state — deliberately long. Someone reading it has already hit
+       a dead end, and a one-line shrug leaves them there. */
+    emptyBox: { alignItems: "center", paddingTop: 20, paddingBottom: 10, gap: 12 },
+    emptyIcon: {
+      width: 58, height: 58, borderRadius: 19,
+      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
+      alignItems: "center", justifyContent: "center", marginBottom: 2,
+    },
+    emptyTitle: { fontSize: 16.5, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
+    empty: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5, paddingHorizontal: 4 },
+    emptyCard: {
+      width: "100%", backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 14, padding: 15, marginTop: 2,
+    },
+    emptyHead: { fontSize: 12.5, color: T.green, fontFamily: FONTS.headingMed, marginBottom: 6 },
+    emptyBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
+    emptyFoot: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 16.5, marginTop: 6, paddingHorizontal: 6 },
 
     /* how much */
     question: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
