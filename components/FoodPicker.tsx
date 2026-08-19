@@ -4,17 +4,18 @@
 // FULL SCREEN, deliberately. A centred card fought the keyboard: the card rose,
 // the keyboard covered the list, and the search field ended up half-hidden.
 //
-// Amounts are WORDS, chosen from a list — never a number the user has to
-// reason about. "Half a banana", "a small pot", "a big bowl". For foods that
-// come in countable units there's also a "Something else" row for the exact
-// number, so you can say "3 bananas" here rather than adding one and editing
-// it afterwards.
+// TWO THINGS THE SEARCH HAS TO WORK AROUND.
 //
-// THE SEARCH IS REAL. Typing hits USDA (generic foods) and Open Food Facts
-// (packaged products). But both APIs match WHOLE WORDS — "broc" returns
-// nothing at all — so a local prefix list sits in front of them and turns
-// three letters into a word the network can actually find.
-import { Bookmark, Check, ChevronLeft, Clock, Minus, Plus, Search, Sparkles, Utensils, Wifi, X } from "lucide-react-native";
+// Both nutrition APIs match WHOLE WORDS. "broc" returns nothing at all, from
+// either of them — you have to spell "broccoli" before anything appears. So a
+// local prefix list sits in front, turning three letters into a word the
+// network can actually find, and the screen says plainly that full names work
+// best for anything the list doesn't cover.
+//
+// And amounts are WORDS, anchored to physical things — "a tablespoon (tbsp),
+// your whole thumb, 15 ml about 17 g". Never "a normal serving", which is
+// abstract English pretending to be guidance.
+import { Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, Sparkles, Utensils, Wifi, X } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
@@ -23,7 +24,7 @@ import {
 import { useApp } from "../constants/AppState";
 import { searchFoods } from "../constants/foodApi";
 import { prefixMatches } from "../constants/foodNames";
-import { FOOD_DB, FoodDef, countLabel, nutritionFor } from "../constants/foods";
+import { FOOD_DB, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
 import Tap from "./Tap";
@@ -66,21 +67,18 @@ export default function FoodPicker({
   const [q, setQ] = useState("");
   const [food, setFood] = useState<FoodDef | null>(null);
   const [idx, setIdx] = useState(0);
-  // non-null means "using the exact count instead of a listed amount"
-  const [exact, setExact] = useState<number | null>(null);
+  /* how many of the selected rung — a label saying "2 tsp" needs exactly two
+     teaspoons, not one tablespoon rounded off */
+  const [count, setCount] = useState(1);
 
-  /* what came back from the network, and whether we're still waiting */
   const [remote, setRemote] = useState<FoodDef[]>([]);
   const [searching, setSearching] = useState(false);
   const [failed, setFailed] = useState(false);
-  /* which word we ended up searching for — shown when it differs from what
-     they typed, so an expanded prefix is never a mystery */
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
 
-  /* LOCAL FIRST. The eighteen built-in foods are matched instantly with no
-     network at all, and shown while the API is still thinking. Someone typing
-     "banana" sees a banana immediately rather than a spinner — and if they're
-     on a train with no signal, they still get a usable answer. */
+  /* LOCAL FIRST. The built-in foods are matched instantly with no network at
+     all, and shown while the API is still thinking. Someone typing "banana"
+     sees a banana immediately rather than a spinner. */
   const local = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return [];
@@ -90,18 +88,15 @@ export default function FoodPicker({
   }, [q]);
 
   /* WHAT THE PREFIX LIST THINKS THEY MEANT. "broc" → ["broccoli"].
-     Offered as taps rather than applied silently: guessing wrong and
-     searching for it anyway would be worse than the original problem, and
-     "cau" could reasonably mean cauliflower or cauliflower rice. */
+     Offered as taps rather than applied silently: "cau" could reasonably mean
+     cauliflower or cauliflower rice, and guessing wrong would be worse than
+     the strict matching this exists to soften. */
   const suggestions = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (needle.length < 2) return [];
-    /* nothing to suggest if they've already typed a full name */
-    const hits = prefixMatches(needle, 6);
-    return hits.filter((h) => h !== needle);
+    return prefixMatches(needle, 6).filter((h) => h !== needle);
   }, [q]);
 
-  /* the two lists joined, local on top, no duplicates */
   const list = useMemo(() => {
     const seen = new Set(local.map((f) => f.name.toLowerCase()));
     return [...local, ...remote.filter((f) => !seen.has(f.name.toLowerCase()))];
@@ -156,37 +151,31 @@ export default function FoodPicker({
       setRemote(results);
       setSearchedFor(usedTerm);
       setSearching(false);
-      /* nothing from EITHER source usually means the request failed rather
-         than that the food doesn't exist — worth distinguishing, because the
-         two need different advice */
       setFailed(results.length === 0);
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timer.current);
   }, [q]);
 
-  const reset = () => { setFood(null); setIdx(0); setExact(null); };
+  const reset = () => { setFood(null); setIdx(0); setCount(1); };
   const close = () => { reset(); setQ(""); setRemote([]); setSearchedFor(null); onClose(); };
 
   const openFood = (f: FoodDef) => {
     H.tap();
     setFood(f);
     setIdx(f.defaultIndex);
-    setExact(null);
+    setCount(1);
   };
 
   const confirm = () => {
     if (!food) return;
     H.success();
 
-    const grams = exact != null
-      ? exact * (food.gramsPerUnit || 100)
-      : food.amounts[idx].grams;
-    const label = exact != null
-      ? countLabel(food, Math.round(exact))
-      : food.amounts[idx].label;
-
+    const rung = food.amounts[idx];
+    const grams = rung.grams * count;
+    const label = rung.unit && count > 1 ? rungLabel(rung, count) : rung.label;
     const n = nutritionFor(food, grams);
+
     onPick({
       name: food.name,
       key: food.key,
@@ -200,7 +189,6 @@ export default function FoodPicker({
     reset();
     setQ("");
     setRemote([]);
-    setSearchedFor(null);
   };
 
   const FoodRow = ({ f }: { f: FoodDef }) => {
@@ -225,13 +213,10 @@ export default function FoodPicker({
 
   /* ---------- how much? ---------- */
   if (food) {
-    const canCount = !!(food.countUnit && food.gramsPerUnit);
-    const grams = exact != null
-      ? exact * (food.gramsPerUnit || 100)
-      : food.amounts[idx].grams;
-    const label = exact != null
-      ? countLabel(food, Math.round(exact))
-      : food.amounts[idx].label;
+    const rung = food.amounts[idx];
+    const countable = !!rung?.unit;
+    const grams = (rung?.grams ?? 0) * count;
+    const label = countable && count > 1 ? rungLabel(rung, count) : rung?.label ?? "";
     const n = nutritionFor(food, grams);
 
     return (
@@ -249,70 +234,65 @@ export default function FoodPicker({
 
           <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
             <Text style={s.question}>How much did you have?</Text>
-            <Text style={s.questionSub}>Pick whichever sounds closest — you can change it later.</Text>
+            <Text style={s.questionSub}>
+              Each option says what it looks like. Tap one, then use + and − for more than one.
+            </Text>
 
-            {/* every option is a sentence, not a number */}
-            <View style={{ gap: 10, marginTop: 20 }}>
+            <View style={{ gap: 9, marginTop: 20 }}>
               {food.amounts.map((a, i) => {
-                const on = exact == null && i === idx;
-                const cal = nutritionFor(food, a.grams).cal;
+                const on = i === idx;
+                const rowCal = nutritionFor(food, a.grams).cal;
+                const canCount = !!a.unit;
+
                 return (
-                  <Tap key={a.label} onPress={() => { H.tick(); setExact(null); setIdx(i); }}>
-                    <View style={[s.option, on && { borderColor: T.green, backgroundColor: T.greenBg }]}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[s.optionLabel, on && { color: T.green }]}>{a.label}</Text>
-                        {a.hint ? <Text style={s.optionHint}>{a.hint}</Text> : null}
+                  <View key={`${a.label}-${i}`} style={{ gap: 8 }}>
+                    <Tap onPress={() => { H.tick(); setIdx(i); setCount(1); }}>
+                      <View style={[s.option, on && s.optionOn]}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[s.optionLabel, on && { color: T.green }]}>{a.label}</Text>
+                          {/* THE ANCHOR — without it the label alone is a
+                              guess dressed up as a choice */}
+                          {a.hint ? <Text style={s.optionHint}>{a.hint}</Text> : null}
+                        </View>
+                        <View style={{ alignItems: "flex-end" }}>
+                          <Text style={[s.optionCal, on && { color: T.green }]}>{rowCal}</Text>
+                          <Text style={s.optionCalUnit}>cal</Text>
+                        </View>
+                        {on && <Check size={17} color={T.green} style={{ marginLeft: 8 }} />}
                       </View>
-                      <Text style={[s.optionCal, on && { color: T.green }]}>{cal} cal</Text>
-                      {on && <Check size={17} color={T.green} style={{ marginLeft: 8 }} />}
-                    </View>
-                  </Tap>
+                    </Tap>
+
+                    {/* the counter, under the rung you just tapped */}
+                    {on && canCount && (
+                      <View style={s.counter}>
+                        <Pressable
+                          onPress={() => { H.tick(); setCount((c) => Math.max(1, c - 1)); }}
+                          style={[s.counterBtn, count <= 1 && { opacity: 0.35 }]}
+                          hitSlop={8}
+                          disabled={count <= 1}
+                        >
+                          <Minus size={18} color={T.text} />
+                        </Pressable>
+
+                        <View style={{ flex: 1, alignItems: "center" }}>
+                          <Text style={s.counterNum}>{rungLabel(a, count)}</Text>
+                          <Text style={s.counterDetail}>
+                            {rungDetail(a, count, nutritionFor(food, a.grams * count).cal)}
+                          </Text>
+                        </View>
+
+                        <Pressable
+                          onPress={() => { H.tick(); setCount((c) => c + 1); }}
+                          style={s.counterBtn}
+                          hitSlop={8}
+                        >
+                          <Plus size={18} color={T.text} />
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
                 );
               })}
-
-              {/* the escape hatch — three bananas, ten eggs, four pots. Here as
-                  well as in the edit sheet, so you don't have to add one and
-                  then go back to correct it. */}
-              {canCount && (
-                exact == null ? (
-                  <Tap
-                    onPress={() => {
-                      H.tap();
-                      setExact(Math.max(1, Math.round(food.amounts[idx].grams / (food.gramsPerUnit || 1))));
-                    }}
-                  >
-                    <View style={s.somethingElse}>
-                      <Plus size={16} color={T.green} />
-                      <Text style={s.somethingElseText}>
-                        Something else — set the exact number of {food.countUnitPlural}
-                      </Text>
-                    </View>
-                  </Tap>
-                ) : (
-                  <View style={[s.option, { borderColor: T.green, backgroundColor: T.greenBg, paddingVertical: 12 }]}>
-                    <Pressable
-                      onPress={() => { H.tick(); setExact((e) => Math.max(1, Math.round((e || 1) - 1))); }}
-                      style={s.countBtn}
-                      hitSlop={8}
-                    >
-                      <Minus size={18} color={T.text} />
-                    </Pressable>
-
-                    <View style={{ flex: 1, alignItems: "center" }}>
-                      <Text style={s.countNum}>{countLabel(food, Math.round(exact))}</Text>
-                      <Text style={s.countCal}>{n.cal} cal</Text>
-                    </View>
-
-                    <Pressable
-                      onPress={() => { H.tick(); setExact((e) => Math.round((e || 0) + 1)); }}
-                      style={s.countBtn}
-                      hitSlop={8}
-                    >
-                      <Plus size={18} color={T.text} />
-                    </Pressable>
-                  </View>
-                )
-              )}
             </View>
 
             <View style={s.macroRow}>
@@ -323,14 +303,12 @@ export default function FoodPicker({
                 </View>
               ))}
             </View>
-
-            <Text style={s.gramsNote}>That's about {n.grams} g</Text>
           </ScrollView>
 
           <View style={s.footer}>
             <Tap onPress={confirm}>
               <View style={s.addBtn}>
-                <Text style={s.addBtnText}>Add {label.toLowerCase()}</Text>
+                <Text style={s.addBtnText}>Add {label.toLowerCase()} · {n.cal} cal</Text>
               </View>
             </Tap>
           </View>
@@ -354,7 +332,6 @@ export default function FoodPicker({
           </Pressable>
         </View>
 
-        {/* pinned above the list — never scrolls away, never hides */}
         <View style={s.searchWrap}>
           <View style={s.searchBox}>
             <Search size={17} color={T.micro} />
@@ -375,9 +352,8 @@ export default function FoodPicker({
             )}
           </View>
 
-          {/* DID YOU MEAN. Offered rather than applied — "cau" could be
-              cauliflower or cauliflower rice, and picking for them would be
-              worse than the strict matching this exists to soften. */}
+          {/* DID YOU MEAN — offered rather than applied, since "cau" could be
+              cauliflower or cauliflower rice */}
           {suggestions.length > 0 && (
             <ScrollView
               horizontal
@@ -441,16 +417,23 @@ export default function FoodPicker({
                 })}
               </View>
 
-              {/* the food database matches whole words, and saying so up front
-                  costs nothing. The prefix list covers the common cases; this
-                  covers everything it doesn't. */}
+              {/* THE FULL-NAME NOTE. The food database matches whole words, and
+                  saying so up front costs nothing. Common foods suggest
+                  themselves from the local list; this covers everything that
+                  list doesn't reach. */}
               <View style={s.tipCard}>
-                <Text style={s.tipTitle}>Searching works best with full words</Text>
+                <View style={s.tipHead}>
+                  <Info size={14} color={T.green} />
+                  <Text style={s.tipTitle}>Type the food's full name</Text>
+                </View>
                 <Text style={s.tipBody}>
                   The food database matches whole words, so "broc" finds nothing on its own —
-                  type "broccoli". Common foods will suggest themselves as you type.
+                  "broccoli" finds it. Common foods will suggest themselves as you type; anything
+                  else needs spelling out.
                   {"\n\n"}
-                  Simpler is better too: "rice" beats "basmati rice pilaf".
+                  For products with long names, keep going to the end — "honey sriracha sauce"
+                  works where "honey sriracha" might not. Simpler is better too: "rice" beats
+                  "basmati rice pilaf".
                 </Text>
               </View>
             </>
@@ -462,8 +445,6 @@ export default function FoodPicker({
                   : `${list.length} ${list.length === 1 ? "match" : "matches"} · pick the exact one`}
               </Text>
 
-              {/* if we quietly searched for a different word, say so — results
-                  that don't match what was typed are otherwise confusing */}
               {searchedFor && !searching && (
                 <Text style={s.searchedFor}>Showing results for "{searchedFor}"</Text>
               )}
@@ -479,7 +460,15 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* still waiting, and nothing local matched */}
+              {/* SOME results came back, but the search is short enough that
+                  there are probably better ones behind a fuller name. Said
+                  quietly, below the list, so it doesn't nag. */}
+              {!searching && list.length > 0 && q.trim().length < 12 && (
+                <Text style={s.keepTyping}>
+                  Not seeing it? Keep typing — the full name usually finds it.
+                </Text>
+              )}
+
               {searching && list.length === 0 && (
                 <View style={s.searchingBox}>
                   <ActivityIndicator size="small" color={T.green} />
@@ -501,8 +490,9 @@ export default function FoodPicker({
                     </>
                   ) : (
                     <Text style={s.empty}>
-                      Nothing matches "{q}". Try the food's full name — the database matches
-                      whole words, so "broc" finds nothing while "broccoli" does.
+                      Nothing matches "{q}" yet. Try the food's full name — the database matches
+                      whole words, so "broc" finds nothing while "broccoli" does. For long product
+                      names, type all the way to the end.
                     </Text>
                   )}
                 </View>
@@ -543,12 +533,17 @@ const styles = (T: any) =>
     },
     suggestText: { fontSize: 12, color: T.green, fontFamily: FONTS.headingMed },
     searchedFor: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginBottom: 10, marginLeft: 2 },
+    keepTyping: {
+      fontSize: 11, color: T.micro, fontFamily: FONTS.body,
+      textAlign: "center", marginTop: 14, lineHeight: 16,
+    },
 
     tipCard: {
       marginTop: 22, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 14, padding: 15,
     },
-    tipTitle: { fontSize: 12.5, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 7 },
+    tipHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 8 },
+    tipTitle: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed },
     tipBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
 
     sectionRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 9, marginLeft: 2 },
@@ -562,7 +557,7 @@ const styles = (T: any) =>
     searchingBox: { alignItems: "center", gap: 12, paddingVertical: 34 },
     searchingText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
     emptyBox: { alignItems: "center", gap: 10, paddingVertical: 26 },
-    empty: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18, paddingHorizontal: 10 },
+    empty: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5, paddingHorizontal: 10 },
 
     /* how much */
     question: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
@@ -571,31 +566,32 @@ const styles = (T: any) =>
     option: {
       flexDirection: "row", alignItems: "center",
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
-      borderRadius: 15, paddingVertical: 15, paddingHorizontal: 16,
+      borderRadius: 15, paddingVertical: 14, paddingHorizontal: 15,
     },
-    optionLabel: { fontSize: 15.5, color: T.text, fontFamily: FONTS.headingMed },
-    optionHint: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
-    optionCal: { fontSize: 13, color: T.sub, fontFamily: FONTS.heading },
+    optionOn: { borderColor: T.green, backgroundColor: T.greenBg },
+    optionLabel: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
+    optionHint: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 15.5 },
+    optionCal: { fontSize: 15, color: T.sub, fontFamily: FONTS.heading },
+    optionCalUnit: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
 
-    somethingElse: {
-      flexDirection: "row", alignItems: "center", gap: 10,
-      backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderStyle: "dashed",
-      borderRadius: 15, paddingVertical: 15, paddingHorizontal: 16,
+    counter: {
+      flexDirection: "row", alignItems: "center",
+      marginLeft: 14,
+      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 14, paddingVertical: 10, paddingHorizontal: 12,
     },
-    somethingElseText: { flex: 1, fontSize: 13.5, color: T.green, fontFamily: FONTS.headingMed },
-    countBtn: {
-      width: 42, height: 42, borderRadius: 13,
-      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
+    counterBtn: {
+      width: 40, height: 40, borderRadius: 12,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       alignItems: "center", justifyContent: "center",
     },
-    countNum: { fontSize: 19, color: T.green, fontFamily: FONTS.heading },
-    countCal: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+    counterNum: { fontSize: 16, color: T.green, fontFamily: FONTS.heading },
+    counterDetail: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body, marginTop: 3, textAlign: "center" },
 
     macroRow: { flexDirection: "row", gap: 8, marginTop: 24 },
     macroTile: { flex: 1, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 12, paddingVertical: 11, alignItems: "center" },
     macroNum: { fontSize: 15, color: T.text, fontFamily: FONTS.heading },
     macroLabel: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
-    gramsNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 14 },
 
     footer: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 28, borderTopWidth: 1, borderTopColor: T.border },
     addBtn: { backgroundColor: T.green, borderRadius: 15, paddingVertical: 16, alignItems: "center" },

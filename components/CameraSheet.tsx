@@ -4,23 +4,21 @@
 // behind. Used everywhere in the app that needs a camera: meal logging,
 // barcode scanning, and the profile photo.
 //
-// TWO WAYS IN, and only one of them works today:
+// THE CAMERA IS REAL NOW. expo-camera needs a development build, which is why
+// this was a gradient placeholder for so long. Three ways in:
 //
-//   THE GALLERY BUTTON is real. expo-image-picker runs inside Expo Go, so
-//   choosing an existing photo produces a genuine file URI that flows all the
-//   way through to Supabase Storage. It's also a feature people actually
-//   want — "log the photo I already took" — not just a testing crutch.
-//
-//   THE SHUTTER is still a placeholder. expo-camera needs a development build,
-//   so <Preview /> draws a gradient and the shutter fires onCapture with no
-//   URI. When the dev build lands, only <Preview /> and shoot() change; the
-//   rest of this file, and everything downstream, already handles a real URI.
+//   THE SHUTTER takes an actual photo and returns its file URI.
+//   THE GALLERY picks an existing one — still useful, since people often
+//     photograph a meal and log it later.
+//   THE BARCODE SCANNER reads the code itself, no button, and hands the digits
+//     up for an Open Food Facts lookup.
 import { BlurView } from "expo-blur";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { Camera, Image as ImageIcon, Lock, RefreshCw, X } from "lucide-react-native";
-import React, { useEffect, useRef } from "react";
-import { Animated, Dimensions, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Animated, Dimensions, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
@@ -29,32 +27,17 @@ import TravelBorder from "./TravelBorder";
 
 const { height: SCREEN_H } = Dimensions.get("window");
 const PREVIEW_H = 300;
-const BARCODE_MS = 2600;   // how long the scanner "looks" before it finds a code
 
-/* ---------- the placeholder preview ----------
-   Swap this one component for <CameraView> once there's a dev build. It fills
-   the same 300px box, so the shutter, frames and overlays all stay put. */
-function Preview({ barcode }: { barcode: boolean }) {
-  return (
-    <View style={StyleSheet.absoluteFill}>
-      <LinearGradient colors={["#1E1A16", "#0B0A09"]} style={StyleSheet.absoluteFill} />
-      <View style={s0.previewCentre}>
-        <Camera size={38} color="rgba(255,255,255,0.35)" />
-        <Text style={s0.previewText}>
-          {barcode
-            ? "Camera preview needs a development build — the scanner will find the code on its own."
-            : "Camera preview needs a development build. Tap the gallery icon to pick a real photo, or the shutter to simulate."}
-        </Text>
-      </View>
-    </View>
-  );
-}
+/* the formats worth reading. Food packaging is EAN-13 almost everywhere and
+   UPC-A in North America; the rest are here because they cost nothing to
+   include and someone will inevitably scan something unusual. */
+const BARCODE_TYPES = ["ean13", "ean8", "upc_a", "upc_e", "code128", "code39"];
 
 /* ---------- the shutter ----------
    A SQUIRCLE, not a circle: a thin green rim hugging a pearlescent lens, with
    a black gap between them. The rim blinks on and off rather than glowing —
    it's a rim light, so it stays tight to the shape at all times. */
-function Shutter({ onPress }: { onPress: () => void }) {
+function Shutter({ onPress, busy }: { onPress: () => void; busy?: boolean }) {
   const pulse = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -72,8 +55,8 @@ function Shutter({ onPress }: { onPress: () => void }) {
   const haloOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.35] });
 
   return (
-    <Pressable onPress={onPress}>
-      <View style={s0.shutterWrap}>
+    <Pressable onPress={onPress} disabled={busy}>
+      <View style={[s0.shutterWrap, busy && { opacity: 0.5 }]}>
         {/* the faint outer rim — the spill */}
         <Animated.View style={[s0.shutterHalo, { opacity: haloOpacity }]} pointerEvents="none" />
 
@@ -150,7 +133,7 @@ function RecDot({ T }: { T: any }) {
 }
 
 export default function CameraSheet({
-  visible, mode = "photo", caption, locked, showFreeBar, onClose, onCapture,
+  visible, mode = "photo", caption, locked, showFreeBar, onClose, onCapture, onBarcode,
 }: {
   visible: boolean;
   mode?: "photo" | "barcode";
@@ -161,13 +144,23 @@ export default function CameraSheet({
   /** the amber "1 photo left" bar, shown to free users BEFORE they shoot */
   showFreeBar?: boolean;
   onClose: () => void;
-  /** carries the picked image's URI when there is one. The simulated shutter
-      calls it with nothing, which downstream treats as "no photo". */
+  /** the captured or picked image's URI */
   onCapture: (uri?: string) => void;
+  /** the digits off a barcode — only fires in barcode mode */
+  onBarcode?: (code: string) => void;
 }) {
   const { T, openPaywall } = useApp();
   const s = styles(T);
   const barcode = mode === "barcode";
+
+  const [permission, requestPermission] = useCameraPermissions();
+  const camRef = useRef<CameraView>(null);
+  const [facing, setFacing] = useState<"back" | "front">("back");
+  const [taking, setTaking] = useState(false);
+
+  /* one scan per opening. Without this the scanner fires continuously while
+     the code is in frame — dozens of lookups a second for the same product. */
+  const scanned = useRef(false);
 
   const rise = useRef(new Animated.Value(0)).current;
   const flash = useRef(new Animated.Value(0)).current;
@@ -179,32 +172,57 @@ export default function CameraSheet({
       easing: visible ? Easing.bezier(0.2, 0.9, 0.25, 1) : Easing.in(Easing.quad),
       useNativeDriver: true,
     }).start();
+
+    if (visible) scanned.current = false;
   }, [visible]);
 
-  /* barcode has no button — it finds the code on its own after a beat */
+  /* Ask at the moment the camera opens, not on mount. Requesting access to
+     someone's camera before they've shown any interest in using it is how
+     apps get denied on the first prompt — and iOS only asks once. */
   useEffect(() => {
-    if (!visible || !barcode || locked) return;
-    const t = setTimeout(() => { H.success(); onCapture(); }, BARCODE_MS);
-    return () => clearTimeout(t);
-  }, [visible, barcode, locked]);
+    if (visible && permission && !permission.granted && permission.canAskAgain) {
+      requestPermission();
+    }
+  }, [visible, permission?.granted]);
 
   const translateY = rise.interpolate({ inputRange: [0, 1], outputRange: [SCREEN_H * 0.5, 0] });
   const scale = rise.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
 
-  /* the SIMULATED shutter — no URI, because there's no camera yet */
-  const shoot = () => {
+  /* THE REAL SHUTTER. quality 0.9 rather than 1: the difference is invisible
+     at any size this gets displayed, and photos.ts resizes on upload anyway —
+     but a smaller file means a faster write and less memory held while the
+     result screen renders. */
+  const shoot = async () => {
+    if (taking || !camRef.current) return;
     H.tap();
+    setTaking(true);
+
     flash.setValue(0);
     Animated.sequence([
       Animated.timing(flash, { toValue: 1, duration: 100, useNativeDriver: true }),
       Animated.timing(flash, { toValue: 0, duration: 220, useNativeDriver: true }),
-    ]).start(() => onCapture());
+    ]).start();
+
+    try {
+      const photo = await camRef.current.takePictureAsync({
+        quality: 0.9,
+        /* no base64 here — photos.ts reads the file directly when it uploads,
+           and asking for base64 doubles the memory for a string we'd discard */
+        skipProcessing: false,
+      });
+      setTaking(false);
+      if (photo?.uri) onCapture(photo.uri);
+    } catch {
+      setTaking(false);
+      /* a failed capture shouldn't strand the user on a dead camera —
+         continuing with no photo lands them on the manual-entry path */
+      onCapture();
+    }
   };
 
-  /* THE REAL ONE. Works today, in Expo Go, and produces a genuine file URI.
-     Permission is requested at the moment of use rather than on mount —
-     asking for library access before the user has shown any interest in
-     using it is how apps get denied on the first prompt. */
+  /* the gallery. Still worth having with a working camera: people photograph
+     a meal and log it hours later, and forcing them to re-shoot cold food
+     isn't a feature. */
   const pickFromGallery = async () => {
     H.tap();
 
@@ -216,8 +234,6 @@ export default function CameraSheet({
       /* no cropping. A meal photo shouldn't be squared off — the AI wants the
          whole plate, and forcing a crop can cut food out of the frame. */
       allowsEditing: false,
-      /* full quality here; photos.ts resizes and compresses on the way up, and
-         degrading it twice would cost detail for nothing. */
       quality: 1,
     });
 
@@ -227,11 +243,20 @@ export default function CameraSheet({
     onCapture(result.assets[0].uri);
   };
 
+  const handleBarcode = ({ data }: { data: string }) => {
+    if (scanned.current || locked) return;
+    scanned.current = true;
+    H.success();
+    onBarcode?.(data);
+  };
+
   const goPro = () => {
     H.tap();
     onClose();
     setTimeout(() => openPaywall("subscribe"), 240);
   };
+
+  const canShowCamera = permission?.granted && !locked;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -263,9 +288,44 @@ export default function CameraSheet({
 
               {/* the preview */}
               <View style={s.preview}>
-                <Preview barcode={barcode} />
+                {canShowCamera ? (
+                  <CameraView
+                    ref={camRef}
+                    style={StyleSheet.absoluteFill}
+                    facing={facing}
+                    /* the scanner only runs in barcode mode — leaving it on
+                       for meal photos would burn battery reading nothing */
+                    barcodeScannerSettings={barcode ? { barcodeTypes: BARCODE_TYPES as any } : undefined}
+                    onBarcodeScanned={barcode ? handleBarcode : undefined}
+                  />
+                ) : (
+                  <View style={StyleSheet.absoluteFill}>
+                    <LinearGradient colors={["#1E1A16", "#0B0A09"]} style={StyleSheet.absoluteFill} />
+                    <View style={s0.previewCentre}>
+                      {!permission ? (
+                        <ActivityIndicator size="small" color={T.green} />
+                      ) : (
+                        <>
+                          <Camera size={38} color="rgba(255,255,255,0.35)" />
+                          <Text style={s0.previewText}>
+                            {permission.canAskAgain
+                              ? "MOTION needs camera access to photograph your meals."
+                              : "Camera access is off. You can turn it on in Settings → MOTION."}
+                          </Text>
+                          {permission.canAskAgain && (
+                            <Tap onPress={() => requestPermission()} style={{ marginTop: 6 }}>
+                              <View style={s.permBtn}>
+                                <Text style={s.permBtnText}>Allow camera</Text>
+                              </View>
+                            </Tap>
+                          )}
+                        </>
+                      )}
+                    </View>
+                  </View>
+                )}
 
-                {barcode && !locked && (
+                {barcode && !locked && canShowCamera && (
                   <View style={s.barcodeOverlay} pointerEvents="none">
                     <Text style={s.barcodeHint}>Point at the barcode</Text>
                     <View style={s.barcodeFrame}>
@@ -305,28 +365,27 @@ export default function CameraSheet({
                 ) : barcode ? (
                   <>
                     <RecDot T={T} />
-                    <Text style={s.scanningText}>Scanning…</Text>
+                    <Text style={s.scanningText}>
+                      {canShowCamera ? "Scanning…" : "Waiting for camera access"}
+                    </Text>
                   </>
                 ) : (
                   <>
-                    {/* the gallery — ringed green because it's the button that
-                        actually works right now, and people need to find it */}
-                    <Pressable onPress={pickFromGallery} style={[s.sideBtn, s.sideBtnLive]}>
-                      <ImageIcon size={19} color={T.green} />
+                    <Pressable onPress={pickFromGallery} style={s.sideBtn}>
+                      <ImageIcon size={19} color="#FFFFFF" />
                     </Pressable>
 
-                    <Shutter onPress={shoot} />
+                    <Shutter onPress={shoot} busy={taking || !canShowCamera} />
 
-                    <Pressable onPress={() => H.tick()} style={s.sideBtn}>
+                    <Pressable
+                      onPress={() => { H.tick(); setFacing((f) => (f === "back" ? "front" : "back")); }}
+                      style={s.sideBtn}
+                    >
                       <RefreshCw size={18} color="#FFFFFF" />
                     </Pressable>
                   </>
                 )}
               </View>
-
-              {!barcode && !locked && (
-                <Text style={s.galleryHint}>Tap the gallery icon to use a photo from your phone</Text>
-              )}
             </View>
           </TravelBorder>
         </Animated.View>
@@ -405,6 +464,12 @@ const styles = (T: any) =>
 
     preview: { height: PREVIEW_H, backgroundColor: "#000000", overflow: "hidden", position: "relative" },
 
+    permBtn: {
+      backgroundColor: T.green, borderRadius: 11,
+      paddingVertical: 10, paddingHorizontal: 20,
+    },
+    permBtnText: { fontSize: 13, color: T.ink, fontFamily: FONTS.headingMed },
+
     barcodeOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 16 },
     barcodeHint: { fontSize: 12, color: "rgba(255,255,255,0.8)", fontFamily: FONTS.body },
     barcodeFrame: {
@@ -425,21 +490,13 @@ const styles = (T: any) =>
 
     controls: {
       flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-      paddingHorizontal: 26, paddingTop: 16, paddingBottom: 12,
+      paddingHorizontal: 26, paddingTop: 16, paddingBottom: 20,
       backgroundColor: "#000000",
     },
     sideBtn: {
       width: 40, height: 40, borderRadius: 12,
       backgroundColor: "rgba(255,255,255,0.12)",
       alignItems: "center", justifyContent: "center",
-    },
-    sideBtnLive: {
-      backgroundColor: "rgba(34,197,94,0.14)",
-      borderWidth: 1, borderColor: "rgba(34,197,94,0.5)",
-    },
-    galleryHint: {
-      fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body,
-      textAlign: "center", paddingBottom: 16, backgroundColor: "#000000",
     },
     scanningText: { fontSize: 13, color: "rgba(255,255,255,0.85)", fontFamily: FONTS.headingMed },
     upgradeBtn: { backgroundColor: T.gold, borderRadius: 13, paddingVertical: 13, alignItems: "center" },

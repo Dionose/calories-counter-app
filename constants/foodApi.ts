@@ -12,7 +12,13 @@
 // Both return per-100g figures, which is what FoodDef already expects — so
 // what comes back from here drops straight into the existing picker with no
 // change to how amounts or editing work.
-import { Amount, FoodDef, GENERIC_AMOUNTS } from "./foods";
+import { Amount, FoodDef } from "./foods";
+import {
+  kindFor, liquidPortions, packPortions, pinchPortions,
+  Portion,
+  powderPortions,
+  proteinPortions, scoopPortions, spreadPortions,
+} from "./portions";
 
 const USDA_KEY = process.env.EXPO_PUBLIC_USDA_KEY;
 const USDA_BASE = "https://api.nal.usda.gov/fdc/v1";
@@ -39,7 +45,7 @@ const COLOR_RULES: [RegExp, string][] = [
   [/salmon|tuna|cod|fish|shrimp|prawn/i, "fish"],
   [/bread|toast|bagel|roll|baguette/i, "bread"],
   [/banana/i, "banana"],
-  [/almond|nut|cashew|peanut|walnut|pistachio/i, "nuts"],
+  [/almond|nut|cashew|peanut|walnut|pistachio|protein|whey/i, "nuts"],
   [/oil|butter|ghee|margarine/i, "oil"],
   [/coffee|espresso|americano/i, "coffee"],
   [/juice|smoothie/i, "juice"],
@@ -54,86 +60,200 @@ function colorKeyFor(name: string): string {
   return "greens";
 }
 
-/* ---------- amount ladders ----------
-   The whole design of this app is that amounts are WORDS, not multipliers. An
-   API gives grams, so the ladder has to be built here.
+/* ---------- IS THIS EVEN FOOD? ----------
+   The barcode scanner will read ANY barcode — and anything you leave open,
+   someone will point at a can of bug spray. Open Food Facts is a food
+   database, but volunteers add whatever they scan, so it does contain
+   cosmetics, cleaning products and pet food in places.
 
-   Where the product states a serving size we use it — a yogurt pot's own
-   "170g" is more truthful than any guess. Otherwise the food's KIND decides:
-   a drink comes in glasses, bread in slices, rice in servings. Getting this
-   roughly right matters more than getting it precisely right, because the
-   user picks from the list and can always correct it. */
-type Ladder = { amounts: Amount[]; defaultIndex: number; countUnit?: string; countUnitPlural?: string; gramsPerUnit?: number };
+   Two guards, and the first does most of the work: a product with no calories
+   is not something anyone eats. */
+const NON_FOOD = /pesticide|insecticide|cleaning|detergent|bleach|cosmetic|shampoo|deodorant|toothpaste|soap|perfume|makeup|petfood|pet food|cat food|dog food|litter|battery|tobacco|cigarette|medicine|pharmaceutic/i;
 
-function ladderFor(name: string, servingG?: number): Ladder {
-  const n = name.toLowerCase();
+function looksLikeFood(p: any): boolean {
+  const kcal = Number(p?.nutriments?.["energy-kcal_100g"]) || 0;
+  if (kcal <= 0) return false;
+  const text = `${p?.categories || ""} ${p?.product_name || ""} ${p?.brands || ""}`;
+  return !NON_FOOD.test(text);
+}
 
-  if (/coffee|tea|juice|milk|soda|water|smoothie|drink/.test(n)) {
+/* ---------- turning portions into amounts ----------
+   Portion carries the ANCHOR — "your whole thumb", "a tennis ball" — which is
+   the whole reason portions.ts exists. It goes into the hint, so every row on
+   the amount screen explains itself rather than saying "a normal amount" and
+   leaving the user to guess.
+
+   ml AND grams side by side. Labels use one or the other with no consistency —
+   an egg-white carton says "⅓ cup, 100g" — so showing both means the user can
+   match whichever their pack happens to state. */
+function toAmounts(portions: Portion[]): Amount[] {
+  return portions.map((p) => {
+    const measure = p.ml != null ? `${p.ml} ml, about ${p.grams} g` : `about ${p.grams} g`;
     return {
-      amounts: [
-        { label: "A small glass", grams: 150 },
-        { label: "A normal glass", grams: 250 },
-        { label: "A big glass", grams: 400 },
-      ],
-      defaultIndex: 1,
-      countUnit: "glass", countUnitPlural: "glasses", gramsPerUnit: 250,
+      label: p.label,
+      hint: `${p.anchor} · ${measure}`,
+      grams: p.grams,
+      ml: p.ml,
+      unit: p.unit,
+      unitPlural: p.unitPlural,
     };
-  }
+  });
+}
 
-  if (/bread|toast|bagel/.test(n)) {
-    const per = servingG || 50;
-    return {
-      amounts: [
-        { label: "1 slice", grams: per },
-        { label: "2 slices", grams: per * 2 },
-        { label: "3 slices", grams: per * 3 },
-      ],
-      defaultIndex: 0,
-      countUnit: "slice", countUnitPlural: "slices", gramsPerUnit: per,
-    };
-  }
+type Ladder = {
+  amounts: Amount[];
+  defaultIndex: number;
+  countUnit?: string;
+  countUnitPlural?: string;
+  gramsPerUnit?: number;
+  /* the ml behind ONE unit, so a counter can show volume too. Only set for
+     things that pour — a palm of chicken has no meaningful ml. */
+  mlPerUnit?: number;
+};
 
-  if (/egg/.test(n)) {
-    return {
-      amounts: [
-        { label: "1 egg", grams: 60 },
-        { label: "2 eggs", grams: 120 },
-        { label: "3 eggs", grams: 180 },
-      ],
-      defaultIndex: 1,
-      countUnit: "egg", countUnitPlural: "eggs", gramsPerUnit: 60,
-    };
-  }
+/** The amount ladder for a food, chosen by what KIND of thing it is.
 
-  if (/oil|butter|dressing|mayonnaise|sauce/.test(n)) {
-    return {
-      amounts: [
-        { label: "A drizzle", hint: "about a teaspoon", grams: 5 },
-        { label: "A spoonful", hint: "a tablespoon", grams: 14 },
-        { label: "Two spoonfuls", grams: 28 },
-      ],
-      defaultIndex: 1,
-      countUnit: "spoonful", countUnitPlural: "spoonfuls", gramsPerUnit: 14,
-    };
-  }
+    This replaced "a small amount / a normal amount / a big amount", which was
+    abstract English pretending to be guidance — someone pouring sauce has no
+    idea which of those their pour was, so the number they picked was
+    arbitrary and the calorie count downstream was fiction.
 
-  /* A PACKAGED product with a stated serving. The pack's own number is the
-     honest one — someone eating "one pot" means the pot the manufacturer
-     defined, not a round number we invented. */
-  if (servingG && servingG > 0) {
-    return {
-      amounts: [
-        { label: "Half a serving", grams: Math.round(servingG / 2) },
-        { label: "1 serving", hint: `as stated on the pack — ${Math.round(servingG)}g`, grams: servingG },
-        { label: "2 servings", grams: servingG * 2 },
-        { label: "3 servings", grams: servingG * 3 },
-      ],
-      defaultIndex: 1,
-      countUnit: "serving", countUnitPlural: "servings", gramsPerUnit: servingG,
-    };
-  }
+    NOTE how often `servingG` is threaded through: the pack's own stated
+    serving is the one measurement in the whole exchange that somebody
+    actually took, so it anchors the ladder wherever it exists. Two protein
+    tubs saying "1 scoop (33g)" and "1 scoop (5g)" produce different ladders
+    for exactly this reason. */
+function ladderFor(name: string, categories = "", servingG?: number, servingText?: string): Ladder {
+  const kind = kindFor(name, categories, servingText || "");
 
-  return { amounts: GENERIC_AMOUNTS, defaultIndex: 1 };
+  switch (kind) {
+    case "liquid": {
+      const ps = liquidPortions(name);
+      /* start them on the rung nearest the pack's stated serving */
+      const idx = servingG
+        ? ps.reduce((best, p, i) => (Math.abs(p.grams - servingG) < Math.abs(ps[best].grams - servingG) ? i : best), 0)
+        : 4;
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: idx,
+        countUnit: "tablespoon", countUnitPlural: "tablespoons",
+        gramsPerUnit: ps[1].grams,
+        mlPerUnit: ps[1].ml,
+      };
+    }
+
+    case "powder": {
+      /* servingG comes straight off the product's own label, so a 33 g scoop
+         and a 5 g scoop produce different ladders — which is the whole point,
+         since scoops are not a standard measure the way a teaspoon is */
+      const ps = powderPortions(servingG);
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 1,
+        countUnit: "scoop", countUnitPlural: "scoops",
+        gramsPerUnit: ps[1].grams,
+      };
+    }
+
+    case "spread": {
+      const ps = spreadPortions(name);
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 1,
+        countUnit: "tablespoon", countUnitPlural: "tablespoons",
+        gramsPerUnit: ps[1].grams,
+        mlPerUnit: ps[1].ml,
+      };
+    }
+
+    case "pinch": {
+      const ps = pinchPortions(name);
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 1,
+        countUnit: "teaspoon", countUnitPlural: "teaspoons",
+        gramsPerUnit: ps[1].grams,
+        mlPerUnit: ps[1].ml,
+      };
+    }
+
+    case "protein": {
+      const ps = proteinPortions();
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 1,
+        countUnit: "palm-sized piece", countUnitPlural: "palm-sized pieces",
+        gramsPerUnit: 100,
+      };
+    }
+
+    case "scoop": {
+      const ps = scoopPortions();
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 3,
+        countUnit: "handful", countUnitPlural: "handfuls",
+        gramsPerUnit: 80,
+      };
+    }
+
+    case "slice": {
+      const per = servingG || 50;
+      return {
+        amounts: [
+          { label: "1 slice", hint: `one slice as it comes · about ${per} g`, grams: per, unit: "slice", unitPlural: "slices" },
+          { label: "2 slices", hint: `about ${per * 2} g`, grams: per * 2 },
+          { label: "3 slices", hint: `about ${per * 3} g`, grams: per * 3 },
+          { label: "4 slices", hint: `about ${per * 4} g`, grams: per * 4 },
+        ],
+        defaultIndex: 0,
+        countUnit: "slice", countUnitPlural: "slices",
+        gramsPerUnit: per,
+      };
+    }
+
+    case "count": {
+      /* eggs get their own numbers; everything else countable takes a
+         middling whole-item weight */
+      const isEgg = /egg/i.test(name);
+      const per = isEgg ? 60 : servingG || 120;
+      const unit = isEgg ? "egg" : "piece";
+      return {
+        amounts: [
+          { label: `Half a ${unit}`, hint: `about ${Math.round(per / 2)} g`, grams: Math.round(per / 2) },
+          { label: `1 ${unit}`, hint: `one whole one · about ${per} g`, grams: per, unit, unitPlural: `${unit}s` },
+          { label: `2 ${unit}s`, hint: `about ${per * 2} g`, grams: per * 2 },
+          { label: `3 ${unit}s`, hint: `about ${per * 3} g`, grams: per * 3 },
+        ],
+        defaultIndex: 1,
+        countUnit: unit, countUnitPlural: `${unit}s`,
+        gramsPerUnit: per,
+      };
+    }
+
+    default: {
+      /* a packaged thing with a stated serving — the pack's own number beats
+         anything we'd invent */
+      if (servingG && servingG > 0) {
+        const ps = packPortions(servingG, servingText);
+        return {
+          amounts: toAmounts(ps),
+          defaultIndex: 1,
+          countUnit: "serving", countUnitPlural: "servings",
+          gramsPerUnit: servingG,
+        };
+      }
+      /* nothing to go on at all — the scoop ladder at least has anchors,
+         which beats abstract wording even when the food is a mystery */
+      const ps = scoopPortions();
+      return {
+        amounts: toAmounts(ps),
+        defaultIndex: 2,
+        countUnit: "handful", countUnitPlural: "handfuls",
+        gramsPerUnit: 80,
+      };
+    }
+  }
 }
 
 /* ---------- USDA ---------- */
@@ -154,9 +274,9 @@ export async function searchUSDA(query: string, limit = 20): Promise<FoodDef[]> 
       `${USDA_BASE}/foods/search?api_key=${USDA_KEY}` +
       `&query=${encodeURIComponent(query)}` +
       /* SR Legacy, Foundation and Survey are the curated, un-branded datasets.
-         SURVEY (FNDDS) is the one that carries most everyday prepared foods —
-         without it, plain searches like "broccoli" can come back empty even
-         though the food obviously exists.
+         SURVEY (FNDDS) carries most everyday prepared foods — without it,
+         plain searches like "broccoli" come back empty even though the food
+         obviously exists.
          Branded stays excluded: Open Food Facts handles packaged goods better,
          and USDA's branded rows are full of near-duplicates that bury the
          plain answer someone was actually looking for. */
@@ -168,19 +288,15 @@ export async function searchUSDA(query: string, limit = 20): Promise<FoodDef[]> 
 
     const json = await res.json();
 
-    /* TEMPORARY — tells apart "the API returned nothing" from "we filtered
-       everything out", which look identical in the UI and need opposite
-       fixes. Remove once searches are behaving. */
-    console.log("USDA:", query, "→", (json.foods || []).length, "raw results");
-
     return (json.foods || []).map((f: any): FoodDef => {
       const name = cleanUSDAName(f.description || "Food");
-      const ladder = ladderFor(name);
+      const cat = (f.foodCategory || "").toString();
+      const ladder = ladderFor(name, cat);
       return {
         name,
         /* the food's category, for the second line in the list — it's what
            tells "chicken breast, raw" apart from "chicken breast, roasted" */
-        sub: (f.foodCategory || "").toString().toLowerCase() || "generic",
+        sub: cat.toLowerCase() || "generic",
         key: colorKeyFor(name),
         per100: Math.round(usdaNutrient(f, N_CALORIES)),
         p: round1(usdaNutrient(f, N_PROTEIN)),
@@ -211,17 +327,18 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 /* ---------- Open Food Facts ---------- */
 
 function offToFood(p: any): FoodDef | null {
+  if (!looksLikeFood(p)) return null;
+
   const n = p.nutriments || {};
   const per100 = Number(n["energy-kcal_100g"]) || 0;
-  if (!per100) return null;
 
   const name = [p.product_name, p.brands?.split(",")[0]?.trim()]
     .filter(Boolean)
     .join(" · ") || "Product";
 
-  /* the pack's own serving size, when it states one in grams */
-  const servingG = parseServing(p.serving_size);
-  const ladder = ladderFor(name, servingG);
+  const servingText = p.serving_size || "";
+  const servingG = parseServing(servingText);
+  const ladder = ladderFor(name, p.categories || "", servingG, servingText);
 
   return {
     name,
@@ -235,16 +352,28 @@ function offToFood(p: any): FoodDef | null {
   };
 }
 
-/** "170 g", "1 pot (150g)", "2 slices (60 g)" → 170 / 150 / 60 */
+/** "170 g", "1 scoop (33g)", "1/4 cup (60ml)", "2 tsp (10ml)" → 170 / 33 / 60 / 10
+
+    THIS IS WHAT KEEPS TWO PROTEIN TUBS APART. One says "1 scoop (33g)", another
+    says "1 scoop (5g)"; reading the number off each label is the difference
+    between a ladder that fits the product and one that's quietly wrong.
+
+    ml is read as grams here, which is the 1:1 approximation — close enough for
+    picking a starting rung, and portions.ts does the density-aware version. */
 function parseServing(raw?: string): number | undefined {
   if (!raw) return undefined;
-  const m = raw.match(/([\d.]+)\s*g/i);
+  /* prefer a bracketed weight — "1 scoop (33 g)" — since that's the real
+     measurement, and the words before it are just the manufacturer's name
+     for their own scoop */
+  const bracket = raw.match(/\(\s*([\d.]+)\s*(g|ml)/i);
+  const plain = raw.match(/([\d.]+)\s*(g|ml)/i);
+  const m = bracket || plain;
   const v = m ? parseFloat(m[1]) : NaN;
   return isFinite(v) && v > 0 && v < 2000 ? v : undefined;
 }
 
-/** Look up a packaged product by its barcode. The exact path for the scanner,
-    once there's a development build to run it in. */
+/** Look up a packaged product by its barcode.
+    Returns null for anything that isn't food — see looksLikeFood. */
 export async function lookupBarcode(code: string): Promise<FoodDef | null> {
   try {
     const res = await fetch(`${OFF_BASE}/api/v2/product/${encodeURIComponent(code)}.json`);

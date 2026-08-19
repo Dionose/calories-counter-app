@@ -49,9 +49,13 @@ export default function CameraScreen() {
   /* THE PICKED IMAGE. Held here rather than inside CameraSheet because the
      sheet unmounts the moment it closes — the URI has to outlive it to reach
      ResultFlow, which is what eventually uploads it.
-     null means "no photo", which is a legitimate state: the simulated shutter
-     produces one, and so does logging without a photo at all. */
+     null means "no photo", which is a legitimate state: logging without one
+     is a supported path, not a failure. */
   const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  /* THE SCANNED CODE. Same reasoning — the scanner reads it, the sheet closes,
+     and BarcodeResult needs the digits to look the product up. */
+  const [scannedCode, setScannedCode] = useState<string | null>(null);
 
   const tier = tierForStreak(streakDays);
   const markColor = freeLocked ? T.green : tier.color;
@@ -74,16 +78,17 @@ export default function CameraScreen() {
     setPickerOpen(false);
   }, [tabResetKey]);
 
-  /* leaving a flow clears the photo with it — carrying yesterday's image into
-     the next meal would attach the wrong picture to the right food */
+  /* leaving a flow clears what it was carrying — a stale photo or barcode
+     would attach the wrong picture, or the wrong product, to the next meal */
   const backToHub = () => {
     setPhotoUri(null);
+    setScannedCode(null);
     setStage("hub");
   };
 
-  /* the shutter fired, or a gallery image was picked. A URI arrives from the
-     gallery; the simulated shutter sends nothing, and that's fine — the flow
-     handles a photoless meal the same way it always did. */
+  /* a real photo from the shutter, or one picked from the gallery. A capture
+     that failed sends nothing, and the flow handles a photoless meal the same
+     way it always did. */
   const captured = (uri?: string) => {
     if (freeLocked) setSnapSpent(true);
     setPhotoUri(uri ?? null);
@@ -117,8 +122,9 @@ export default function CameraScreen() {
       <View style={s.screen}>
         <BarcodeResult
           meal={meal}
+          code={scannedCode}
           onExit={backToHub}
-          onRescan={() => setStage("barcodecam")}
+          onRescan={() => { setScannedCode(null); setStage("barcodecam"); }}
         />
       </View>
     );
@@ -265,12 +271,14 @@ export default function CameraScreen() {
         onCapture={captured}
       />
 
-      {/* barcode finds the code on its own, then lands on the product */}
+      {/* the scanner finds the code itself and hands up the digits — no
+          button, because pointing at a barcode IS the interaction */}
       <CameraSheet
         visible={stage === "barcodecam"}
         mode="barcode"
         onClose={backToHub}
-        onCapture={() => setStage("barcoderesult")}
+        onCapture={() => {}}
+        onBarcode={(code) => { setScannedCode(code); setStage("barcoderesult"); }}
       />
     </View>
   );
