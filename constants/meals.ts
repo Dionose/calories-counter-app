@@ -27,6 +27,8 @@ export type Meal = {
   id?: string;
   loggedOn?: string;            // YYYY-MM-DD; defaults to today
   mealType: "breakfast" | "lunch" | "dinner" | "snacks";
+  /* the STORAGE PATH, not a URL. The bucket is private, so URLs expire —
+     saving one here would leave dead links within the hour. */
   photoUrl?: string | null;
   source: "photo" | "barcode" | "voice" | "search" | "manual";
   items: MealItem[];
@@ -100,6 +102,16 @@ export async function saveMeal(userId: string, meal: Meal) {
   return { mealId: data.id as string, error: null };
 }
 
+/** Attach a photo to a meal after its upload finishes.
+    SEPARATE from saveMeal on purpose: the uploaded file is named after the
+    meal's id, so the row has to exist before the photo can go anywhere. That
+    ordering also means a failed upload leaves a meal with no picture rather
+    than no meal at all. */
+export async function setMealPhoto(mealId: string, path: string) {
+  const { error } = await supabase.from("meals").update({ photo_url: path }).eq("id", mealId);
+  return { error: error?.message ?? null };
+}
+
 /** Every meal for one day, with its items. Home and the calendar's day recap
     both use this. */
 export async function loadDay(userId: string, day: string) {
@@ -159,7 +171,10 @@ export async function loadDayTotals(userId: string, from: string, to: string) {
 }
 
 /** Remove a meal. Its items go with it — the foreign key cascades, so there's
-    no second delete to remember. */
+    no second delete to remember.
+    The PHOTO doesn't cascade, though: storage and the database are separate
+    systems. Callers that delete a meal should remove its file too, or it sits
+    in the bucket forever costing space nobody can see. */
 export async function deleteMeal(mealId: string) {
   const { error } = await supabase.from("meals").delete().eq("id", mealId);
   return { error: error?.message ?? null };

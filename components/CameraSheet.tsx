@@ -4,10 +4,19 @@
 // behind. Used everywhere in the app that needs a camera: meal logging,
 // barcode scanning, and the profile photo.
 //
-// The preview is a PLACEHOLDER. expo-camera can't run in Expo Go, so the live
-// feed arrives with the development build — at which point only <Preview />
-// gets replaced and nothing else here changes.
+// TWO WAYS IN, and only one of them works today:
+//
+//   THE GALLERY BUTTON is real. expo-image-picker runs inside Expo Go, so
+//   choosing an existing photo produces a genuine file URI that flows all the
+//   way through to Supabase Storage. It's also a feature people actually
+//   want — "log the photo I already took" — not just a testing crutch.
+//
+//   THE SHUTTER is still a placeholder. expo-camera needs a development build,
+//   so <Preview /> draws a gradient and the shutter fires onCapture with no
+//   URI. When the dev build lands, only <Preview /> and shoot() change; the
+//   rest of this file, and everything downstream, already handles a real URI.
 import { BlurView } from "expo-blur";
+import * as ImagePicker from "expo-image-picker";
 import { LinearGradient } from "expo-linear-gradient";
 import { Camera, Image as ImageIcon, Lock, RefreshCw, X } from "lucide-react-native";
 import React, { useEffect, useRef } from "react";
@@ -34,7 +43,7 @@ function Preview({ barcode }: { barcode: boolean }) {
         <Text style={s0.previewText}>
           {barcode
             ? "Camera preview needs a development build — the scanner will find the code on its own."
-            : "Camera preview needs a development build — tap the shutter to simulate. On your phone your live camera fills this widget."}
+            : "Camera preview needs a development build. Tap the gallery icon to pick a real photo, or the shutter to simulate."}
         </Text>
       </View>
     </View>
@@ -152,7 +161,9 @@ export default function CameraSheet({
   /** the amber "1 photo left" bar, shown to free users BEFORE they shoot */
   showFreeBar?: boolean;
   onClose: () => void;
-  onCapture: () => void;
+  /** carries the picked image's URI when there is one. The simulated shutter
+      calls it with nothing, which downstream treats as "no photo". */
+  onCapture: (uri?: string) => void;
 }) {
   const { T, openPaywall } = useApp();
   const s = styles(T);
@@ -180,6 +191,7 @@ export default function CameraSheet({
   const translateY = rise.interpolate({ inputRange: [0, 1], outputRange: [SCREEN_H * 0.5, 0] });
   const scale = rise.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
 
+  /* the SIMULATED shutter — no URI, because there's no camera yet */
   const shoot = () => {
     H.tap();
     flash.setValue(0);
@@ -187,6 +199,32 @@ export default function CameraSheet({
       Animated.timing(flash, { toValue: 1, duration: 100, useNativeDriver: true }),
       Animated.timing(flash, { toValue: 0, duration: 220, useNativeDriver: true }),
     ]).start(() => onCapture());
+  };
+
+  /* THE REAL ONE. Works today, in Expo Go, and produces a genuine file URI.
+     Permission is requested at the moment of use rather than on mount —
+     asking for library access before the user has shown any interest in
+     using it is how apps get denied on the first prompt. */
+  const pickFromGallery = async () => {
+    H.tap();
+
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      /* no cropping. A meal photo shouldn't be squared off — the AI wants the
+         whole plate, and forcing a crop can cut food out of the frame. */
+      allowsEditing: false,
+      /* full quality here; photos.ts resizes and compresses on the way up, and
+         degrading it twice would cost detail for nothing. */
+      quality: 1,
+    });
+
+    if (result.canceled || !result.assets?.length) return;
+
+    H.success();
+    onCapture(result.assets[0].uri);
   };
 
   const goPro = () => {
@@ -271,8 +309,10 @@ export default function CameraSheet({
                   </>
                 ) : (
                   <>
-                    <Pressable onPress={() => H.tap()} style={s.sideBtn}>
-                      <ImageIcon size={19} color="#FFFFFF" />
+                    {/* the gallery — ringed green because it's the button that
+                        actually works right now, and people need to find it */}
+                    <Pressable onPress={pickFromGallery} style={[s.sideBtn, s.sideBtnLive]}>
+                      <ImageIcon size={19} color={T.green} />
                     </Pressable>
 
                     <Shutter onPress={shoot} />
@@ -283,6 +323,10 @@ export default function CameraSheet({
                   </>
                 )}
               </View>
+
+              {!barcode && !locked && (
+                <Text style={s.galleryHint}>Tap the gallery icon to use a photo from your phone</Text>
+              )}
             </View>
           </TravelBorder>
         </Animated.View>
@@ -381,13 +425,21 @@ const styles = (T: any) =>
 
     controls: {
       flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-      paddingHorizontal: 26, paddingTop: 16, paddingBottom: 20,
+      paddingHorizontal: 26, paddingTop: 16, paddingBottom: 12,
       backgroundColor: "#000000",
     },
     sideBtn: {
       width: 40, height: 40, borderRadius: 12,
       backgroundColor: "rgba(255,255,255,0.12)",
       alignItems: "center", justifyContent: "center",
+    },
+    sideBtnLive: {
+      backgroundColor: "rgba(34,197,94,0.14)",
+      borderWidth: 1, borderColor: "rgba(34,197,94,0.5)",
+    },
+    galleryHint: {
+      fontSize: 10, color: "rgba(255,255,255,0.45)", fontFamily: FONTS.body,
+      textAlign: "center", paddingBottom: 16, backgroundColor: "#000000",
     },
     scanningText: { fontSize: 13, color: "rgba(255,255,255,0.85)", fontFamily: FONTS.headingMed },
     upgradeBtn: { backgroundColor: T.gold, borderRadius: 13, paddingVertical: 13, alignItems: "center" },

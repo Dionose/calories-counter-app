@@ -46,6 +46,13 @@ export default function CameraScreen() {
   // a free user gets one photo a day; once spent the preview locks
   const [snapSpent, setSnapSpent] = useState(false);
 
+  /* THE PICKED IMAGE. Held here rather than inside CameraSheet because the
+     sheet unmounts the moment it closes — the URI has to outlive it to reach
+     ResultFlow, which is what eventually uploads it.
+     null means "no photo", which is a legitimate state: the simulated shutter
+     produces one, and so does logging without a photo at all. */
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+
   const tier = tierForStreak(streakDays);
   const markColor = freeLocked ? T.green : tier.color;
 
@@ -67,11 +74,19 @@ export default function CameraScreen() {
     setPickerOpen(false);
   }, [tabResetKey]);
 
-  const backToHub = () => setStage("hub");
+  /* leaving a flow clears the photo with it — carrying yesterday's image into
+     the next meal would attach the wrong picture to the right food */
+  const backToHub = () => {
+    setPhotoUri(null);
+    setStage("hub");
+  };
 
-  /* the shutter fired — go straight into analysing */
-  const captured = () => {
+  /* the shutter fired, or a gallery image was picked. A URI arrives from the
+     gallery; the simulated shutter sends nothing, and that's fine — the flow
+     handles a photoless meal the same way it always did. */
+  const captured = (uri?: string) => {
     if (freeLocked) setSnapSpent(true);
+    setPhotoUri(uri ?? null);
     setResultStage("analysing");
     setStage("result");
   };
@@ -86,6 +101,8 @@ export default function CameraScreen() {
       <View style={s.screen}>
         <ResultFlow
           meal={meal}
+          photoUri={photoUri}
+          noPhoto={!photoUri}
           stage={resultStage}
           setStage={setResultStage}
           onExit={backToHub}

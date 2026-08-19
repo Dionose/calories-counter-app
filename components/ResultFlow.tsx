@@ -7,9 +7,9 @@
 // bowl" — never a multiplier. The amount sheet lives in its own file since the
 // exact-number path made it big enough to own one.
 //
-// "Log to breakfast" is now a REAL WRITE. Everything above it is still
-// stand-in data — the AI hasn't been wired — but what the user confirms goes
-// into Supabase and shows up on Home, the calendar and the streak.
+// "Log to breakfast" is a REAL WRITE: the meal, its items, and the photo.
+// The AI itself is still stand-in — the plate below is always eggs and rice —
+// but everything the user confirms is stored and read back everywhere else.
 import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, Camera, Check, ChevronRight, Crown, Mic, PenLine, Plus, Send, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
@@ -17,7 +17,8 @@ import { Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text
 import { useApp } from "../constants/AppState";
 import { colorFor } from "../constants/foodColors";
 import * as H from "../constants/haptics";
-import { saveMeal } from "../constants/meals";
+import { saveMeal, setMealPhoto } from "../constants/meals";
+import { uploadMealPhoto } from "../constants/photos";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
@@ -288,7 +289,7 @@ export default function ResultFlow({
   onExit: () => void;
   onRetake: () => void;
 }) {
-  const { T, freeLocked, userId } = useApp();
+  const { T, freeLocked, userId, refreshStreak } = useApp();
   const s = styles(T);
   const [photoMenu, setPhotoMenu] = useState(false);
   const [items, setItems] = useState<Item[]>(BASE);
@@ -349,11 +350,8 @@ export default function ResultFlow({
     setSaveErr(null);
     setSaving(true);
 
-    const { error } = await saveMeal(userId, {
+    const { mealId, error } = await saveMeal(userId, {
       mealType: meal.toLowerCase() as any,
-      /* the photo stays on the device for now. Uploading to Supabase Storage
-         is its own piece of work — a URL here would be a lie until then. */
-      photoUrl: null,
       source: noPhoto ? "manual" : improved ? "voice" : "photo",
       items: items.map((it) => ({
         foodName: it.name,
@@ -370,18 +368,34 @@ export default function ResultFlow({
       })),
     });
 
-    setSaving(false);
-
-    if (error) {
+    if (error || !mealId) {
       /* stay on the plate. Bouncing to the success screen after a failed save
          would tell them it worked when it didn't, and they'd lose every
          correction they just made. */
-      setSaveErr(error);
+      setSaving(false);
+      setSaveErr(error || "Couldn't save that meal.");
       H.warn();
       return;
     }
 
+    /* THE MEAL IS ALREADY SAVED. The photo goes up afterwards and is NOT
+       awaited before showing success — a slow or failed upload must not cost
+       the user their meal. Worst case they get a recap card without a picture,
+       which is a far smaller loss than a save that appeared to fail.
+       The upload needs the meal's id for its filename, which is why it can't
+       happen any earlier. */
+    if (photoUri) {
+      uploadMealPhoto(userId, mealId, photoUri)
+        .then(({ path }) => { if (path) setMealPhoto(mealId, path); })
+        .catch(() => {});
+    }
+
+    /* today's first meal may have just extended the streak — recompute so the
+       flame and tier are right by the time they're back on Home */
+    refreshStreak();
+
     H.success();
+    setSaving(false);
     setStage("done");
   };
 
