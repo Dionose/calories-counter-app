@@ -11,9 +11,11 @@ import PageHeader from "../../components/PageHeader";
 import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
+import WeighInSheet from "../../components/WeighInSheet";
 import { useApp } from "../../constants/AppState";
 import { loadDay, todayLocal } from "../../constants/meals";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
+import { expectedKgToday, fromKg, loadWeighIns, smoothedKg, toKg } from "../../constants/weight";
 
 const SCREEN_H = Dimensions.get("window").height;
 
@@ -135,6 +137,14 @@ export default function Home() {
   const [todayMacros, setTodayMacros] = useState({ p: 0, c: 0, f: 0 });
   const [mealsLoaded, setMealsLoaded] = useState(false);
 
+  /* ---------- WEIGH-INS ---------- */
+  const [weighOpen, setWeighOpen] = useState(false);
+  const [lastKg, setLastKg] = useState<number | null>(null);
+  const [smoothKg, setSmoothKg] = useState<number | null>(null);
+  const [weighCount, setWeighCount] = useState(0);
+  /* bumped after a save so the chip refetches without leaving the screen */
+  const [weighTick, setWeighTick] = useState(0);
+
   /* useFocusEffect rather than useEffect: coming BACK from the camera after
      logging has to show the new number. A mount-only effect wouldn't re-run,
      and the user would see their old total until they restarted the app. */
@@ -170,6 +180,26 @@ export default function Home() {
     }, [userId])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!userId) return;
+
+      (async () => {
+        const { entries } = await loadWeighIns(userId);
+        if (cancelled) return;
+        setWeighCount(entries.length);
+        setLastKg(entries.length ? entries[entries.length - 1].weightKg : null);
+        /* the SMOOTHED figure, not the newest reading — see weight.ts. A
+           single morning's number swings a kilo on water alone, and showing
+           that as "progress" tells people something false about their week. */
+        setSmoothKg(smoothedKg(entries));
+      })();
+
+      return () => { cancelled = true; };
+    }, [userId, weighTick])
+  );
+
   // guards against rapid repeat taps
   const scopeLock = useRef(false);
   const sheetBusy = useRef(false);
@@ -182,6 +212,7 @@ export default function Home() {
     setBoardMounted(false);
     setBoardBody(false);
     setHowOpen(false);
+    setWeighOpen(false);
   }, [tabResetKey]);
 
   const tier = tierForStreak(streakDays);
@@ -220,17 +251,13 @@ export default function Home() {
      "Your goal date moves" is true, specific and something they can act on.
      Anything that reads as disapproval of what they ate is the wrong trade:
      the person having a bad week is exactly the person who most needs to keep
-     logging, and an app that makes them feel judged is one they stop opening.
-     Accountability comes from showing the consequence honestly, not from
-     telling them off. */
+     logging, and an app that makes them feel judged is one they stop opening. */
   let heroLine: string;
   if (nothingLogged) {
     heroLine = `You have ${goal.toLocaleString()} calories to eat today. This number counts down as you log your meals.`;
   } else if (over < 0) {
     heroLine = `You've eaten ${eaten.toLocaleString()} calories so far. That leaves ${remaining.toLocaleString()} calories for the rest of today — it counts down each time you log.`;
   } else if (over <= OVER_THRESHOLD) {
-    /* on target, or close enough that the difference is inside the estimate's
-       own margin of error — no reason to flag it as a miss */
     heroLine = `You've eaten ${eaten.toLocaleString()} calories today, which lands you right on your target of ${goal.toLocaleString()} calories. That's the day done.`;
   } else {
     heroLine = `You've eaten ${eaten.toLocaleString()} calories today — ${over.toLocaleString()} calories above your target of ${goal.toLocaleString()}. A single day like this barely moves the needle, but days like it add up, and your goal date shifts with them.`;
@@ -297,13 +324,55 @@ export default function Home() {
   const rate = unit === "kg" ? profile.paceRate : profile.paceRate * 2.20462;
   const losing = profile.targetWeight < profile.startWeight;
 
+  /* ---------- THE WEIGHT CHIP ----------
+     Three states, and which one shows depends on what the user has actually
+     given us. The chip used to always claim "on track" from the plan alone —
+     a promise made with no evidence behind it. */
+  const startKg = toKg(profile.startWeight || 0, unit as "kg" | "lbs");
+  const targetKg = toKg(profile.targetWeight || 0, unit as "kg" | "lbs");
+  const paceKg = profile.paceRate || 0.5;
+
+  const signupDate = useMemo(() => {
+    if (!profile.memberSince) return new Date();
+    const [y, m, d] = String(profile.memberSince).split("-").map(Number);
+    return isNaN(y) ? new Date() : new Date(y, m - 1, d);
+  }, [profile.memberSince]);
+
+  const expectedKg = expectedKgToday(startKg, targetKg, paceKg, signupDate);
+
+  /* the number on the chip: their real smoothed weight if they've weighed in,
+     otherwise what the plan projects. Both are shown in their own unit. */
+  const shownWeight = smoothKg != null
+    ? fromKg(smoothKg, unit as "kg" | "lbs")
+    : fromKg(expectedKg, unit as "kg" | "lbs");
+
+  /* how far real is from expected — only meaningful once there are at least
+     two weigh-ins, because one reading is a starting point, not a trend */
+  const aheadKg = smoothKg != null && weighCount >= 2
+    ? (losing ? expectedKg - smoothKg : smoothKg - expectedKg)
+    : null;
+
+  let weightNote: string;
+  if (weighCount === 0) {
+    weightNote = "Estimated · tap to log your real weight";
+  } else if (aheadKg == null) {
+    weightNote = "First weigh-in logged · tap to add another";
+  } else if (Math.abs(aheadKg) < 0.3) {
+    weightNote = "Right on schedule";
+  } else if (aheadKg > 0) {
+    weightNote = `${fromKg(Math.abs(aheadKg), unit as "kg" | "lbs").toFixed(1)} ${unit} ahead of plan`;
+  } else {
+    /* BEHIND is stated plainly and without alarm. Weight moves in steps, not
+       lines — someone a kilo behind in week two is having a normal week, and
+       telling them otherwise is how people quit. */
+    weightNote = `${fromKg(Math.abs(aheadKg), unit as "kg" | "lbs").toFixed(1)} ${unit} behind · this evens out`;
+  }
+
   const s = styles(T);
 
   /* THE MEAL TRAVELS WITH THE TAP. Tapping "Add snacks" has to open the camera
      already set to Snacks — before this, it opened on whatever was last used,
-     so food logged from the Snacks row landed in Dinner. The user saw one
-     thing and the database recorded another, which is the worst kind of bug:
-     nothing looks wrong until much later. */
+     so food logged from the Snacks row landed in Dinner. */
   const toCamera = (mealName?: string) =>
     router.push(mealName ? `/(tabs)/camera?meal=${mealName}` : "/(tabs)/camera");
 
@@ -448,8 +517,6 @@ export default function Home() {
               {/* say which way it moves, and in what unit */}
               <Text style={s.heroExplain}>{heroLine}</Text>
 
-              {/* why today's goal is higher than your plan — otherwise the
-                  number looks wrong after changing your goal */}
               {plan.addBurned && (
                 <Text style={s.goalBreakdown}>
                   {base.toLocaleString()} target + {burned} burned today
@@ -482,8 +549,7 @@ export default function Home() {
           </View>
         </Tap>
 
-        {/* TODAY'S MEALS — each carries its own icon for identity; the coloured
-            borders still carry the STATE (logged / next / needs attention) */}
+        {/* TODAY'S MEALS */}
         <Text style={[s.micro, { marginTop: 22, marginBottom: 10 }]}>TODAY'S MEALS</Text>
         {meals.map((m) => {
           const isNext = nextMeal?.name === m.name;
@@ -530,7 +596,6 @@ export default function Home() {
           <TravelBorder {...boardBorder} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 14 }}>
               <View style={s.boardHead}>
-                {/* counts 1 → 2 as the hands shift — places changing, not a cup */}
                 <Icon name="trophy" size={17} mode="loop" />
                 <Text style={s.boardHeadText}>{scopeCaption}</Text>
               </View>
@@ -567,8 +632,6 @@ export default function Home() {
               <View style={s.wRow}>
                 <Text style={s.wBig}>{streakDays}</Text>
                 <Text style={s.wUnit}>{streakDays === 1 ? "day" : "days"}</Text>
-                {/* a dedicated flame per tier — far better than one generic
-                    flame tinted five ways. Free users get the plain green one. */}
                 <View style={{ marginLeft: "auto" }}>
                   <Icon name={freeLocked ? "flameSpark" : flameAnim} size={20} mode="loop" />
                 </View>
@@ -588,26 +651,39 @@ export default function Home() {
             </View>
           </Tap>
 
+          {/* THE WEIGHT CHIP — now opens the weigh-in sheet rather than
+              wandering off to Stats. The number is their real smoothed weight
+              once they've logged one; before that it's the plan's estimate and
+              says so, because claiming "on track" with no weigh-ins behind it
+              is a promise the app can't keep. */}
           <View style={{ flex: 1 }}>
-            <BlurLock label="Expected weight" locked={freeLocked} radius={14} compact>
-              <Tap onPress={() => router.push("/(tabs)/stats")}>
+            <BlurLock label="Your weight" locked={freeLocked} radius={14} compact>
+              <Tap onPress={() => setWeighOpen(true)}>
                 <View style={s.chipCard}>
                   <View style={s.rowBetween}>
-                    <Text style={s.micro}>EXPECTED WEIGHT</Text>
+                    <Text style={s.micro}>{weighCount ? "YOUR WEIGHT" : "EXPECTED WEIGHT"}</Text>
                     <ChevronRight size={13} color={T.micro} />
                   </View>
                   <View style={s.wRow}>
-                    <Text style={s.wBig}>{profile.startWeight}</Text>
+                    <Text style={s.wBig}>{shownWeight ? shownWeight.toFixed(1) : "—"}</Text>
                     <Text style={s.wUnit}>{unit}</Text>
                     <Text style={s.wTrend}>{losing ? "↓" : "↑"} {rate.toFixed(1)}</Text>
                   </View>
-                  <Text style={s.chipNote}>on track · tap to log real weight</Text>
+                  <Text style={s.chipNote} numberOfLines={2}>{weightNote}</Text>
                 </View>
               </Tap>
             </BlurLock>
           </View>
         </View>
       </ScrollView>
+
+      {/* the weigh-in sheet — refreshes the chip on save via weighTick */}
+      <WeighInSheet
+        visible={weighOpen}
+        onClose={() => setWeighOpen(false)}
+        onSaved={() => setWeighTick((k) => k + 1)}
+        lastKg={lastKg}
+      />
 
       {/* CALORIE DETAIL POP-OUT */}
       <Modal visible={heroOpen} transparent animationType="none" onRequestClose={closeHero}>
@@ -972,7 +1048,7 @@ const styles = (T: any) =>
     wBig: { fontSize: 19, color: T.text, fontFamily: FONTS.heading },
     wUnit: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
     wTrend: { marginLeft: "auto", color: T.green, fontSize: 10, fontFamily: FONTS.headingMed },
-    chipNote: { fontSize: 9.5, color: T.sub, marginTop: 4, fontFamily: FONTS.body },
+    chipNote: { fontSize: 9.5, color: T.sub, marginTop: 4, fontFamily: FONTS.body, lineHeight: 13 },
 
     backdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(0,0,0,0.62)" },
     sheetCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
