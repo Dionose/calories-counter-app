@@ -6,13 +6,18 @@
 // Editing means picking a different sentence — "half an avocado", "a big
 // bowl" — never a multiplier. The amount sheet lives in its own file since the
 // exact-number path made it big enough to own one.
+//
+// "Log to breakfast" is now a REAL WRITE. Everything above it is still
+// stand-in data — the AI hasn't been wired — but what the user confirms goes
+// into Supabase and shows up on Home, the calendar and the streak.
 import { LinearGradient } from "expo-linear-gradient";
-import { Camera, Check, ChevronRight, Crown, Mic, PenLine, Plus, Send, Sparkles, X } from "lucide-react-native";
+import { AlertTriangle, Camera, Check, ChevronRight, Crown, Mic, PenLine, Plus, Send, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import { colorFor } from "../constants/foodColors";
 import * as H from "../constants/haptics";
+import { saveMeal } from "../constants/meals";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
@@ -283,12 +288,17 @@ export default function ResultFlow({
   onExit: () => void;
   onRetake: () => void;
 }) {
-  const { T, freeLocked } = useApp();
+  const { T, freeLocked, userId } = useApp();
   const s = styles(T);
   const [photoMenu, setPhotoMenu] = useState(false);
   const [items, setItems] = useState<Item[]>(BASE);
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+
+  /* the save is a network call, so the button has to show it's working and
+     has to be able to fail without losing the plate the user just corrected */
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (stage !== "analysing") return;
@@ -320,6 +330,60 @@ export default function ResultFlow({
   const source = improved ? IMPROVED : BASE;
   const edited = items.some((i) => i.edited) || items.length !== source.length;
   const active = editing != null ? items[editing] : null;
+
+  /* THE WRITE. Only reached once the user has seen the plate and agreed to it,
+     which is why it lives on this button rather than firing after analysis —
+     an estimate nobody confirmed isn't a meal. */
+  const logMeal = async () => {
+    if (saving) return;
+
+    if (!items.length) {
+      setSaveErr("There's nothing on the plate to log.");
+      return;
+    }
+    if (!userId) {
+      setSaveErr("You're signed out — sign in and try again.");
+      return;
+    }
+
+    setSaveErr(null);
+    setSaving(true);
+
+    const { error } = await saveMeal(userId, {
+      mealType: meal.toLowerCase() as any,
+      /* the photo stays on the device for now. Uploading to Supabase Storage
+         is its own piece of work — a URL here would be a lie until then. */
+      photoUrl: null,
+      source: noPhoto ? "manual" : improved ? "voice" : "photo",
+      items: items.map((it) => ({
+        foodName: it.name,
+        amountLabel: it.amountLabel,
+        grams: it.grams,
+        calories: it.cal,
+        protein: it.p,
+        carbs: it.c,
+        fat: it.f,
+        /* whether these numbers came from the AI or from the user correcting
+           it — worth keeping, so we can later measure how often the AI is
+           wrong and by how much */
+        source: it.edited ? "user" : improved ? "voice" : "ai",
+      })),
+    });
+
+    setSaving(false);
+
+    if (error) {
+      /* stay on the plate. Bouncing to the success screen after a failed save
+         would tell them it worked when it didn't, and they'd lose every
+         correction they just made. */
+      setSaveErr(error);
+      H.warn();
+      return;
+    }
+
+    H.success();
+    setStage("done");
+  };
 
   return (
     <View style={{ flex: 1 }}>
@@ -445,9 +509,18 @@ export default function ResultFlow({
           </Tap>
         )}
 
-        <Tap onPress={() => { H.success(); setStage("done"); }}>
-          <View style={s.logBtn}>
-            <Text style={s.logBtnText}>Log to {meal}</Text>
+        {saveErr ? (
+          <View style={s.errRow}>
+            <AlertTriangle size={14} color={T.red} />
+            <Text style={s.errText}>{saveErr}</Text>
+          </View>
+        ) : null}
+
+        <Tap onPress={logMeal}>
+          <View style={[s.logBtn, saving && { opacity: 0.6 }]}>
+            <Text style={s.logBtnText}>
+              {saving ? "Logging…" : `Log to ${meal}`}
+            </Text>
           </View>
         </Tap>
       </ScrollView>
@@ -571,6 +644,13 @@ const styles = (T: any) =>
     },
     addIcon: { width: 30, height: 30, borderRadius: 10, backgroundColor: T.greenBg, alignItems: "center", justifyContent: "center" },
     addText: { fontSize: 13.5, color: T.green, fontFamily: FONTS.headingMed },
+
+    errRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 12,
+      backgroundColor: "rgba(239,68,68,0.10)", borderWidth: 1,
+      borderColor: "rgba(239,68,68,0.35)", borderRadius: 12, padding: 12,
+    },
+    errText: { flex: 1, fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
 
     totalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
     totalCal: { fontSize: 26, color: T.text, fontFamily: FONTS.heading },

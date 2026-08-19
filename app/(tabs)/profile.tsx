@@ -1,7 +1,7 @@
 // app/(tabs)/profile.tsx
 // Profile is the control panel for settings the rest of the app already reads.
 // Everything here writes to AppState, so a toggle flipped here changes
-// behaviour elsewhere immediately.
+// behaviour elsewhere immediately — and now persists to Supabase too.
 import { useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
@@ -21,6 +21,7 @@ import ThemePicker from "../../components/ThemePicker";
 import Toggle from "../../components/Toggle";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
+import { signOut } from "../../constants/auth";
 import * as H from "../../constants/haptics";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 
@@ -104,11 +105,15 @@ export default function Profile() {
 
   /* Logging out lands on SIGN IN, not onboarding. Someone with an account
      shouldn't have to answer thirty questions again to get back in — and
-     onboarding's welcome screen has its own link across to sign-in for people
-     who genuinely are new. */
-  const doLogout = () => {
+     onboarding's welcome screen has its own link across for people who
+     genuinely are new.
+     The signOut() call is what actually ends the session. Without it the
+     token stays in AsyncStorage and the next launch walks straight back into
+     the app, which looks like the logout button doesn't work. */
+  const doLogout = async () => {
     setLogoutOpen(false);
-    setTimeout(() => router.replace("/signin"), 260);
+    await signOut();
+    router.replace("/signin");
   };
 
   const toggle = (key: keyof typeof settings) => {

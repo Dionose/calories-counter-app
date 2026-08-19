@@ -311,7 +311,19 @@ export default function Onboarding() {
         targetWeight: tl.target,
         paceRate: PACE_RATE[answers.pace] || 0.5,
         goalWeeks: tl.weeks,
-      }
+        /* the answers that don't feed the formula but do belong on the record:
+           diet shapes food suggestions, and heardFrom is the attribution that
+           tells us which ad channel actually converts */
+        diet: answers.diet,
+        activity: answers.activity,
+        workouts: answers.workouts,
+        heardFrom: answers.heard,
+        isPro: pro,
+      } as any,
+      /* THE ID MATTERS HERE. SignInStep created the account moments ago and
+         AppState's auth listener may not have caught up yet — passing it
+         explicitly means the profile write can't miss. */
+      userId || undefined
     );
     setIsPro(pro);
     router.replace("/(tabs)");
