@@ -147,7 +147,7 @@ export async function loadDay(userId: string, day: string) {
 }
 
 /** One number per day across a range — what the CALENDAR needs to know which
-    tiles to light and what the STREAK is.
+    tiles to light, what the STREAK is, and what every chart on Stats draws.
     Deliberately does NOT fetch items: drawing a month means 30 days, and
     pulling every food from every meal to decide whether a tile is green would
     be hundreds of rows for a yes/no answer. */
@@ -168,6 +168,20 @@ export async function loadDayTotals(userId: string, from: string, to: string) {
   });
 
   return { totals, error: null };
+}
+
+/** How many separate DAYS have anything logged.
+    The consistency figure on Stats. Counting days rather than meals matters:
+    logging four meals on Tuesday is one day of consistency, not four, and a
+    meal count would flatter someone who logs heavily once a week over someone
+    who logs one thing every day. */
+export async function loggedDayCount(userId: string) {
+  const from = new Date();
+  from.setDate(from.getDate() - 400);
+  const fromStr = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, "0")}-${String(from.getDate()).padStart(2, "0")}`;
+
+  const { totals } = await loadDayTotals(userId, fromStr, todayLocal());
+  return Object.keys(totals).length;
 }
 
 /** Remove a meal. Its items go with it — the foreign key cascades, so there's

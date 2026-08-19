@@ -1,21 +1,32 @@
 // app/(tabs)/stats.tsx
 // Stats is one tab holding four views — main, steps, calories, weight — swapped
 // by a single `view` state rather than routing, so the tab bar stays put.
+//
+// WHAT'S REAL AND WHAT ISN'T:
+//   Calories    — real, summed from logged meals
+//   Consistency — real, counted from logged days
+//   Weight      — real, from weigh-ins
+//   Steps       — NOT POSSIBLE YET. Needs HealthKit, which needs a
+//                 development build. Rather than show invented numbers, the
+//                 widget says what it's waiting for. A chart that lies is
+//                 worse than a chart that's empty, because you can't tell.
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
-import { Activity, ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
+import { useFocusEffect, useRouter } from "expo-router";
+import { ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Animated, Easing, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import Icon, { IconName } from "../../components/Icon";
 import { IsoMGlow } from "../../components/IsoM";
 import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
+import WeighInSheet from "../../components/WeighInSheet";
 import { useApp } from "../../constants/AppState";
-// every buzz goes through here so Profile → Haptics actually governs them
 import * as H from "../../constants/haptics";
+import { loadDayTotals, loggedDayCount, todayLocal } from "../../constants/meals";
 import { FONTS, tierForStreak } from "../../constants/theme";
+import { actualPacePerWeek, fromKg, loadWeighIns, smoothedKg, WeighIn } from "../../constants/weight";
 
 type Range = "Week" | "Month" | "Year";
 type View_ = null | "steps" | "calories" | "weight";
@@ -34,26 +45,15 @@ const FLAME_FOR_TIER: Record<string, IconName> = {
   Ultimate: "flameUltimate",
 };
 
-/* A month is 28–31 days, so it actually touches 4 weeks plus a few days. We
-   show the LAST FOUR WEEKS everywhere — a clean window that means the same
-   thing in every month, rather than a chart that changes shape month to month. */
 const WEEKS_IN_MONTH = 4;
-const DAYS_IN_MONTH = 30.4;   // average, for converting a monthly total back to a daily figure
-
-/* Year runs the CALENDAR year, Jan → Dec. Months after today have no data yet
-   and render as empty columns — honest, and it's what a "Year" toggle implies. */
 const THIS_MONTH = new Date().getMonth();
+const THIS_YEAR = new Date().getFullYear();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
-/** compact step counts — monthly totals run to six figures, and "251.4k"
-    doesn't fit under a 12px bar, so drop the decimal once it's that large */
-const kfmt = (n: number) => {
-  if (n >= 100000) return `${Math.round(n / 1000)}k`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-};
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /** the full span of a week N weeks back — "Jul 13–19", or "Jul 27 – Aug 2"
     when it crosses a month. A bare start date reads as a single day, which is
@@ -69,103 +69,18 @@ function weekSpanLabel(weeksAgo: number) {
     : `${MSHORT[start.getMonth()]} ${start.getDate()} – ${MSHORT[end.getMonth()]} ${end.getDate()}`;
 }
 
-/* ---------- stand-in data ----------
-   Replaced by real logs + HealthKit once the backend lands. */
+/** monday-first day index — the charts run Mon–Sun, JS runs Sun–Sat */
+const mondayIndex = (d: Date) => (d.getDay() + 6) % 7;
 
-const STEP_BASE = 8400;
-const STEP_WEEK = [0.88, 1.09, 0.74, 1.24, 0.99, 1.44, 0.61];
-const STEP_MONTH = [0.98, 1.08, 0.91, 1.22];
-const STEP_YEAR = [0.81, 0.86, 0.94, 1.00, 1.08, 1.05, 1.12, 1.02, 0.96, 0.89, 0.92, 1.03];
+/** the Monday of the week N weeks back */
+function mondayOf(weeksAgo: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - weeksAgo * 7 - mondayIndex(d));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
 
-/* Calories as FRACTIONS OF THE GOAL — the goal varies per user, so absolute
-   values would render all-green for one person and all-red for another. */
-const WEEK_RATIO = [0.76, 0.93, 0.74, 1.23, 0.82, 1.09, 0.79];
-
-/* 14 weeks of daily history, oldest first */
-const HISTORY_RATIOS: number[][] = [
-  [0.88, 1.02, 0.94, 1.31, 0.90, 1.18, 0.86],
-  [0.91, 0.97, 1.22, 0.88, 1.04, 1.27, 0.93],
-  [0.84, 1.09, 0.90, 0.96, 1.15, 1.02, 0.89],
-  [0.80, 0.95, 1.06, 0.92, 1.21, 0.88, 0.97],
-  [0.86, 0.91, 0.99, 1.14, 0.87, 1.09, 0.92],
-  [0.79, 1.03, 0.88, 0.95, 1.08, 0.91, 0.85],
-  [0.83, 0.90, 1.11, 0.86, 0.98, 1.19, 0.88],
-  [0.77, 0.94, 0.86, 1.05, 0.91, 1.02, 0.83],
-  [0.81, 0.88, 0.95, 0.90, 1.12, 0.87, 0.91],
-  [0.75, 0.92, 0.84, 0.98, 0.89, 1.06, 0.80],
-  [0.78, 0.86, 0.93, 0.85, 1.01, 0.90, 0.82],
-  [0.74, 0.89, 0.81, 0.94, 0.86, 0.99, 0.79],
-  [0.76, 0.84, 0.88, 0.82, 0.95, 0.87, 0.81],
-  WEEK_RATIO, // this week
-];
-
-const YEAR_RATIOS = [1.14, 1.09, 1.05, 1.01, 0.98, 1.03, 0.96, 0.93, 0.97, 0.91, 0.88, 0.90];
-
-const PROTEIN_RATIO: Record<Range, number> = { Week: 0.80, Month: 0.76, Year: 0.72 };
 const RANGE_WORD: Record<Range, string> = { Week: "week", Month: "month", Year: "year" };
-
-/* STEPS zoom out by TOTAL, not by average. Calories can't: a month's calorie
-   total against a daily goal is meaningless, so those stay average days. */
-function stepData(range: Range) {
-  if (range === "Week") {
-    const bars = STEP_WEEK.map((r, i) => ({
-      label: DAY_LABELS[i],
-      short: DAY_LABELS[i][0],
-      v: Math.round((STEP_BASE * r) / 10) * 10,
-    }));
-    return { bars, perDay: Math.round(avg(bars.map((b) => b.v))), unit: "avg / day" };
-  }
-
-  if (range === "Month") {
-    const bars = STEP_MONTH.map((r, i) => ({
-      label: `Week ${i + 1}`,
-      short: `Wk ${i + 1}`,
-      v: Math.round((STEP_BASE * r * 7) / 100) * 100,
-    }));
-    const total = bars.reduce((a, b) => a + b.v, 0);
-    return { bars, perDay: Math.round(total / (WEEKS_IN_MONTH * 7)), unit: "this month" };
-  }
-
-  const bars = STEP_YEAR.slice(0, THIS_MONTH + 1).map((r, i) => ({
-    label: MSHORT[i],
-    short: MSHORT[i][0],
-    v: Math.round((STEP_BASE * r * DAYS_IN_MONTH) / 100) * 100,
-  }));
-  const total = bars.reduce((a, b) => a + b.v, 0);
-  return { bars, perDay: Math.round(total / ((THIS_MONTH + 1) * DAYS_IN_MONTH)), unit: "this year" };
-}
-
-const STEP_DETAIL_CAPTION: Record<Range, string> = {
-  Week: "Each day vs your average day",
-  Month: "Each week vs your average week",
-  Year: "Each month vs your average month",
-};
-
-const STEP_SUMMARY_LABEL: Record<Range, string> = {
-  Week: "Average / day",
-  Month: "Average / week",
-  Year: "Average / month",
-};
-
-function yearMonths() {
-  return MSHORT.map((label, i) => ({
-    label,
-    ratio: i <= THIS_MONTH ? YEAR_RATIOS[i] : null,
-  }));
-}
-
-function calBars(range: Range): { label: string; ratio: number | null }[] {
-  if (range === "Week") {
-    return WEEK_RATIO.map((ratio, i) => ({ label: DAY_LABELS[i], ratio }));
-  }
-  if (range === "Month") {
-    return HISTORY_RATIOS.slice(-WEEKS_IN_MONTH).map((week, i, arr) => ({
-      label: weekSpanLabel(arr.length - 1 - i),
-      ratio: avg(week),
-    }));
-  }
-  return yearMonths().map((m) => ({ label: m.label, ratio: m.ratio }));
-}
 
 const CAL_CAPTION: Record<Range, string> = {
   Week: "Each day against your goal",
@@ -173,79 +88,9 @@ const CAL_CAPTION: Record<Range, string> = {
   Year: "Each month's average day",
 };
 
-const BURNED = 2140;
-const ACTIVE_MIN = 52;
-const AVG_BPM = 68;
-const DAYS_LOGGED = 18;
-const WEIGHT_CHANGE = -2.1;
-
-/* ---------- the ruler picker ---------- */
-const TICK_PX = 12;
-
-function RulerPicker({
-  unit, value, setValue, recenter, T,
-}: {
-  unit: "kg" | "lbs";
-  value: number;
-  setValue: (v: number) => void;
-  recenter: number;
-  T: any;
-}) {
-  const ref = useRef<ScrollView>(null);
-  const lastIdx = useRef<number | null>(null);
-  const cfg = unit === "kg" ? { min: 30, max: 200, step: 0.1, big: 50 } : { min: 60, max: 440, step: 0.2, big: 50 };
-  const ticks = Math.round((cfg.max - cfg.min) / cfg.step);
-  const s = rulerStyles(T);
-
-  useEffect(() => {
-    const x = Math.round((value - cfg.min) / cfg.step) * TICK_PX;
-    lastIdx.current = Math.round((value - cfg.min) / cfg.step);
-    const t = setTimeout(() => ref.current?.scrollTo({ x, animated: false }), 40);
-    return () => clearTimeout(t);
-  }, [unit, recenter]);
-
-  return (
-    <View style={s.wrap}>
-      <View style={s.needle} pointerEvents="none" />
-      <ScrollView
-        ref={ref}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        snapToInterval={TICK_PX}
-        decelerationRate="fast"
-        scrollEventThrottle={16}
-        contentContainerStyle={{ paddingHorizontal: "50%" }}
-        onScroll={(e) => {
-          const idx = Math.round(e.nativeEvent.contentOffset.x / TICK_PX);
-          if (idx === lastIdx.current) return;
-          lastIdx.current = idx;
-          const v = +(cfg.min + idx * cfg.step).toFixed(1);
-          if (v >= cfg.min && v <= cfg.max) {
-            H.tick();
-            setValue(v);
-          }
-        }}
-      >
-        {Array.from({ length: ticks + 1 }).map((_, i) => {
-          const big = i % cfg.big === 0;
-          return (
-            <View key={i} style={s.tickCol}>
-              <View style={{ width: big ? 2 : 1, height: big ? 40 : 24, backgroundColor: big ? T.micro : T.border, borderRadius: 2 }} />
-              {big && <Text style={s.tickLabel}>{Math.round(cfg.min + i * cfg.step)}</Text>}
-            </View>
-          );
-        })}
-      </ScrollView>
-
-      <LinearGradient colors={[T.card, "transparent"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[s.fade, { left: 0 }]} pointerEvents="none" />
-      <LinearGradient colors={["transparent", T.card]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[s.fade, { right: 0 }]} pointerEvents="none" />
-    </View>
-  );
-}
-
 export default function Stats() {
   const router = useRouter();
-  const { T, freeLocked, plan, profile, updateProfile, openPaywall, tabResetKey, streakDays, settings } = useApp();
+  const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, settings, userId } = useApp();
   const [range, setRange] = useState<Range>("Week");
   const [view, setView] = useState<View_>(null);
 
@@ -255,39 +100,120 @@ export default function Stats() {
   const tier = tierForStreak(streakDays);
   const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
+  /* ---------- REAL DATA ---------- */
+  /* every day with anything logged, across 400 days — one query feeds the
+     week, month and year charts, so switching range costs nothing */
+  const [dayTotals, setDayTotals] = useState<Record<string, number>>({});
+  const [daysLogged, setDaysLogged] = useState(0);
+  const [weighIns, setWeighIns] = useState<WeighIn[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [weighOpen, setWeighOpen] = useState(false);
+  const [weighTick, setWeighTick] = useState(0);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      if (!userId) { setLoaded(true); return; }
+
+      (async () => {
+        const from = new Date();
+        from.setDate(from.getDate() - 400);
+
+        const [{ totals }, count, { entries }] = await Promise.all([
+          loadDayTotals(userId, iso(from), todayLocal()),
+          loggedDayCount(userId),
+          loadWeighIns(userId),
+        ]);
+        if (cancelled) return;
+
+        setDayTotals(totals);
+        setDaysLogged(count);
+        setWeighIns(entries);
+        setLoaded(true);
+      })();
+
+      return () => { cancelled = true; };
+    }, [userId, weighTick])
+  );
+
   /* tapping the Stats tab while already on it drops back to the main view */
   const didMount = useRef(false);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
     setView(null);
+    setWeighOpen(false);
   }, [tabResetKey]);
-
-  const { bars: steps, perDay: stepsPerDay, unit: stepUnit } = useMemo(() => stepData(range), [range]);
-  const maxStep = useMemo(() => Math.max(...steps.map((b) => b.v)), [steps]);
-  const avgBar = useMemo(() => Math.round(avg(steps.map((b) => b.v))), [steps]);
-  const totalStep = useMemo(() => steps.reduce((a, b) => a + b.v, 0), [steps]);
-  const headline = range === "Week" ? stepsPerDay : totalStep;
 
   const goal = plan.calories;
 
-  const bars = useMemo(() => calBars(range), [range]);
-  const calValues = useMemo(
-    () => bars.map((b) => (b.ratio == null ? null : Math.round((goal * b.ratio) / 10) * 10)),
-    [bars, goal]
-  );
-  const logged = useMemo(() => calValues.filter((v): v is number => v != null), [calValues]);
-  const periodAvg = useMemo(() => Math.round(avg(logged) / 10) * 10, [logged]);
+  /* ---------- the calorie bars, from real logged days ----------
+     A day with nothing logged is NULL, not zero. Zero would draw a bar
+     claiming they ate nothing, which is a different and much worse claim than
+     "we don't know about this day". */
+  const bars = useMemo((): { label: string; v: number | null }[] => {
+    if (range === "Week") {
+      const monday = mondayOf(0);
+      return DAY_LABELS.map((label, i) => {
+        const d = new Date(monday);
+        d.setDate(d.getDate() + i);
+        const v = dayTotals[iso(d)];
+        return { label, v: v != null ? v : null };
+      });
+    }
+
+    if (range === "Month") {
+      /* last four weeks, oldest first, each bar the average of its LOGGED
+         days — averaging in the blanks would drag every week downward */
+      return Array.from({ length: WEEKS_IN_MONTH }, (_, i) => {
+        const weeksAgo = WEEKS_IN_MONTH - 1 - i;
+        const monday = mondayOf(weeksAgo);
+        const vals: number[] = [];
+        for (let d = 0; d < 7; d++) {
+          const day = new Date(monday);
+          day.setDate(day.getDate() + d);
+          const v = dayTotals[iso(day)];
+          if (v != null) vals.push(v);
+        }
+        return {
+          label: weekSpanLabel(weeksAgo),
+          v: vals.length ? Math.round(avg(vals)) : null,
+        };
+      });
+    }
+
+    /* the calendar year so far, each month an average logged day */
+    return MSHORT.slice(0, THIS_MONTH + 1).map((label, m) => {
+      const vals: number[] = [];
+      Object.entries(dayTotals).forEach(([k, v]) => {
+        const [y, mm] = k.split("-").map(Number);
+        if (y === THIS_YEAR && mm - 1 === m) vals.push(v);
+      });
+      return { label, v: vals.length ? Math.round(avg(vals)) : null };
+    });
+  }, [range, dayTotals]);
+
+  const logged = useMemo(() => bars.map((b) => b.v).filter((v): v is number => v != null), [bars]);
+  const periodAvg = useMemo(() => (logged.length ? Math.round(avg(logged) / 10) * 10 : 0), [logged]);
   const diff = goal - periodAvg;
+  const hasCalData = logged.length > 0;
 
   const calLabelW = range === "Month" ? 78 : 40;
-  const stepBarW = range === "Year" ? 12 : range === "Month" ? 24 : 17;
 
+  /* ---------- weight ---------- */
   const unit = profile.weightUnit;
-  const shownChange = unit === "kg" ? WEIGHT_CHANGE : WEIGHT_CHANGE * 2.20462;
+  const currentKg = smoothedKg(weighIns);
+  const paceKg = actualPacePerWeek(weighIns);
+
+  /* change since the FIRST weigh-in, which is the only honest baseline —
+     comparing to the onboarding estimate would report a "change" that's
+     really just the gap between a guess and a measurement */
+  const changeKg = weighIns.length >= 2
+    ? weighIns[weighIns.length - 1].weightKg - weighIns[0].weightKg
+    : null;
+  const shownChange = changeKg != null ? fromKg(changeKg, unit as "kg" | "lbs") : null;
 
   const typicalCal = periodAvg;
-  const typicalSteps = stepsPerDay;
-  const typicalProtein = Math.round(plan.protein * PROTEIN_RATIO[range]);
+  const typicalProtein = Math.round(plan.protein * 0.8);
 
   const Micro = ({ children }: { children: React.ReactNode }) => <Text style={s.micro}>{children}</Text>;
 
@@ -296,13 +222,15 @@ export default function Stats() {
       return (
         <View style={s.calBarRow}>
           <Text style={[s.calBarLabel, { width: labelW, color: T.micro }]} numberOfLines={1}>{label}</Text>
-          <View style={s.calBarTrack} />
+          <View style={s.calBarTrack}>
+            <Text style={s.notLogged}>not logged</Text>
+          </View>
         </View>
       );
     }
     const over = v - goal;
     const color = over <= 0 ? T.green : over <= goal * 0.17 ? T.orange : T.red;
-    const pct = Math.max(30, Math.min(100, (v / (goal * 1.28)) * 100));
+    const pct = Math.max(30, Math.min(100, goal > 0 ? (v / (goal * 1.28)) * 100 : 30));
     return (
       <View style={s.calBarRow}>
         <Text style={[s.calBarLabel, { width: labelW }]} numberOfLines={1}>{label}</Text>
@@ -322,16 +250,6 @@ export default function Stats() {
     </View>
   );
 
-  const Stat = ({ icon: Icn, v, l }: { icon?: any; v: string; l: string }) => (
-    <View style={{ alignItems: "center", flex: 1 }}>
-      <View style={s.statTop}>
-        {Icn && <Icn size={13} color={T.green} />}
-        <Text style={s.statNum}>{v}</Text>
-      </View>
-      <Text style={s.micro}>{l}</Text>
-    </View>
-  );
-
   const BackHead = ({ title, onBack }: { title: string; onBack: () => void }) => (
     <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
       <ChevronLeft size={24} color={T.text} />
@@ -341,60 +259,22 @@ export default function Stats() {
 
   /* ================= STEPS DETAIL ================= */
   if (view === "steps") {
-    const refPct = Math.min(100, (avgBar / maxStep) * 100);
-
     return (
       <View style={s.screen}>
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-          <BackHead title={`Steps · this ${rangeWord}`} onBack={() => setView(null)} />
+          <BackHead title="Steps" onBack={() => setView(null)} />
 
-          <View style={s.summaryRow}>
-            <View style={s.summaryCard}>
-              <Micro>{STEP_SUMMARY_LABEL[range]}</Micro>
-              <Text style={s.summaryNum}>{avgBar.toLocaleString()}</Text>
-            </View>
-            <View style={s.summaryCard}>
-              <Micro>Total this {rangeWord}</Micro>
-              <Text style={s.summaryNum}>{totalStep.toLocaleString()}</Text>
-            </View>
+          <View style={s.emptyStage}>
+            <Icon name="watchHealth" size={54} mode="loop" />
+            <Text style={s.emptyTitle}>Steps come from your phone</Text>
+            <Text style={s.emptyBody}>
+              MOTION reads your step count, active minutes and calories burned straight from Apple
+              Health — it never estimates them, because a guessed step count is worse than none.
+              {"\n\n"}
+              Health sync arrives with the next build. Once it's connected, this screen fills in
+              your history — including months you walked before you ever installed MOTION.
+            </Text>
           </View>
-
-          <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-            <View style={{ padding: 16 }}>
-              <View style={[s.rowBetween, { marginBottom: 14 }]}>
-                <Text style={s.detailCaption}>{STEP_DETAIL_CAPTION[range]}</Text>
-                <Text style={s.detailAvg}>avg {avgBar.toLocaleString()}</Text>
-              </View>
-
-              {steps.map((b, i) => {
-                const above = b.v >= avgBar;
-                const color = above ? T.green : T.orange;
-                const pct = Math.max(34, Math.min(100, (b.v / maxStep) * 100));
-                return (
-                  <View key={i} style={s.stepBarRow}>
-                    <Text style={s.stepBarLabel} numberOfLines={1}>{b.label}</Text>
-                    <View style={s.stepBarTrack}>
-                      <View style={[s.stepBarFill, { width: `${pct}%`, backgroundColor: color }]}>
-                        <Text style={s.stepBarInside}>{b.v.toLocaleString()} / {avgBar.toLocaleString()}</Text>
-                      </View>
-                      <View style={[s.refLine, { left: `${refPct}%` }]} />
-                    </View>
-                  </View>
-                );
-              })}
-
-              <View style={s.legendRow}>
-                <Legend color={T.green} label="Above avg" />
-                <Legend color={T.orange} label="Below avg" />
-              </View>
-            </View>
-          </TravelBorder>
-
-          <Text style={s.detailFoot}>
-            {range === "Week"
-              ? "Steps come from your connected watch · MOTION doesn't estimate them"
-              : `That's about ${stepsPerDay.toLocaleString()} steps a day across the ${rangeWord}.`}
-          </Text>
         </ScrollView>
       </View>
     );
@@ -407,6 +287,7 @@ export default function Stats() {
         T={T}
         s={s}
         goal={goal}
+        dayTotals={dayTotals}
         freeLocked={freeLocked}
         onBack={() => setView(null)}
         onGoPro={() => openPaywall("subscribe")}
@@ -420,13 +301,15 @@ export default function Stats() {
       <WeightView
         T={T}
         s={s}
-        startUnit={unit}
-        estimate={profile.startWeight}
+        unit={unit as "kg" | "lbs"}
+        entries={weighIns}
+        target={profile.targetWeight}
         onBack={() => setView(null)}
-        onSave={(v, u) => {
-          updateProfile({ startWeight: v, weightUnit: u });
-          setView(null);
-        }}
+        onLog={() => setWeighOpen(true)}
+        weighOpen={weighOpen}
+        closeWeigh={() => setWeighOpen(false)}
+        onSaved={() => setWeighTick((k) => k + 1)}
+        lastKg={weighIns.length ? weighIns[weighIns.length - 1].weightKg : null}
       />
     );
   }
@@ -445,71 +328,40 @@ export default function Stats() {
           ))}
         </View>
 
-        {/* WIDGET 1 — STEPS */}
+        {/* WIDGET 1 — STEPS. Empty, and says why.
+            An invented step count would be indistinguishable from a real one,
+            which makes every other number on this screen suspect too. */}
         <Tap onPress={() => setView("steps")}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
             <View style={{ padding: 18 }}>
               <View style={s.rowBetween}>
                 <View style={s.rowGap}>
-                  {/* no footprint animation in the set — stays Lucide */}
                   <Footprints size={15} color={T.green} />
                   <Micro>Steps · this {rangeWord}</Micro>
                 </View>
-
-                {/* the source chip — the watch pulses, since it's what's
-                    feeding the numbers. Dimmed when sync is switched off. */}
                 <View style={[s.sourceChip, !settings.watch && { opacity: 0.45 }]}>
                   <Icon name="watchHealth" size={17} mode="loop" />
-                  <Text style={s.sourceText}>{settings.watch ? "Garmin" : "Not syncing"}</Text>
+                  <Text style={s.sourceText}>Not connected</Text>
                 </View>
               </View>
 
-              <View style={s.bigRow}>
-                <Text style={s.bigNum}>{headline.toLocaleString()}</Text>
-                <Text style={s.bigUnit}>{stepUnit}</Text>
-              </View>
-
-              {range !== "Week" && (
-                <Text style={s.stepSubNote}>about {stepsPerDay.toLocaleString()} a day</Text>
-              )}
-
-              <View style={s.chart}>
-                {steps.map((b, i) => (
-                  <View key={i} style={s.barCol}>
-                    <Text style={s.barVal}>{kfmt(b.v)}</Text>
-                    <View style={s.barTrack}>
-                      <LinearGradient
-                        colors={["#22C55E", "#15803D"]}
-                        style={[s.bar, { width: stepBarW, height: Math.max(4, (b.v / maxStep) * 68) }]}
-                      />
-                    </View>
-                    <Text style={s.barLabel}>{b.short}</Text>
-                  </View>
-                ))}
-              </View>
-
-              <View style={s.statsRow}>
-                {/* burned uses the tier flame — it's the same "energy" idea */}
-                <View style={{ alignItems: "center", flex: 1 }}>
-                  <View style={s.statTop}>
-                    <Icon name={freeLocked ? "flameSpark" : flameAnim} size={15} mode="loop" />
-                    <Text style={s.statNum}>{BURNED.toLocaleString()}</Text>
-                  </View>
-                  <Text style={s.micro}>Burned</Text>
-                </View>
-                <Stat icon={Activity} v={String(ACTIVE_MIN)} l="Active min" />
-                <Stat v={String(AVG_BPM)} l="Avg BPM" />
+              <View style={s.stepsEmpty}>
+                <Text style={s.stepsEmptyTitle}>Connect Apple Health for your steps</Text>
+                <Text style={s.stepsEmptyBody}>
+                  Steps, active minutes and calories burned come from your phone, not from
+                  MOTION guessing. Available in the next build.
+                </Text>
               </View>
 
               <View style={s.cardFoot}>
-                <Text style={s.cardFootText}>Tap for the daily breakdown</Text>
+                <Text style={s.cardFootText}>Tap to read more</Text>
                 <TrendingUp size={12} color={T.green} />
               </View>
             </View>
           </TravelBorder>
         </Tap>
 
-        {/* WIDGET 2 — CALORIES VS GOAL */}
+        {/* WIDGET 2 — CALORIES VS GOAL. Real, from logged meals. */}
         <Tap onPress={() => setView("calories")} style={{ marginTop: 12 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 16 }}>
@@ -518,19 +370,27 @@ export default function Stats() {
                   <Icon name="targetBullseye" size={18} mode="loop" />
                   <Micro>Calories vs goal</Micro>
                 </View>
-                <View style={s.rowGapTight}>
-                  {diff >= 0 ? <TrendingDown size={12} color={T.green} /> : <TrendingUp size={12} color={T.red} />}
-                  <Text style={[s.trendText, { color: diff >= 0 ? T.green : T.red }]}>
-                    {Math.abs(diff)} {diff >= 0 ? "under" : "over"} avg
-                  </Text>
-                </View>
+                {hasCalData && (
+                  <View style={s.rowGapTight}>
+                    {diff >= 0 ? <TrendingDown size={12} color={T.green} /> : <TrendingUp size={12} color={T.red} />}
+                    <Text style={[s.trendText, { color: diff >= 0 ? T.green : T.red }]}>
+                      {Math.abs(diff)} {diff >= 0 ? "under" : "over"} avg
+                    </Text>
+                  </View>
+                )}
               </View>
 
               <Text style={s.calCaption}>{CAL_CAPTION[range]}</Text>
 
-              {calValues.map((v, i) => (
-                <CalBar key={i} label={bars[i].label} v={v} labelW={calLabelW} />
+              {bars.map((b, i) => (
+                <CalBar key={i} label={b.label} v={b.v} labelW={calLabelW} />
               ))}
+
+              {loaded && !hasCalData && (
+                <Text style={s.noDataNote}>
+                  Nothing logged in this {rangeWord} yet — log a meal and these bars fill in.
+                </Text>
+              )}
 
               <View style={s.legendRow}>
                 <Legend color={T.green} label="Under goal" />
@@ -551,17 +411,17 @@ export default function Stats() {
                   <View style={s.smallCard}>
                     <View style={s.rowBetween}>
                       <Micro>Consistency</Micro>
-                      {/* the calendar, since this card is the way into it */}
                       <Icon name="calendar" size={17} mode="loop" />
                     </View>
                     <View style={s.smallNumRow}>
-                      <Text style={s.smallNum}>{DAYS_LOGGED}</Text>
-                      {/* and the tier flame, matching Home's streak chip */}
+                      <Text style={s.smallNum}>{daysLogged}</Text>
                       <View style={{ marginLeft: "auto" }}>
                         <Icon name={freeLocked ? "flameSpark" : flameAnim} size={18} mode="loop" />
                       </View>
                     </View>
-                    <Text style={[s.smallNote, { color: T.orange }]}>days logged · view calendar</Text>
+                    <Text style={[s.smallNote, { color: T.orange }]}>
+                      {daysLogged === 1 ? "day logged" : "days logged"} · view calendar
+                    </Text>
                   </View>
                 </TravelBorder>
               </Tap>
@@ -576,17 +436,34 @@ export default function Stats() {
                     <View style={s.rowBetween}>
                       <Micro>Weight</Micro>
                       <View style={s.editTag}>
-                        <Text style={s.editTagText}>TAP TO EDIT</Text>
+                        <Text style={s.editTagText}>
+                          {weighIns.length ? "TAP TO SEE" : "TAP TO LOG"}
+                        </Text>
                       </View>
                     </View>
                     <View style={s.smallNumRow}>
-                      <Text style={s.smallNum}>{shownChange.toFixed(1)}</Text>
+                      {/* the CHANGE if there's enough history for one, the
+                          current weight if there's only one reading, and a
+                          dash if they've never weighed in — each is true */}
+                      <Text style={s.smallNum}>
+                        {shownChange != null
+                          ? `${shownChange > 0 ? "+" : ""}${shownChange.toFixed(1)}`
+                          : currentKg != null
+                            ? fromKg(currentKg, unit as "kg" | "lbs").toFixed(1)
+                            : "—"}
+                      </Text>
                       <Text style={s.smallUnit}>{unit}</Text>
                       <View style={{ marginLeft: "auto" }}>
                         <Icon name="scale" size={18} mode="loop" />
                       </View>
                     </View>
-                    <Text style={[s.smallNote, { color: T.green }]}>estimated · on track</Text>
+                    <Text style={[s.smallNote, { color: T.green }]}>
+                      {shownChange != null
+                        ? `since your first weigh-in`
+                        : currentKg != null
+                          ? "one weigh-in · log another"
+                          : "no weigh-ins yet"}
+                    </Text>
                   </View>
                 </TravelBorder>
               </Tap>
@@ -601,9 +478,9 @@ export default function Stats() {
               <Micro>Your typical day · this {rangeWord}</Micro>
               <View style={s.typicalRow}>
                 {[
-                  [typicalCal.toLocaleString(), "cal"],
-                  [`${typicalProtein}g`, "protein"],
-                  [typicalSteps.toLocaleString(), "steps"],
+                  [hasCalData ? typicalCal.toLocaleString() : "—", "cal"],
+                  [hasCalData ? `${typicalProtein}g` : "—", "protein"],
+                  ["—", "steps"],
                 ].map(([v, l]) => (
                   <View key={l} style={{ flex: 1, alignItems: "center" }}>
                     <Text style={s.typicalNum}>{v}</Text>
@@ -612,12 +489,21 @@ export default function Stats() {
                 ))}
               </View>
               <Text style={s.typicalFoot}>
-                Averaged by MOTION from your recent logs · updates on its own
+                {hasCalData
+                  ? "Averaged from your logged days · steps arrive with Health sync"
+                  : "Fills in as you log · averaged from your own days, never estimated"}
               </Text>
             </View>
           </TravelBorder>
         </View>
       </ScrollView>
+
+      <WeighInSheet
+        visible={weighOpen}
+        onClose={() => setWeighOpen(false)}
+        onSaved={() => setWeighTick((k) => k + 1)}
+        lastKg={weighIns.length ? weighIns[weighIns.length - 1].weightKg : null}
+      />
     </View>
   );
 }
@@ -628,7 +514,7 @@ function WeekCard({
 }: {
   T: any;
   s: any;
-  wk: { key: string; span: string; current: boolean; vals: number[] };
+  wk: { key: string; span: string; current: boolean; vals: (number | null)[] };
   goal: number;
   animate: boolean;
   last: boolean;
@@ -647,8 +533,9 @@ function WeekCard({
 
   const translateY = a.interpolate({ inputRange: [0, 1], outputRange: [-26, 0] });
 
-  const weekAvg = Math.round(avg(wk.vals));
-  const under = wk.vals.filter((v) => v <= goal).length;
+  const real = wk.vals.filter((v): v is number => v != null);
+  const weekAvg = real.length ? Math.round(avg(real)) : 0;
+  const under = real.filter((v) => v <= goal).length;
 
   return (
     <Animated.View style={{ marginBottom: last ? 0 : 14, opacity: a, transform: [{ translateY }] }}>
@@ -663,13 +550,27 @@ function WeekCard({
                 </View>
               )}
             </View>
-            <Text style={s.histAvg}>avg {weekAvg.toLocaleString()} · {under}/7 under</Text>
+            <Text style={s.histAvg}>
+              {real.length
+                ? `avg ${weekAvg.toLocaleString()} · ${under}/${real.length} under`
+                : "nothing logged"}
+            </Text>
           </View>
 
           {wk.vals.map((v, i) => {
+            if (v == null) {
+              return (
+                <View key={i} style={s.calBarRow}>
+                  <Text style={[s.calBarLabel, { width: 40, color: T.micro }]}>{DAY_LABELS[i]}</Text>
+                  <View style={s.calBarTrack}>
+                    <Text style={s.notLogged}>not logged</Text>
+                  </View>
+                </View>
+              );
+            }
             const over = v - goal;
             const color = over <= 0 ? T.green : over <= goal * 0.17 ? T.orange : T.red;
-            const pct = Math.max(30, Math.min(100, (v / (goal * 1.28)) * 100));
+            const pct = Math.max(30, Math.min(100, goal > 0 ? (v / (goal * 1.28)) * 100 : 30));
             return (
               <View key={i} style={s.calBarRow}>
                 <Text style={[s.calBarLabel, { width: 40 }]}>{DAY_LABELS[i]}</Text>
@@ -691,11 +592,12 @@ function WeekCard({
    INVERTED scroll: newest week at the bottom, older above. Loading is
    DELIBERATE — reaching the top shows a hint, and the user pulls down. */
 function CaloriesView({
-  T, s, goal, freeLocked, onBack, onGoPro,
+  T, s, goal, dayTotals, freeLocked, onBack, onGoPro,
 }: {
   T: any;
   s: any;
   goal: number;
+  dayTotals: Record<string, number>;
   freeLocked: boolean;
   onBack: () => void;
   onGoPro: () => void;
@@ -705,7 +607,17 @@ function CaloriesView({
   const HOLD_MS = 1200;
   const STEP_MS = 1000;
 
-  const total = HISTORY_RATIOS.length;
+  /* how many weeks back there's anything to show. No point offering to load
+     twelve weeks of history to someone who signed up on Tuesday. */
+  const total = useMemo(() => {
+    const keys = Object.keys(dayTotals);
+    if (!keys.length) return 1;
+    const oldest = keys.sort()[0];
+    const [y, m, d] = oldest.split("-").map(Number);
+    const weeks = Math.ceil((Date.now() - new Date(y, m - 1, d).getTime()) / (7 * 86400000));
+    return Math.max(1, Math.min(52, weeks));
+  }, [dayTotals]);
+
   const cap = freeLocked ? Math.min(FREE_CAP, total) : total;
   const initialCount = Math.min(BATCH, cap);
 
@@ -727,18 +639,27 @@ function CaloriesView({
 
   useEffect(() => { shownRef.current = shown; }, [shown]);
 
+  /* each week built from the real day totals — a day with nothing logged
+     stays null rather than becoming a zero-calorie bar */
   const weeks = useMemo(() => {
-    const start = Math.max(0, total - shown);
-    return HISTORY_RATIOS.slice(start).map((ratios, i) => {
-      const idxFromEnd = HISTORY_RATIOS.length - start - 1 - i;
+    return Array.from({ length: shown }, (_, i) => {
+      const weeksAgo = shown - 1 - i;
+      const monday = mondayOf(weeksAgo);
+      const vals: (number | null)[] = [];
+      for (let d = 0; d < 7; d++) {
+        const day = new Date(monday);
+        day.setDate(day.getDate() + d);
+        const v = dayTotals[iso(day)];
+        vals.push(v != null ? v : null);
+      }
       return {
-        key: `w${start + i}`,
-        span: weekSpanLabel(idxFromEnd),
-        current: idxFromEnd === 0,
-        vals: ratios.map((r) => Math.round((goal * r) / 10) * 10),
+        key: `w${weeksAgo}`,
+        span: weekSpanLabel(weeksAgo),
+        current: weeksAgo === 0,
+        vals,
       };
     });
-  }, [shown, goal, total]);
+  }, [shown, dayTotals]);
 
   if (initialKeys.current.size === 0 && weeks.length) {
     weeks.forEach((w) => initialKeys.current.add(w.key));
@@ -898,144 +819,147 @@ function CaloriesView({
   );
 }
 
-/* ---------- weight calibration ---------- */
+/* ---------- weight history ----------
+   A CHART, not an editor. Logging happens in one place — the weigh-in sheet —
+   because two ways to record the same number is how two numbers end up
+   disagreeing. */
 function WeightView({
-  T, s, startUnit, estimate, onBack, onSave,
+  T, s, unit, entries, target, onBack, onLog, weighOpen, closeWeigh, onSaved, lastKg,
 }: {
   T: any;
   s: any;
-  startUnit: "kg" | "lbs";
-  estimate: number;
+  unit: "kg" | "lbs";
+  entries: WeighIn[];
+  target: number;
   onBack: () => void;
-  onSave: (v: number, u: "kg" | "lbs") => void;
+  onLog: () => void;
+  weighOpen: boolean;
+  closeWeigh: () => void;
+  onSaved: () => void;
+  lastKg: number | null;
 }) {
-  const [unit, setUnit] = useState<"kg" | "lbs">(startUnit);
-  const [val, setVal] = useState(estimate);
-  const [typing, setTyping] = useState(false);
-  const [draft, setDraft] = useState(String(estimate));
-  const [rc, setRc] = useState(0);
+  const vals = entries.map((e) => fromKg(e.weightKg, unit));
+  const min = vals.length ? Math.min(...vals) : 0;
+  const max = vals.length ? Math.max(...vals) : 0;
+  /* a little headroom so the highest and lowest points aren't glued to the
+     edges — and a floor on the span, or two near-identical readings would
+     render as a dramatic cliff */
+  const span = Math.max(2, max - min);
+  const lo = min - span * 0.15;
+  const hi = max + span * 0.15;
 
-  const lim = unit === "kg" ? [30, 200] : [60, 440];
-  const est = unit === startUnit ? estimate : startUnit === "kg" ? estimate * 2.20462 : estimate / 2.20462;
-  const secondary = unit === "kg" ? `${(val * 2.20462).toFixed(1)} lbs` : `${(val / 2.20462).toFixed(1)} kg`;
-
-  const switchUnit = (u: "kg" | "lbs") => {
-    if (u === unit) return;
-    setVal(+(u === "kg" ? val / 2.20462 : val * 2.20462).toFixed(1));
-    setUnit(u);
-    setRc((x) => x + 1);
-  };
-
-  const commit = () => {
-    const n = parseFloat(draft);
-    const v = Math.min(lim[1], Math.max(lim[0], isNaN(n) ? val : +n.toFixed(1)));
-    setVal(v);
-    setTyping(false);
-    setRc((x) => x + 1);
-  };
-
-  const save = () => {
-    H.success();
-    onSave(+val.toFixed(1), unit);
-  };
+  const change = vals.length >= 2 ? vals[vals.length - 1] - vals[0] : null;
+  const pace = actualPacePerWeek(entries);
+  const paceShown = pace != null ? fromKg(pace, unit) : null;
 
   return (
     <View style={s.screen}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
         <Pressable onPress={onBack} style={s.backRow} hitSlop={10}>
           <ChevronLeft size={24} color={T.text} />
-          <Text style={s.backTitle}>Log your real weight</Text>
+          <Text style={s.backTitle}>Your weight</Text>
         </Pressable>
 
-        {/* the scale, large, as the screen's mark */}
-        <View style={{ alignItems: "center", marginBottom: 16 }}>
-          <Icon name="scale" size={54} mode="loop" />
-        </View>
-
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-          <View style={{ padding: 16 }}>
-            <Text style={s.micro}>WHAT WE ESTIMATED</Text>
-            <View style={s.estRow}>
-              <Text style={s.estNum}>{est.toFixed(1)}</Text>
-              <Text style={s.estUnit}>{unit} (from your plan)</Text>
+        {entries.length === 0 ? (
+          <View style={s.emptyStage}>
+            <Icon name="scale" size={54} mode="loop" />
+            <Text style={s.emptyTitle}>No weigh-ins yet</Text>
+            <Text style={s.emptyBody}>
+              Log your weight and MOTION starts tracking the real trend rather than the estimate
+              from your plan.
+              {"\n\n"}
+              Weigh yourself at the same time each day if you can — first thing, before eating, is
+              the most consistent. Day-to-day swings are mostly water, so it's the line over weeks
+              that matters.
+            </Text>
+            <Tap onPress={onLog} style={{ width: "100%", maxWidth: 260, marginTop: 6 }}>
+              <View style={s.saveBtn}>
+                <Text style={s.saveText}>Log your weight</Text>
+              </View>
+            </Tap>
+          </View>
+        ) : (
+          <>
+            <View style={s.summaryRow}>
+              <View style={s.summaryCard}>
+                <Text style={s.micro}>NOW</Text>
+                <Text style={s.summaryNum}>
+                  {vals[vals.length - 1].toFixed(1)} <Text style={s.summaryUnit}>{unit}</Text>
+                </Text>
+              </View>
+              <View style={s.summaryCard}>
+                <Text style={s.micro}>CHANGE</Text>
+                <Text style={[s.summaryNum, change != null && { color: change <= 0 ? T.green : T.orange }]}>
+                  {change != null ? `${change > 0 ? "+" : ""}${change.toFixed(1)}` : "—"}
+                  <Text style={s.summaryUnit}> {unit}</Text>
+                </Text>
+              </View>
             </View>
-          </View>
-        </TravelBorder>
 
-        <Text style={s.weightLead}>
-          Scroll to your real number — tracking continues accurately from here.
-        </Text>
+            <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
+              <View style={{ padding: 16 }}>
+                <View style={[s.rowBetween, { marginBottom: 14 }]}>
+                  <Text style={s.detailCaption}>
+                    {entries.length} {entries.length === 1 ? "weigh-in" : "weigh-ins"}
+                  </Text>
+                  {paceShown != null && (
+                    <Text style={s.detailAvg}>
+                      {paceShown > 0 ? "+" : ""}{paceShown.toFixed(2)} {unit}/week
+                    </Text>
+                  )}
+                </View>
 
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
-          <View style={{ padding: 18, paddingTop: 16 }}>
-            <View style={s.rowBetween}>
-              <View style={s.rowGap}>
-                <Icon name="ruler" size={16} mode="loop" />
-                <Text style={s.micro}>CURRENT WEIGHT</Text>
+                {/* a plain column chart. Every bar is a real reading — no
+                    interpolation between them, because a smooth line would
+                    imply measurements nobody took. */}
+                <View style={s.wChart}>
+                  {entries.slice(-14).map((e, i) => {
+                    const v = fromKg(e.weightKg, unit);
+                    const h = hi > lo ? ((v - lo) / (hi - lo)) * 90 : 45;
+                    const [, m, d] = e.measuredOn.split("-").map(Number);
+                    return (
+                      <View key={e.id || i} style={s.wCol}>
+                        <Text style={s.wVal}>{v.toFixed(1)}</Text>
+                        <View style={s.wTrack}>
+                          <LinearGradient
+                            colors={["#22C55E", "#15803D"]}
+                            style={[s.wBar, { height: Math.max(6, h) }]}
+                          />
+                        </View>
+                        <Text style={s.wLabel}>{MSHORT[m - 1]?.[0]}{d}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+
+                {entries.length === 1 && (
+                  <Text style={s.noDataNote}>
+                    One reading is a starting point, not a trend. Log again in a few days and the
+                    line starts to mean something.
+                  </Text>
+                )}
               </View>
-              <View style={s.unitToggle}>
-                {(["kg", "lbs"] as const).map((u) => (
-                  <Pressable key={u} onPress={() => switchUnit(u)} style={[s.unitBtn, unit === u && { backgroundColor: T.green }]}>
-                    <Text style={[s.unitText, unit === u && { color: T.ink }]}>{u}</Text>
-                  </Pressable>
-                ))}
+            </TravelBorder>
+
+            <Tap onPress={onLog} style={{ marginTop: 16 }}>
+              <View style={s.saveBtn}>
+                <Text style={s.saveText}>Log today's weight</Text>
               </View>
-            </View>
+            </Tap>
 
-            {typing ? (
-              <View style={s.bigWeightRow}>
-                <TextInput
-                  autoFocus
-                  keyboardType="decimal-pad"
-                  value={draft}
-                  onChangeText={setDraft}
-                  onBlur={commit}
-                  onSubmitEditing={commit}
-                  style={s.weightInput}
-                />
-                <Text style={s.weightUnitBig}>{unit}</Text>
-              </View>
-            ) : (
-              <Pressable onPress={() => { setDraft(val.toFixed(1)); setTyping(true); }} style={s.bigWeightRow}>
-                <Text style={s.weightBig}>{val.toFixed(1)}</Text>
-                <Text style={s.weightUnitBig}>{unit}</Text>
-              </Pressable>
-            )}
-
-            <Text style={s.weightSecondary}>{secondary}</Text>
-
-            <RulerPicker unit={unit} value={val} setValue={setVal} recenter={rc} T={T} />
-
-            <Text style={s.rulerHint}>Scroll left or right — it clicks as you go</Text>
-            <Text style={s.rulerAlt}>Or tap the number to type it</Text>
-          </View>
-        </TravelBorder>
-
-        <Tap onPress={save} style={{ marginTop: 18 }}>
-          <View style={s.saveBtn}>
-            <Text style={s.saveText}>Save {val.toFixed(1)} {unit}</Text>
-          </View>
-        </Tap>
-
-        <Text style={s.weightFoot}>
-          Your estimate updates from here. MOTION keeps projecting between weigh-ins.
-        </Text>
+            <Text style={s.weightFoot}>
+              {target
+                ? `Target ${fromKg(target, unit).toFixed(1)} ${unit}. Day-to-day swings are mostly water — it's the direction over weeks that counts.`
+                : "Day-to-day swings are mostly water — it's the direction over weeks that counts."}
+            </Text>
+          </>
+        )}
       </ScrollView>
+
+      <WeighInSheet visible={weighOpen} onClose={closeWeigh} onSaved={onSaved} lastKg={lastKg} />
     </View>
   );
 }
-
-const rulerStyles = (T: any) =>
-  StyleSheet.create({
-    wrap: { width: "100%", height: 78, marginTop: 10, position: "relative" },
-    needle: {
-      position: "absolute", left: "50%", marginLeft: -1.5, top: 2,
-      width: 3, height: 50, borderRadius: 3, backgroundColor: T.green, zIndex: 3,
-    },
-    tickCol: { width: TICK_PX, alignItems: "center" },
-    tickLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading, marginTop: 4 },
-    fade: { position: "absolute", top: 0, bottom: 0, width: 50, zIndex: 2 },
-  });
 
 const styles = (T: any) =>
   StyleSheet.create({
@@ -1053,33 +977,27 @@ const styles = (T: any) =>
     sourceChip: { flexDirection: "row", alignItems: "center", gap: 5 },
     sourceText: { fontSize: 9.5, color: T.sub, fontFamily: FONTS.body },
 
-    bigRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 8 },
-    bigNum: { fontSize: 40, color: T.text, fontFamily: FONTS.heading },
-    bigUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-    stepSubNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
+    stepsEmpty: { paddingVertical: 22, alignItems: "center", gap: 8 },
+    stepsEmptyTitle: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed, textAlign: "center" },
+    stepsEmptyBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 17, paddingHorizontal: 8 },
 
-    chart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: 12 },
-    barCol: { flex: 1, alignItems: "center", gap: 5 },
-    barVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },
-    barTrack: { height: 68, justifyContent: "flex-end" },
-    bar: { borderRadius: 6 },
-    barLabel: { fontSize: 9, color: T.micro, fontFamily: FONTS.heading },
-
-    statsRow: { flexDirection: "row", marginTop: 12, paddingTop: 14, borderTopWidth: 1, borderTopColor: T.border },
-    statTop: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
-    statNum: { fontSize: 18, color: T.text, fontFamily: FONTS.heading },
+    emptyStage: { alignItems: "center", gap: 14, paddingTop: 30, paddingHorizontal: 8 },
+    emptyTitle: { fontSize: 18, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
+    emptyBody: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 20 },
 
     cardFoot: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 12 },
     cardFootText: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
 
     trendText: { fontSize: 11, fontFamily: FONTS.headingMed },
     calCaption: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginBottom: 12 },
+    noDataNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 10, lineHeight: 16 },
 
     calBarRow: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 7 },
     calBarLabel: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
-    calBarTrack: { flex: 1, height: 26, borderRadius: 8, backgroundColor: T.track, overflow: "hidden" },
+    calBarTrack: { flex: 1, height: 26, borderRadius: 8, backgroundColor: T.track, overflow: "hidden", justifyContent: "center" },
     calBarFill: { height: "100%", borderRadius: 8, alignItems: "flex-end", justifyContent: "center", paddingRight: 10 },
     calBarInside: { fontSize: 10.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    notLogged: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, paddingLeft: 10 },
 
     legendRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: T.border, flexWrap: "wrap" },
     legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
@@ -1107,17 +1025,18 @@ const styles = (T: any) =>
     summaryRow: { flexDirection: "row", gap: 10, marginBottom: 16 },
     summaryCard: { flex: 1, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 13, paddingHorizontal: 15 },
     summaryNum: { fontSize: 23, color: T.text, fontFamily: FONTS.heading, marginTop: 6 },
+    summaryUnit: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
 
     detailCaption: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, flex: 1 },
     detailAvg: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed },
-    detailFoot: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 16, lineHeight: 15 },
 
-    stepBarRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-    stepBarLabel: { width: 52, fontSize: 10.5, color: T.sub, fontFamily: FONTS.body },
-    stepBarTrack: { flex: 1, height: 28, borderRadius: 8, backgroundColor: T.track, overflow: "hidden", position: "relative" },
-    stepBarFill: { height: "100%", borderRadius: 8, alignItems: "flex-end", justifyContent: "center", paddingRight: 8 },
-    stepBarInside: { fontSize: 11, color: "#0A0A0A", fontFamily: FONTS.headingMed },
-    refLine: { position: "absolute", top: 0, bottom: 0, width: 2, backgroundColor: T.text, opacity: 0.5, borderRadius: 2 },
+    /* weight chart */
+    wChart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-around", height: 130 },
+    wCol: { alignItems: "center", gap: 4, flex: 1 },
+    wVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },
+    wTrack: { height: 90, justifyContent: "flex-end" },
+    wBar: { width: 14, borderRadius: 5 },
+    wLabel: { fontSize: 8, color: T.micro, fontFamily: FONTS.heading },
 
     /* weekly history */
     histHead: { paddingHorizontal: 16, paddingTop: 60, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: T.border },
@@ -1143,25 +1062,6 @@ const styles = (T: any) =>
     wallCta: { backgroundColor: T.gold, borderRadius: 13, paddingVertical: 13, alignItems: "center" },
     wallCtaText: { fontSize: 14, color: "#0A0A0A", fontFamily: FONTS.headingMed },
     wallDismiss: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
-
-    /* weight */
-    estRow: { flexDirection: "row", alignItems: "baseline", gap: 6, marginTop: 6 },
-    estNum: { fontSize: 26, color: T.sub, fontFamily: FONTS.heading },
-    estUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-    weightLead: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, marginVertical: 16, lineHeight: 19 },
-
-    unitToggle: { flexDirection: "row", gap: 2, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 11, padding: 3 },
-    unitBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 8 },
-    unitText: { fontSize: 12, color: T.sub, fontFamily: FONTS.headingMed },
-
-    bigWeightRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "center", gap: 6, marginTop: 8 },
-    weightBig: { fontSize: 44, color: T.text, fontFamily: FONTS.heading },
-    weightInput: { width: 130, fontSize: 44, color: T.text, fontFamily: FONTS.heading, textAlign: "center", borderBottomWidth: 2, borderBottomColor: T.green, padding: 0 },
-    weightUnitBig: { fontSize: 16, color: T.sub, fontFamily: FONTS.body },
-    weightSecondary: { fontSize: 12, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 2 },
-
-    rulerHint: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 4 },
-    rulerAlt: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed, textAlign: "center", marginTop: 6 },
 
     saveBtn: { backgroundColor: T.green, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
     saveText: { fontSize: 15, color: T.ink, fontFamily: FONTS.headingMed },

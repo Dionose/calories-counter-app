@@ -1,17 +1,27 @@
 {
   "expo": {
-    "name": "calories-counter-project",
+    "name": "MOTION",
     "slug": "calories-counter-project",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "caloriescounterproject",
+    "scheme": "motion",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dionose.motion",
+      "infoPlist": {
+        "NSCameraUsageDescription": "MOTION uses your camera to photograph meals so it can estimate their calories.",
+        "NSPhotoLibraryUsageDescription": "MOTION lets you pick a photo of a meal you've already taken, so you can log it later.",
+        "NSMicrophoneUsageDescription": "MOTION lets you describe a meal out loud when a photo alone isn't enough.",
+        "NSHealthShareUsageDescription": "MOTION reads your steps, active minutes and calories burned so your daily numbers reflect what you actually did.",
+        "NSHealthUpdateUsageDescription": "MOTION never writes to Health. This permission is required by iOS even for read-only access.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
+      "package": "com.dionose.motion",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +29,16 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.health.READ_STEPS",
+        "android.permission.health.READ_ACTIVE_CALORIES_BURNED",
+        "android.permission.health.READ_HEART_RATE",
+        "android.permission.health.READ_EXERCISE",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -39,11 +58,23 @@
           }
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-camera",
+      "expo-notifications",
+      "expo-apple-authentication",
+      "react-native-health-connect",
+      "@kingstinct/react-native-healthkit"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f4ffda77-3678-402e-8b6a-47a77a8da342"
+      }
+    },
+    "owner": "dionose"
   }
 }
