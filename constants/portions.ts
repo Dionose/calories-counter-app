@@ -8,14 +8,16 @@
 // number, because it looks like guidance while giving none.
 //
 // So every amount here is anchored to something PHYSICAL — a thumb, a fist, a
-// tennis ball, a shot glass. Two anchors where possible, because a hand is
-// always available and a kitchen object is more precise, and between them
-// almost everyone can picture at least one.
+// tennis ball, a teacup. Two anchors where possible, because a hand is always
+// available and a kitchen object is more precise, and between them almost
+// everyone can picture at least one.
 //
-// AND THE ABBREVIATIONS ARE SPELLED OUT. A label says "per 2 tsp" and the
-// reader has to know that tsp is teaspoon while tbsp is tablespoon — a
-// three-times difference, and completely opaque if nobody has ever told you.
-// So the labels carry both: "A teaspoon (tsp)".
+// AND THE LABEL'S OWN NOTATION GOES IN THE NAME. A bottle says "per ¼ cup" or
+// "per 2 tsp"; a reader who has to translate that into "a quarter cup" or work
+// out whether tsp means teaspoon or tablespoon has already been given a puzzle
+// rather than an answer. So the labels carry both forms: "A quarter cup
+// (¼ cup)", "A teaspoon (tsp)". The symbol on the screen matches the symbol on
+// the packet.
 //
 // EVERY RUNG CARRIES ITS OWN UNIT, so a counter can appear beneath whichever
 // one is selected. A pack saying "2 tsp" needs the user to say exactly that,
@@ -26,7 +28,7 @@
 // realistic ceiling for food logging by eye.
 
 export type Portion = {
-  /** the name — "A tablespoon (tbsp)", "Half a cup" */
+  /** the name, carrying the label's own notation — "A tablespoon (tbsp)" */
   label: string;
   /** what it looks like in the real world. THE POINT OF THIS FILE. */
   anchor: string;
@@ -64,7 +66,11 @@ const g = (ml: number, density: number) => Math.round(ml * density);
    Sauces, oils, milk, juice, egg whites in a carton. Measured in ML because
    that's what the label says and what a measuring jug shows — nobody pours
    sauce by weight. Grams shown alongside, because some packs use those
-   instead and the user should be able to match whichever theirs states. */
+   instead and the user should be able to match whichever theirs states.
+
+   THE CUP SIZES RELATE TO EACH OTHER through one object: a small teacup. A
+   quarter cup is a teacup's worth, a half fills it, a full cup is a mug. That
+   ladder is easier to hold in your head than four unrelated comparisons. */
 export function liquidPortions(name: string): Portion[] {
   const d = densityFor(name);
   return [
@@ -89,33 +95,33 @@ export function liquidPortions(name: string): Portion[] {
       ml: 45, grams: g(45, d), unit: "shot glass", unitPlural: "shot glasses",
     },
     {
-      label: "A quarter cup",
-      anchor: "a golf ball, or a shot glass and a bit more",
+      label: "A quarter cup (¼ cup)",
+      anchor: "a golf ball · the small teacup, or a shot glass and a bit more",
       ml: 60, grams: g(60, d), unit: "quarter cup", unitPlural: "quarter cups",
     },
     {
-      label: "A third of a cup",
-      anchor: "a bit under half a small teacup",
+      label: "A third of a cup (⅓ cup)",
+      anchor: "a small teacup, not quite full · four tablespoons and a bit",
       ml: 80, grams: g(80, d), unit: "third of a cup", unitPlural: "thirds of a cup",
     },
     {
-      label: "Half a cup",
-      anchor: "a tennis ball, or half a small mug",
+      label: "Half a cup (½ cup)",
+      anchor: "a tennis ball · a small teacup filled, or half a mug",
       ml: 120, grams: g(120, d), unit: "half cup", unitPlural: "half cups",
     },
     {
-      label: "A cup",
-      anchor: "your closed fist, or a small mug filled",
+      label: "A cup (1 cup)",
+      anchor: "your closed fist · a small mug filled to the brim",
       ml: 240, grams: g(240, d), unit: "cup", unitPlural: "cups",
     },
     {
       label: "A can",
-      anchor: "a standard soft-drink can",
+      anchor: "a standard soft-drink can · about 1⅓ cups",
       ml: 330, grams: g(330, d), unit: "can", unitPlural: "cans",
     },
     {
       label: "A small bottle",
-      anchor: "the pocket-size water bottle",
+      anchor: "the pocket-size water bottle · about two cups",
       ml: 500, grams: g(500, d), unit: "bottle", unitPlural: "bottles",
     },
   ];
@@ -138,23 +144,23 @@ export function scoopPortions(): Portion[] {
       grams: 80, unit: "handful", unitPlural: "handfuls",
     },
     {
-      label: "Half a cup",
-      anchor: "a tennis ball, or half a small mug",
+      label: "Half a cup (½ cup)",
+      anchor: "a tennis ball · a small teacup filled, or half a mug",
       grams: 90, unit: "half cup", unitPlural: "half cups",
     },
     {
-      label: "A cup",
-      anchor: "your closed fist, or a small mug filled",
+      label: "A cup (1 cup)",
+      anchor: "your closed fist · a small mug filled to the brim",
       grams: 180, unit: "cup", unitPlural: "cups",
     },
     {
       label: "A small bowl",
-      anchor: "a cereal bowl about half full",
+      anchor: "a cereal bowl about half full · roughly 1½ cups",
       grams: 250, unit: "small bowl", unitPlural: "small bowls",
     },
     {
       label: "A full bowl",
-      anchor: "a cereal bowl filled to the top",
+      anchor: "a cereal bowl filled to the top · roughly two cups",
       grams: 400, unit: "bowl", unitPlural: "bowls",
     },
   ];
@@ -210,8 +216,13 @@ export function spreadPortions(name: string): Portion[] {
       ml: 30, grams: g(30, d),
     },
     {
+      label: "A quarter cup (¼ cup)",
+      anchor: "a golf ball · four tablespoons, or a small teacup's worth",
+      ml: 60, grams: g(60, d), unit: "quarter cup", unitPlural: "quarter cups",
+    },
+    {
       label: "A small pot",
-      anchor: "a single-serve yogurt pot",
+      anchor: "a single-serve yogurt pot · about ⅔ of a cup",
       ml: 150, grams: g(150, d), unit: "small pot", unitPlural: "small pots",
     },
   ];
@@ -314,9 +325,8 @@ export function packPortions(servingG: number, servingText?: string): Portion[] 
 
 /* ---------- WHICH LADDER ----------
    Reads the product's name, category and serving text. The serving TEXT is
-   the strongest signal there is: a pack that says "60 ml" or "2 tsp" is
-   telling you plainly that it pours, whatever the product happens to be
-   called. */
+   the strongest signal there is: a pack that says "60 ml", "2 tsp" or "¼ cup"
+   is telling you plainly that it pours, whatever the product is called. */
 export type FoodKind = "liquid" | "scoop" | "protein" | "spread" | "pinch" | "slice" | "count" | "powder" | "pack";
 
 export function kindFor(name: string, categories = "", servingText = ""): FoodKind {
@@ -327,9 +337,11 @@ export function kindFor(name: string, categories = "", servingText = ""): FoodKi
   if (/scoop/.test(serving)) return "powder";
   if (/protein powder|whey|casein|collagen|creatine|meal replacement|drink mix|formula|\bpowder\b/.test(all)) return "powder";
 
-  /* a volume or a spoon measure means it pours. "2 tsp" is as clear a signal
-     as "10 ml", and both appear on labels constantly. */
+  /* a volume, a spoon measure or a cup fraction means it pours. Labels write
+     these every possible way — "60ml", "2 tsp", "1/4 cup", "¼ cup" — so all
+     of them are matched. */
   if (/\d\s*(ml|cl|l\b|fl\.?\s*oz|tsp|tbsp|teaspoon|tablespoon)/.test(serving)) return "liquid";
+  if (/[¼½⅓⅔¾]|\d\s*\/\s*\d/.test(serving) && /cup/.test(serving)) return "liquid";
 
   if (/juice|milk|smoothie|drink|soda|cola|water|tea|coffee|beer|wine|cider|kombucha|broth|stock|egg white/.test(all)) return "liquid";
   if (/sauce|ketchup|mayonnaise|dressing|vinegar|syrup|oil\b|honey|marinade|sriracha|soy sauce/.test(all)) return "liquid";
