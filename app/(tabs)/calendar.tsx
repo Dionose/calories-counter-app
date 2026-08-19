@@ -3,7 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect } from "expo-router";
 import { ChevronLeft, ChevronRight, Lock, Mic, Sparkles, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Icon, { IconMode, IconName } from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import StreakReel from "../../components/StreakReel";
@@ -12,6 +12,7 @@ import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { loadDay, loadDayTotals } from "../../constants/meals";
+import { signedUrls } from "../../constants/photos";
 import { FONTS, TIERS, ULT_COLORS } from "../../constants/theme";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -94,10 +95,6 @@ function isToday(year: number, month: number, day: number) {
    going to log for three weeks first.
 
    It's driven by the ONE dev switch in Profile — not a toggle of its own.
-   Two dev controls that could disagree is exactly the confusion this
-   replaced: the tier chips used to fake the streak while these tiles stayed
-   real, so Home said Ultimate and the calendar said Spark.
-
    Remove this block along with Profile's dev panel before launch. */
 const DEMO_HISTORY_DAYS = 74;
 const DEMO_MISSED_AGO = [19, 20, 41]; // days before today that were NOT logged
@@ -226,6 +223,10 @@ export default function Calendar() {
   /* one day's meals, fetched when a tile is tapped */
   const [dayMeals, setDayMeals] = useState<any[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
+  /* storage path → temporary signed URL. The bucket is private, so a stored
+     path isn't displayable on its own; each view mints a fresh URL that
+     expires. Keeping them in a map means the <Image> just looks one up. */
+  const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
 
   const s = styles(T);
 
@@ -287,15 +288,29 @@ export default function Calendar() {
   /* open a day — the demo answers instantly, real data takes a query */
   const openDay = async (d: number) => {
     setDay(d);
+    setPhotoUrls({});
     if (devMode) { setDayMeals([]); return; }
     if (!userId) return;
 
     setDayLoading(true);
     const { meals } = await loadDay(userId, dbKey(year, month, d));
-    setDayMeals(
-      meals.sort((a, b) => (SLOT_ORDER[a.mealType] ?? 9) - (SLOT_ORDER[b.mealType] ?? 9))
+    const sorted = meals.sort(
+      (a, b) => (SLOT_ORDER[a.mealType] ?? 9) - (SLOT_ORDER[b.mealType] ?? 9)
     );
+    setDayMeals(sorted);
     setDayLoading(false);
+
+    /* the photos come SECOND, and separately. Signing URLs is another round
+       trip, and making the whole recap wait on it would leave the user
+       staring at nothing while their calories sit ready. The cards render
+       immediately; pictures fill in a beat later.
+       One batched call rather than one per meal — three sequential requests
+       would produce a visible stagger as each image popped in. */
+    const paths = sorted.map((m: any) => m.photoUrl).filter(Boolean) as string[];
+    if (paths.length) {
+      const map = await signedUrls(paths);
+      setPhotoUrls(map);
+    }
   };
 
   const prevMonth = () => {
@@ -432,7 +447,7 @@ export default function Calendar() {
     const rows = devMode
       ? DEMO_MEALS.map((m) => ({
           label: m.name, icon: m.icon, time: m.time, title: m.title,
-          cal: m.cal, voice: m.voice,
+          cal: m.cal, voice: m.voice, photo: null as string | null,
         }))
       : dayMeals.map((m) => {
           const cal = m.items.reduce((a: number, it: any) => a + (it.calories || 0), 0);
@@ -445,6 +460,9 @@ export default function Calendar() {
             title: m.items.map((it: any) => it.foodName).join(", ") || "Logged meal",
             cal,
             voice: m.source === "voice",
+            /* the signed URL if it's arrived; null while it's still being
+               minted, or forever if this meal was logged without a photo */
+            photo: m.photoUrl ? photoUrls[m.photoUrl] || null : null,
           };
         });
 
@@ -483,17 +501,31 @@ export default function Calendar() {
             const pct = total > 0 ? Math.round((m.cal / total) * 100) : 0;
             return (
               <View key={i} style={s.mealCard}>
-                {/* photos aren't uploaded yet — the placeholder is honest about
-                    that rather than showing an empty frame that looks broken */}
-                <View style={s.photo}>
-                  <Text style={s.photoLabel}>{m.label.toLowerCase()} photo</Text>
-                  {m.voice && (
-                    <View style={s.voiceBadge}>
-                      <Mic size={11} color={T.green} />
-                      <Text style={s.voiceText}>voice added</Text>
-                    </View>
-                  )}
-                </View>
+                {/* THE PHOTO. A meal logged without one is a normal state, not
+                    a failure — the placeholder says so plainly rather than
+                    leaving an empty frame that reads as broken. */}
+                {m.photo ? (
+                  <View style={s.photo}>
+                    <Image source={{ uri: m.photo }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                    {m.voice && (
+                      <View style={s.voiceBadge}>
+                        <Mic size={11} color={T.green} />
+                        <Text style={s.voiceText}>voice added</Text>
+                      </View>
+                    )}
+                  </View>
+                ) : (
+                  <View style={[s.photo, s.photoEmpty]}>
+                    <Text style={s.photoLabel}>No photo for this one</Text>
+                    {m.voice && (
+                      <View style={s.voiceBadge}>
+                        <Mic size={11} color={T.green} />
+                        <Text style={s.voiceText}>voice added</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
+
                 <View style={{ padding: 15 }}>
                   <View style={s.rowBetween}>
                     <View style={s.mealHeadRow}>
@@ -782,8 +814,9 @@ const styles = (T: any) =>
 
     mealCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, overflow: "hidden", marginBottom: 12 },
     mealHeadRow: { flexDirection: "row", alignItems: "center", gap: 7 },
-    photo: { height: 140, backgroundColor: "#2E2419", justifyContent: "flex-end", padding: 12 },
-    photoLabel: { fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: FONTS.body },
+    photo: { height: 160, backgroundColor: "#1A1613", position: "relative" },
+    photoEmpty: { alignItems: "center", justifyContent: "center" },
+    photoLabel: { fontSize: 11, color: "rgba(255,255,255,0.32)", fontFamily: FONTS.body },
     voiceBadge: { position: "absolute", top: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(0,0,0,0.5)", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
     voiceText: { fontSize: 9, color: "#fff", fontFamily: FONTS.body },
     aiTag: { flexDirection: "row", alignItems: "center", gap: 4 },
