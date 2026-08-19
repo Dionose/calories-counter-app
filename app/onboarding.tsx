@@ -1,6 +1,6 @@
 // app/onboarding.tsx
 import { useRouter } from "expo-router";
-import { AlertTriangle, Check, ChevronLeft, Crown, Sparkles } from "lucide-react-native";
+import { AlertTriangle, Check, ChevronLeft, Crown, Eye, EyeOff, Sparkles } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
@@ -14,6 +14,7 @@ import SheenIcon from "../components/SheenIcon";
 import SteakIcon from "../components/SteakIcon";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
+import { signUp } from "../constants/auth";
 import { DARK, FONTS } from "../constants/theme";
 
 const T = DARK;
@@ -265,6 +266,10 @@ export default function Onboarding() {
   const [dir, setDir] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
 
+  /* set by SignInStep once the account exists. finish() needs it to write the
+     profile row — no account, nowhere to attach the plan. */
+  const [userId, setUserId] = useState<string | null>(null);
+
   const step = STEPS[i];
   const total = STEPS.length;
 
@@ -360,7 +365,7 @@ export default function Onboarding() {
         {step.kind === "referral" && <ReferralStep value={answers.referral} onChange={(v: any) => set("referral", v)} onNext={goNext} />}
         {step.kind === "personalize" && <PersonalizeStep answers={answers} onNext={goNext} />}
         {step.kind === "plan" && <PlanStep answers={answers} onNext={goNext} />}
-        {step.kind === "signin" && <SignInStep onNext={goNext} />}
+        {step.kind === "signin" && <SignInStep onNext={goNext} onAccount={setUserId} />}
         {step.kind === "message" && <MessageStep step={step} onNext={goNext} />}
         {step.kind === "building" && <BuildingStep step={step} />}
         {step.kind === "paywall" && <TrialPaywall onStartTrial={() => finish(true)} onSkip={() => finish(false)} />}
@@ -564,11 +569,50 @@ function ReferralStep({ value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== CREATE ACCOUNT ===================== */
-function SignInStep({ onNext }: { onNext: () => void }) {
+/* ===================== CREATE ACCOUNT =====================
+   The first REAL backend write in the flow. Everything before this is held in
+   memory; this is where the user becomes a row in auth.users.
+   The account is created HERE but the profile row is written by finish(),
+   after the paywall decision — so the account and its plan land together and
+   there's never an account with no plan attached. */
+function SignInStep({ onNext, onAccount }: { onNext: () => void; onAccount: (id: string) => void }) {
   const [agreed, setAgreed] = useState(false);
   const [tips, setTips] = useState(true);
   const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const ready = agreed && email.trim().length > 3 && pw.length >= 6;
+
+  const create = async () => {
+    if (!ready || busy) return;
+    setErr(null);
+    setBusy(true);
+
+    const { userId, error } = await signUp(email, pw);
+
+    if (error || !userId) {
+      /* stay on the screen with the reason — bouncing away loses what they
+         typed and hides why it failed */
+      setBusy(false);
+      setErr(error || "Couldn't create your account. Try again.");
+      return;
+    }
+
+    onAccount(userId);
+    onNext();
+  };
+
+  if (busy) {
+    return (
+      <View style={[styles.body, { flex: 1, alignItems: "center", justifyContent: "center", gap: 22 }]}>
+        <IsoMGlow size={104} />
+        <Text style={[styles.sub, { marginTop: 0 }]}>Creating your account…</Text>
+      </View>
+    );
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
@@ -576,14 +620,20 @@ function SignInStep({ onNext }: { onNext: () => void }) {
       <Text style={styles.sub}>Create an account so your plan, streak and history follow you to any device.</Text>
 
       <View style={{ marginTop: 26, gap: 10 }}>
-        {/* the DARK Apple mark — this button is white, and the standard
-            near-white logo all but disappears on it */}
-        <Pressable onPress={agreed ? onNext : undefined} style={[styles.authBtn, { backgroundColor: "#FFFFFF" }, !agreed && styles.authDim]}>
+        {/* Apple and Google need native SDKs and a development build — neither
+            runs in Expo Go, so they're wired alongside that */}
+        <Pressable
+          onPress={() => setErr("Apple sign-up isn't wired yet — use your email for now.")}
+          style={[styles.authBtn, { backgroundColor: "#FFFFFF" }]}
+        >
           <Icon name="appleDark" size={20} mode="loop" />
           <Text style={[styles.authText, { color: "#0A0A0A" }]}>Continue with Apple</Text>
         </Pressable>
 
-        <Pressable onPress={agreed ? onNext : undefined} style={[styles.authBtn, { backgroundColor: T.card, borderWidth: 1, borderColor: T.border }, !agreed && styles.authDim]}>
+        <Pressable
+          onPress={() => setErr("Google sign-up isn't wired yet — use your email for now.")}
+          style={[styles.authBtn, { backgroundColor: T.card, borderWidth: 1, borderColor: T.border }]}
+        >
           <Icon name="google" size={19} mode="loop" />
           <Text style={[styles.authText, { color: T.text }]}>Continue with Google</Text>
         </Pressable>
@@ -599,14 +649,43 @@ function SignInStep({ onNext }: { onNext: () => void }) {
         <Icon name="email" size={18} mode="loop" />
         <TextInput
           value={email}
-          onChangeText={setEmail}
+          onChangeText={(t) => { setEmail(t); setErr(null); }}
           placeholder="name@email.com"
           placeholderTextColor={T.micro}
           keyboardType="email-address"
           autoCapitalize="none"
+          autoCorrect={false}
           style={styles.emailInput}
         />
       </View>
+
+      <View style={[styles.emailBox, { marginTop: 10 }]}>
+        <Icon name="password" size={18} mode="loop" />
+        <TextInput
+          value={pw}
+          onChangeText={(t) => { setPw(t); setErr(null); }}
+          placeholder="Create a password"
+          placeholderTextColor={T.micro}
+          secureTextEntry={!show}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.emailInput}
+        />
+        <Pressable onPress={() => setShow((x) => !x)} hitSlop={10}>
+          {show ? <EyeOff size={17} color={T.sub} /> : <Eye size={17} color={T.sub} />}
+        </Pressable>
+      </View>
+
+      {pw.length > 0 && pw.length < 6 && (
+        <Text style={styles.pwHint}>At least 6 characters.</Text>
+      )}
+
+      {err ? (
+        <View style={styles.errRow}>
+          <AlertTriangle size={14} color={T.red} />
+          <Text style={styles.errText}>{err}</Text>
+        </View>
+      ) : null}
 
       <View style={{ marginTop: 20, gap: 12 }}>
         <Pressable onPress={() => setAgreed(!agreed)} style={styles.agreeRow}>
@@ -622,11 +701,8 @@ function SignInStep({ onNext }: { onNext: () => void }) {
         </Pressable>
       </View>
 
-      <Pressable
-        onPress={agreed && email.length > 3 ? onNext : undefined}
-        style={[styles.primaryBtn, { marginTop: 24 }, (!agreed || email.length <= 3) && styles.btnDisabled]}
-      >
-        <Text style={[styles.primaryBtnText, (!agreed || email.length <= 3) && styles.btnTextDisabled]}>Create account</Text>
+      <Pressable onPress={create} style={[styles.primaryBtn, { marginTop: 24 }, !ready && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !ready && styles.btnTextDisabled]}>Create account</Text>
       </Pressable>
 
       {!agreed && <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>}
@@ -1459,9 +1535,13 @@ const styles = StyleSheet.create({
   orText: { fontSize: 12, color: T.micro, fontFamily: FONTS.body },
   emailBox: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 14, marginTop: 22 },
   emailInput: { flex: 1, color: T.text, fontFamily: FONTS.body, fontSize: 14.5, padding: 0 },
+  pwHint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6, marginLeft: 2 },
   agreeRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },
   agreeText: { flex: 1, fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 18 },
   agreeHint: { fontSize: 11.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 12 },
+
+  errRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 14, backgroundColor: "rgba(239,68,68,0.10)", borderWidth: 1, borderColor: "rgba(239,68,68,0.35)", borderRadius: 12, padding: 12 },
+  errText: { flex: 1, fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
 
   explainCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, padding: 16, marginTop: 20 },
   explainRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },

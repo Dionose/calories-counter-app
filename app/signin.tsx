@@ -5,14 +5,14 @@
 // Logging out lands HERE rather than back at onboarding — someone with an
 // account shouldn't have to answer thirty questions again to get back in.
 import { useRouter } from "expo-router";
-import { ArrowLeft, Check, Eye, EyeOff } from "lucide-react-native";
-import React, { useEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowLeft, Check, Eye, EyeOff } from "lucide-react-native";
+import React, { useState } from "react";
 import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Icon from "../components/Icon";
 import { IsoMGlow } from "../components/IsoM";
 import { useApp } from "../constants/AppState";
+import { signIn as authSignIn, sendReset } from "../constants/auth";
 import * as H from "../constants/haptics";
-import { supabase } from "../constants/supabase";
 import { FONTS } from "../constants/theme";
 
 /* These have to be real hosted pages before launch — App Store review checks
@@ -20,76 +20,65 @@ import { FONTS } from "../constants/theme";
 const TERMS_URL = "https://motion.app/terms";
 const PRIVACY_URL = "https://motion.app/privacy";
 
-/* How long the loading screen holds. Once Supabase auth lands this becomes
-   the real round trip and the timer goes away — the SHAPE stays the same, so
-   swapping in the live call is a one-function change. */
-const AUTH_MS = 1600;
-
 export default function SignIn() {
   const router = useRouter();
   /* the theme comes from AppState, so sign-in wears whatever the user left in.
-     It only survives a RESTART once AsyncStorage lands — until then a cold
-     start falls back to dark. */
+     It only survives a RESTART once the profile is loaded from the backend —
+     until then a cold start falls back to dark. */
   const { T, setIsPro } = useApp();
   const s = styles(T);
-
-  /* ---------- TEMPORARY CONNECTION TEST ----------
-     A real round trip to Supabase, so we know the whole chain works — env
-     vars, client, network, table, security policies — before building
-     anything on top of it. Zero rows is the correct result; the table is
-     empty. DELETE this block once auth is actually wired. */
-  useEffect(() => {
-    supabase
-      .from("profiles")
-      .select("id")
-      .then(({ error }) => {
-        console.log(
-          error
-            ? "SUPABASE ERROR: " + error.message
-            : "SUPABASE OK — reached profiles"
-        );
-      });
-  }, []);
 
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
   const [sent, setSent] = useState(false);
 
-  /* null while the form is up; a label while signing in. Signing in is a
-     network round trip, so it has to LOOK like one — dropping straight into
-     the app makes a real 2-second wait feel like a freeze later. */
+  /* null while the form is up; a label while a request is in flight */
   const [busy, setBusy] = useState<string | null>(null);
-  const timer = useRef<any>(null);
-
-  useEffect(() => () => clearTimeout(timer.current), []);
+  /* the last thing that went wrong, in words a user can act on */
+  const [err, setErr] = useState<string | null>(null);
 
   const ready = email.trim().length > 3 && pw.length >= 6;
 
-  /* the one place that enters the app. When Supabase auth lands, the timeout
-     becomes `await signInWithPassword(...)` and everything else stays. */
-  const authenticate = (label: string) => {
-    setBusy(label);
-    timer.current = setTimeout(() => {
-      setIsPro(false);
-      router.replace("/(tabs)");
-    }, AUTH_MS);
-  };
+  /* typing anywhere clears the error — leaving a stale "wrong password" up
+     while someone corrects it is just noise */
+  const onEmail = (t: string) => { setEmail(t); setSent(false); setErr(null); };
+  const onPw = (t: string) => { setPw(t); setErr(null); };
 
-  const signIn = () => {
-    if (!ready) return;
+  const submit = async () => {
+    if (!ready || busy) return;
+    H.tap();
+    setErr(null);
+    setBusy("Signing you in…");
+
+    const { error } = await authSignIn(email, pw);
+
+    if (error) {
+      /* back to the form with the reason. The failure has to be recoverable
+         in place — bouncing to another screen loses what they typed. */
+      setBusy(null);
+      setErr(error);
+      H.warn();
+      return;
+    }
+
     H.success();
-    authenticate("Signing you in…");
+    setIsPro(false);
+    router.replace("/(tabs)");
   };
 
+  /* Apple and Google need native SDK setup and a development build — neither
+     works in Expo Go. Wired at the same time as the dev build. */
   const social = (provider: "Apple" | "Google") => {
     H.tap();
-    authenticate(`Signing in with ${provider}…`);
+    setErr(`${provider} sign-in isn't wired yet — use your email and password for now.`);
   };
 
-  const forgot = () => {
-    if (email.trim().length < 4) return;
+  const forgot = async () => {
+    if (email.trim().length < 4 || busy) return;
     H.tap();
+    const { error } = await sendReset(email);
+    if (error) { setErr(error); return; }
     setSent(true);
   };
 
@@ -137,11 +126,11 @@ export default function SignIn() {
           <View style={s.orLine} />
         </View>
 
-        <View style={s.field}>
+        <View style={[s.field, err && s.fieldBad]}>
           <Icon name="email" size={18} mode="loop" />
           <TextInput
             value={email}
-            onChangeText={(t) => { setEmail(t); setSent(false); }}
+            onChangeText={onEmail}
             placeholder="name@email.com"
             placeholderTextColor={T.micro}
             keyboardType="email-address"
@@ -151,22 +140,30 @@ export default function SignIn() {
           />
         </View>
 
-        <View style={[s.field, { marginTop: 10 }]}>
+        <View style={[s.field, { marginTop: 10 }, err && s.fieldBad]}>
           <Icon name="password" size={18} mode="loop" />
           <TextInput
             value={pw}
-            onChangeText={setPw}
+            onChangeText={onPw}
             placeholder="Your password"
             placeholderTextColor={T.micro}
             secureTextEntry={!show}
             autoCapitalize="none"
             autoCorrect={false}
             style={s.input}
+            onSubmitEditing={submit}
           />
           <Pressable onPress={() => setShow((x) => !x)} hitSlop={10}>
             {show ? <EyeOff size={17} color={T.sub} /> : <Eye size={17} color={T.sub} />}
           </Pressable>
         </View>
+
+        {err ? (
+          <View style={s.errRow}>
+            <AlertTriangle size={14} color={T.red} />
+            <Text style={s.errText}>{err}</Text>
+          </View>
+        ) : null}
 
         {/* the reset needs an email first — asking for one after the tap is a
             wasted round trip */}
@@ -183,7 +180,7 @@ export default function SignIn() {
           )}
         </Pressable>
 
-        <Pressable onPress={signIn} style={[s.primaryBtn, !ready && s.btnOff]}>
+        <Pressable onPress={submit} style={[s.primaryBtn, !ready && s.btnOff]}>
           <Text style={[s.primaryBtnText, !ready && { color: T.micro }]}>Sign in</Text>
         </Pressable>
 
@@ -237,7 +234,15 @@ const styles = (T: any) =>
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 14, paddingHorizontal: 14, paddingVertical: 14,
     },
+    fieldBad: { borderColor: "rgba(239,68,68,0.5)" },
     input: { flex: 1, color: T.text, fontFamily: FONTS.body, fontSize: 14.5, padding: 0 },
+
+    errRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 12,
+      backgroundColor: "rgba(239,68,68,0.10)", borderWidth: 1,
+      borderColor: "rgba(239,68,68,0.35)", borderRadius: 12, padding: 12,
+    },
+    errText: { flex: 1, fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
 
     forgotRow: { alignSelf: "flex-end", marginTop: 12, marginBottom: 20 },
     forgot: { fontSize: 12.5, color: T.green, fontFamily: FONTS.headingMed },
