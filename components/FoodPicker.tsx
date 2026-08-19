@@ -4,17 +4,23 @@
 // FULL SCREEN, deliberately. A centred card fought the keyboard: the card rose,
 // the keyboard covered the list, and the search field ended up half-hidden.
 //
-// TWO THINGS THE SEARCH HAS TO WORK AROUND.
+// SEARCHING WORKS DIFFERENTLY FOR THE TWO SOURCES, and the screen says so
+// because the right advice is genuinely opposite in each case:
 //
-// Both nutrition APIs match WHOLE WORDS. "broc" returns nothing at all, from
-// either of them — you have to spell "broccoli" before anything appears. So a
-// local prefix list sits in front, turning three letters into a word the
-// network can actually find, and the screen says plainly that full names work
-// best for anything the list doesn't cover.
+//   PACKAGED PRODUCTS (Open Food Facts) are listed under the name on the front
+//   of the bottle. "Honey sriracha sauce" finds nothing; "honey sriracha Lee
+//   Kum Kee" finds it immediately. MORE words, including the brand.
 //
-// And amounts are WORDS, anchored to physical things — "a tablespoon (tbsp),
-// your whole thumb, 15 ml about 17 g". Never "a normal serving", which is
-// abstract English pretending to be guidance.
+//   PLAIN INGREDIENTS (USDA) are listed as ingredients, not as dishes. "Rice"
+//   is there; "basmati rice pilaf" isn't. FEWER words.
+//
+// And both match WHOLE WORDS — "broc" returns nothing at all from either. A
+// local prefix list sits in front to soften that, turning three letters into a
+// word the network can actually find.
+//
+// Amounts are WORDS, anchored to physical things — "a tablespoon (tbsp), your
+// whole thumb, 15 ml about 17 g" — and every rung can be counted, so a label
+// reading "2 tsp" can be entered as exactly that.
 import { Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, Sparkles, Utensils, Wifi, X } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -417,23 +423,36 @@ export default function FoodPicker({
                 })}
               </View>
 
-              {/* THE FULL-NAME NOTE. The food database matches whole words, and
-                  saying so up front costs nothing. Common foods suggest
-                  themselves from the local list; this covers everything that
-                  list doesn't reach. */}
+              {/* HOW TO SEARCH. Split in two, because the right advice is
+                  genuinely OPPOSITE for the two sources: packaged products
+                  need the brand, plain ingredients need fewer words. One
+                  combined rule would contradict itself. */}
               <View style={s.tipCard}>
                 <View style={s.tipHead}>
                   <Info size={14} color={T.green} />
-                  <Text style={s.tipTitle}>Type the food's full name</Text>
+                  <Text style={s.tipTitle}>Finding what you ate</Text>
                 </View>
+
                 <Text style={s.tipBody}>
-                  The food database matches whole words, so "broc" finds nothing on its own —
-                  "broccoli" finds it. Common foods will suggest themselves as you type; anything
-                  else needs spelling out.
-                  {"\n\n"}
-                  For products with long names, keep going to the end — "honey sriracha sauce"
-                  works where "honey sriracha" might not. Simpler is better too: "rice" beats
-                  "basmati rice pilaf".
+                  Whole words only. "broc" finds nothing on its own — "broccoli" finds it. Common
+                  foods suggest themselves as you type; anything else needs spelling out.
+                </Text>
+
+                <View style={s.tipDivider} />
+
+                <Text style={s.tipSubhead}>For a packaged product</Text>
+                <Text style={s.tipBody}>
+                  Add the brand. "Honey sriracha sauce" often finds nothing, while "honey sriracha
+                  Lee Kum Kee" finds it straight away — packaged foods are listed under the name
+                  printed on the front of the bottle.
+                </Text>
+
+                <View style={s.tipDivider} />
+
+                <Text style={s.tipSubhead}>For a plain ingredient</Text>
+                <Text style={s.tipBody}>
+                  Keep it simple. "Rice" is listed; "basmati rice pilaf" probably isn't, because
+                  the database holds ingredients rather than every dish made from them.
                 </Text>
               </View>
             </>
@@ -460,12 +479,11 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* SOME results came back, but the search is short enough that
-                  there are probably better ones behind a fuller name. Said
-                  quietly, below the list, so it doesn't nag. */}
-              {!searching && list.length > 0 && q.trim().length < 12 && (
+              {/* SOME results came back, but a fuller name might find better
+                  ones. Said quietly, below the list, so it doesn't nag. */}
+              {!searching && list.length > 0 && q.trim().length < 14 && (
                 <Text style={s.keepTyping}>
-                  Not seeing it? Keep typing — the full name usually finds it.
+                  Not seeing it? Add the brand name if it came in a packet.
                 </Text>
               )}
 
@@ -484,16 +502,22 @@ export default function FoodPicker({
                     <>
                       <Wifi size={18} color={T.micro} />
                       <Text style={s.empty}>
-                        Nothing came back for "{q}". Check your connection, or try the food's
-                        full name — the database matches whole words, not the first few letters.
+                        Nothing came back for "{q}". Check your connection, then try again — the
+                        database matches whole words, not the first few letters.
                       </Text>
                     </>
                   ) : (
-                    <Text style={s.empty}>
-                      Nothing matches "{q}" yet. Try the food's full name — the database matches
-                      whole words, so "broc" finds nothing while "broccoli" does. For long product
-                      names, type all the way to the end.
-                    </Text>
+                    <>
+                      <Text style={s.emptyTitle}>Nothing matches "{q}" yet</Text>
+                      <Text style={s.empty}>
+                        If it came in a packet, add the brand name — that's how packaged foods are
+                        listed. "Honey sriracha Lee Kum Kee" finds what "honey sriracha sauce"
+                        misses.
+                        {"\n\n"}
+                        If it's a plain ingredient, try fewer words: "rice" rather than "basmati
+                        rice pilaf".
+                      </Text>
+                    </>
                   )}
                 </View>
               )}
@@ -542,9 +566,11 @@ const styles = (T: any) =>
       marginTop: 22, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 14, padding: 15,
     },
-    tipHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 8 },
+    tipHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 9 },
     tipTitle: { fontSize: 13, color: T.text, fontFamily: FONTS.headingMed },
+    tipSubhead: { fontSize: 12, color: T.green, fontFamily: FONTS.headingMed, marginBottom: 5 },
     tipBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
+    tipDivider: { height: 1, backgroundColor: T.border, marginVertical: 12 },
 
     sectionRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 9, marginLeft: 2 },
     group: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, overflow: "hidden" },
@@ -556,8 +582,9 @@ const styles = (T: any) =>
 
     searchingBox: { alignItems: "center", gap: 12, paddingVertical: 34 },
     searchingText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
-    emptyBox: { alignItems: "center", gap: 10, paddingVertical: 26 },
-    empty: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5, paddingHorizontal: 10 },
+    emptyBox: { alignItems: "center", gap: 10, paddingVertical: 26, paddingHorizontal: 6 },
+    emptyTitle: { fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed, textAlign: "center" },
+    empty: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5 },
 
     /* how much */
     question: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
