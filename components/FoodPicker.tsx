@@ -9,13 +9,20 @@
 // come in countable units there's also a "Something else" row for the exact
 // number, so you can say "3 bananas" here rather than adding one and editing
 // it afterwards.
-import { Bookmark, Check, ChevronLeft, Clock, Minus, Plus, Search, Utensils, X } from "lucide-react-native";
-import React, { useMemo, useState } from "react";
+//
+// THE SEARCH IS REAL. Typing hits USDA (generic foods) and Open Food Facts
+// (packaged products). But both APIs match WHOLE WORDS — "broc" returns
+// nothing at all — so a local prefix list sits in front of them and turns
+// three letters into a word the network can actually find.
+import { Bookmark, Check, ChevronLeft, Clock, Minus, Plus, Search, Sparkles, Utensils, Wifi, X } from "lucide-react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-    KeyboardAvoidingView, Modal, Platform, Pressable,
-    ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
+  ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { useApp } from "../constants/AppState";
+import { searchFoods } from "../constants/foodApi";
+import { prefixMatches } from "../constants/foodNames";
 import { FOOD_DB, FoodDef, countLabel, nutritionFor } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
@@ -23,6 +30,14 @@ import Tap from "./Tap";
 
 const RECENT = ["Greek yogurt", "Banana", "Black coffee"];
 const SAVED = ["My morning oats", "Chicken & rice bowl"];
+
+/* How long to wait after the last keystroke before searching.
+
+   Without this, "chicken" fires seven requests — one per letter — and the
+   answers arrive out of order, so the list flickers through partial results
+   and can settle on the wrong one. 350ms is long enough to catch a normal
+   typing rhythm and short enough that it still feels instant. */
+const DEBOUNCE_MS = 350;
 
 export type PickedFood = {
   name: string;
@@ -54,16 +69,104 @@ export default function FoodPicker({
   // non-null means "using the exact count instead of a listed amount"
   const [exact, setExact] = useState<number | null>(null);
 
-  const list = useMemo(() => {
+  /* what came back from the network, and whether we're still waiting */
+  const [remote, setRemote] = useState<FoodDef[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [failed, setFailed] = useState(false);
+  /* which word we ended up searching for — shown when it differs from what
+     they typed, so an expanded prefix is never a mystery */
+  const [searchedFor, setSearchedFor] = useState<string | null>(null);
+
+  /* LOCAL FIRST. The eighteen built-in foods are matched instantly with no
+     network at all, and shown while the API is still thinking. Someone typing
+     "banana" sees a banana immediately rather than a spinner — and if they're
+     on a train with no signal, they still get a usable answer. */
+  const local = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    if (!needle) return FOOD_DB;
+    if (!needle) return [];
     return FOOD_DB.filter(
       (f) => f.name.toLowerCase().includes(needle) || f.sub.toLowerCase().includes(needle)
     );
   }, [q]);
 
+  /* WHAT THE PREFIX LIST THINKS THEY MEANT. "broc" → ["broccoli"].
+     Offered as taps rather than applied silently: guessing wrong and
+     searching for it anyway would be worse than the original problem, and
+     "cau" could reasonably mean cauliflower or cauliflower rice. */
+  const suggestions = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (needle.length < 2) return [];
+    /* nothing to suggest if they've already typed a full name */
+    const hits = prefixMatches(needle, 6);
+    return hits.filter((h) => h !== needle);
+  }, [q]);
+
+  /* the two lists joined, local on top, no duplicates */
+  const list = useMemo(() => {
+    const seen = new Set(local.map((f) => f.name.toLowerCase()));
+    return [...local, ...remote.filter((f) => !seen.has(f.name.toLowerCase()))];
+  }, [local, remote]);
+
+  /* ---------- the debounced search ---------- */
+  const timer = useRef<any>(null);
+  const reqId = useRef(0);
+
+  useEffect(() => {
+    clearTimeout(timer.current);
+    const needle = q.trim();
+
+    if (needle.length < 2) {
+      setRemote([]);
+      setSearching(false);
+      setFailed(false);
+      setSearchedFor(null);
+      return;
+    }
+
+    setSearching(true);
+    setFailed(false);
+
+    timer.current = setTimeout(async () => {
+      /* every request carries a number, and only the LATEST one is allowed to
+         write its results. Without this, a slow early request can land after a
+         fast later one and overwrite the right answer with a stale one. */
+      const mine = ++reqId.current;
+
+      let results = await searchFoods(needle);
+      let usedTerm: string | null = null;
+
+      /* THE PREFIX FALLBACK. Nothing came back for what they typed, but the
+         local list recognises it as the start of a real food — so try that
+         whole word instead. This is what turns "broc" into results without
+         the user ever knowing the API was strict about whole words. */
+      if (results.length === 0) {
+        const guess = prefixMatches(needle, 1)[0];
+        if (guess && guess !== needle.toLowerCase()) {
+          const second = await searchFoods(guess);
+          if (mine !== reqId.current) return;
+          if (second.length) {
+            results = second;
+            usedTerm = guess;
+          }
+        }
+      }
+
+      if (mine !== reqId.current) return;
+
+      setRemote(results);
+      setSearchedFor(usedTerm);
+      setSearching(false);
+      /* nothing from EITHER source usually means the request failed rather
+         than that the food doesn't exist — worth distinguishing, because the
+         two need different advice */
+      setFailed(results.length === 0);
+    }, DEBOUNCE_MS);
+
+    return () => clearTimeout(timer.current);
+  }, [q]);
+
   const reset = () => { setFood(null); setIdx(0); setExact(null); };
-  const close = () => { reset(); setQ(""); onClose(); };
+  const close = () => { reset(); setQ(""); setRemote([]); setSearchedFor(null); onClose(); };
 
   const openFood = (f: FoodDef) => {
     H.tap();
@@ -96,6 +199,8 @@ export default function FoodPicker({
     });
     reset();
     setQ("");
+    setRemote([]);
+    setSearchedFor(null);
   };
 
   const FoodRow = ({ f }: { f: FoodDef }) => {
@@ -110,6 +215,7 @@ export default function FoodPicker({
             <Text style={s.rowName} numberOfLines={1}>{f.name}</Text>
             <Text style={s.rowSub} numberOfLines={1}>
               {nutritionFor(f, d.grams).cal} cal for {d.label.toLowerCase()}
+              {f.sub && f.sub !== "generic" ? ` · ${f.sub}` : ""}
             </Text>
           </View>
         </View>
@@ -261,12 +367,32 @@ export default function FoodPicker({
               autoCorrect={false}
               returnKeyType="search"
             />
-            {q.length > 0 && (
+            {searching && <ActivityIndicator size="small" color={T.green} />}
+            {q.length > 0 && !searching && (
               <Pressable onPress={() => setQ("")} hitSlop={8}>
                 <X size={16} color={T.micro} />
               </Pressable>
             )}
           </View>
+
+          {/* DID YOU MEAN. Offered rather than applied — "cau" could be
+              cauliflower or cauliflower rice, and picking for them would be
+              worse than the strict matching this exists to soften. */}
+          {suggestions.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={s.suggestRow}
+            >
+              {suggestions.map((sug) => (
+                <Pressable key={sug} onPress={() => { H.tick(); setQ(sug); }} style={s.suggestChip}>
+                  <Sparkles size={11} color={T.green} />
+                  <Text style={s.suggestText}>{sug}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
         </View>
 
         <ScrollView
@@ -314,25 +440,72 @@ export default function FoodPicker({
                   );
                 })}
               </View>
+
+              {/* the food database matches whole words, and saying so up front
+                  costs nothing. The prefix list covers the common cases; this
+                  covers everything it doesn't. */}
+              <View style={s.tipCard}>
+                <Text style={s.tipTitle}>Searching works best with full words</Text>
+                <Text style={s.tipBody}>
+                  The food database matches whole words, so "broc" finds nothing on its own —
+                  type "broccoli". Common foods will suggest themselves as you type.
+                  {"\n\n"}
+                  Simpler is better too: "rice" beats "basmati rice pilaf".
+                </Text>
+              </View>
             </>
           ) : (
             <>
               <Text style={[s.micro, { marginBottom: 10, marginLeft: 2 }]}>
-                {list.length} {list.length === 1 ? "match" : "matches"} · pick the exact one
+                {searching && list.length === 0
+                  ? "Searching…"
+                  : `${list.length} ${list.length === 1 ? "match" : "matches"} · pick the exact one`}
               </Text>
-              <View style={s.group}>
-                {list.map((f, i) => (
-                  <View key={f.name}>
-                    {i > 0 && <View style={s.divider} />}
-                    <FoodRow f={f} />
-                  </View>
-                ))}
-              </View>
 
-              {list.length === 0 && (
-                <Text style={s.empty}>
-                  Nothing matches "{q}". Try a simpler word — "rice" rather than "basmati rice pilaf".
-                </Text>
+              {/* if we quietly searched for a different word, say so — results
+                  that don't match what was typed are otherwise confusing */}
+              {searchedFor && !searching && (
+                <Text style={s.searchedFor}>Showing results for "{searchedFor}"</Text>
+              )}
+
+              {list.length > 0 && (
+                <View style={s.group}>
+                  {list.map((f, i) => (
+                    <View key={`${f.name}-${i}`}>
+                      {i > 0 && <View style={s.divider} />}
+                      <FoodRow f={f} />
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* still waiting, and nothing local matched */}
+              {searching && list.length === 0 && (
+                <View style={s.searchingBox}>
+                  <ActivityIndicator size="small" color={T.green} />
+                  <Text style={s.searchingText}>Looking through the food database…</Text>
+                </View>
+              )}
+
+              {/* NOTHING came back. Two different situations wearing the same
+                  empty list, and they need different advice. */}
+              {!searching && list.length === 0 && (
+                <View style={s.emptyBox}>
+                  {failed ? (
+                    <>
+                      <Wifi size={18} color={T.micro} />
+                      <Text style={s.empty}>
+                        Nothing came back for "{q}". Check your connection, or try the food's
+                        full name — the database matches whole words, not the first few letters.
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={s.empty}>
+                      Nothing matches "{q}". Try the food's full name — the database matches
+                      whole words, so "broc" finds nothing while "broccoli" does.
+                    </Text>
+                  )}
+                </View>
               )}
             </>
           )}
@@ -362,6 +535,22 @@ const styles = (T: any) =>
     },
     searchInput: { flex: 1, fontSize: 15, color: T.text, fontFamily: FONTS.headingMed, padding: 0 },
 
+    suggestRow: { gap: 7, paddingTop: 10, paddingRight: 20 },
+    suggestChip: {
+      flexDirection: "row", alignItems: "center", gap: 5,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 99, paddingHorizontal: 11, paddingVertical: 7,
+    },
+    suggestText: { fontSize: 12, color: T.green, fontFamily: FONTS.headingMed },
+    searchedFor: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginBottom: 10, marginLeft: 2 },
+
+    tipCard: {
+      marginTop: 22, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 14, padding: 15,
+    },
+    tipTitle: { fontSize: 12.5, color: T.text, fontFamily: FONTS.headingMed, marginBottom: 7 },
+    tipBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
+
     sectionRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 9, marginLeft: 2 },
     group: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, overflow: "hidden" },
     divider: { height: 1, backgroundColor: T.border, marginLeft: 56 },
@@ -369,7 +558,11 @@ const styles = (T: any) =>
     rowIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: T.cardHi, alignItems: "center", justifyContent: "center" },
     rowName: { flex: 1, fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed },
     rowSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
-    empty: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", paddingVertical: 26, lineHeight: 18 },
+
+    searchingBox: { alignItems: "center", gap: 12, paddingVertical: 34 },
+    searchingText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
+    emptyBox: { alignItems: "center", gap: 10, paddingVertical: 26 },
+    empty: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18, paddingHorizontal: 10 },
 
     /* how much */
     question: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
