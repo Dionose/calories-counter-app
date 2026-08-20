@@ -4,9 +4,9 @@
 // SMALL — what sits in the card. A glance: your readings, the plan line, the
 // newest number. Not interactive beyond opening the big one.
 //
-// FULL — the whole history, drag to move through time, pinch to zoom, tap any
-// dot to see what you weighed and when. This exists because the year view
-// squeezes months of readings into a few hundred pixels, and no amount of
+// FULL — the whole history, drag to move through time, zoom with the buttons,
+// tap any dot to see what you weighed and when. This exists because the year
+// view squeezes months of readings into a few hundred pixels, and no amount of
 // clever scaling fixes that: the answer is letting people move the window
 // themselves.
 //
@@ -21,19 +21,23 @@
 // fortnight apart with a solid line would draw thirteen days of weight nobody
 // measured, so long gaps are faded and dashed.
 //
+// TAPPING MATCHES ON THE HORIZONTAL ONLY. Requiring the finger to land near
+// the dot in BOTH directions made dots almost untappable once zoomed in —
+// sideways is easy to aim, height is not, and a 4px dot on a phone is a
+// coin-flip. Each reading owns a column of the chart, so a tap anywhere in
+// that column picks it. Nobody has ever tapped a chart meaning "the empty
+// space above the dot".
+//
 // GESTURES USE PanResponder, not react-native-gesture-handler. GestureDetector
 // needs a GestureHandlerRootView above it, and this component is rendered deep
-// inside a Modal — PanResponder has no such requirement and handles both
-// fingers itself.
+// inside a Modal — PanResponder has no such requirement.
 //
 // THE SVG IS pointerEvents="none". Without that, the drawing sits above the
-// gesture layer and eats the SECOND finger of a pinch: the layer below sees
-// one touch, reads it as a drag, and zoom never happens. Making the graphics
-// transparent to touch hands every finger to the one view that's listening.
+// gesture layer and eats the second finger of a pinch.
 import { ChevronLeft, Minus, Plus } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { Dimensions, Modal, PanResponder, Pressable, StyleSheet, Text, View } from "react-native";
-import Svg, { Circle, Line, Polyline, Text as SvgText } from "react-native-svg";
+import Svg, { Circle, Line, Polyline, Rect, Text as SvgText } from "react-native-svg";
 import { FONTS } from "../constants/theme";
 import { fromKg, WeighIn } from "../constants/weight";
 
@@ -60,9 +64,14 @@ const PAD_B = 24;
 const MIN_SPAN_KG = 2;
 const MIN_SPAN_KG_FULL = 1;
 
-/* how close a finger has to land to a dot to count as tapping it. Dots are a
-   few pixels across and fingers are not. */
-const TAP_RADIUS = 34;
+/* how far sideways a finger can land from a dot and still pick it. Generous
+   on purpose — see the note at the top about matching horizontally only. */
+const TAP_RADIUS_X = 46;
+
+/* how much a finger can slide and still count as a tap rather than a drag.
+   Nobody taps a phone perfectly still, and the old value of 8 was rejecting
+   ordinary taps as drags. */
+const TAP_SLOP = 14;
 
 const MAX_ZOOM = 14;
 const ZOOM_STEP = 1.6;
@@ -412,8 +421,14 @@ function FullChart({
   const zoomRef = useRef(1);
   const txRef = useRef(0);
   const startTx = useRef(0);
-  const pinchStart = useRef<{ dist: number; zoom: number; tx: number } | null>(null);
+  const pinchStart = useRef<{ dist: number; zoom: number } | null>(null);
   const moved = useRef(0);
+
+  /* WHERE THE FINGER FIRST LANDED. Taken at the START of the gesture, not the
+     end: by release the finger has drifted, and on some devices the release
+     event reports a position relative to a different view entirely — which is
+     part of why tapping a dot used to take several goes. */
+  const downAt = useRef<{ x: number; y: number } | null>(null);
 
   const W = SCREEN_W - 24;
   const H = Math.round(SCREEN_H * 0.52);
@@ -477,6 +492,14 @@ function FullChart({
   const y = (kg: number) =>
     P_T + ((model.hi - kg) / Math.max(0.0001, model.hi - model.lo)) * plotH;
 
+  /* the same maths, read straight from the refs. The gesture handlers can't
+     use x() above, because that closes over the zoom and tx from the render
+     it was created in — stale by the time a finger lifts. */
+  const xNow = (t: number) =>
+    P_L +
+    ((t - model.xMin) / Math.max(1, model.xMax - model.xMin)) * plotW * zoomRef.current +
+    txRef.current;
+
   /* keep the drawing on screen — without this you can fling the chart into
      empty space and have no idea how to get back. At zoom 1 everything fits,
      so this correctly pins it: there is nowhere to scroll to. */
@@ -503,20 +526,42 @@ function FullChart({
     setTx(nextTx);
   };
 
+  /** which reading sits in the column the finger landed in.
+
+      HORIZONTAL DISTANCE ONLY — see the note at the top of the file. */
+  const pickAt = (tapX: number) => {
+    let bestIndex = -1;
+    let bestDist = Infinity;
+
+    model.points.forEach((p, i) => {
+      const d = Math.abs(xNow(p.t) - tapX);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIndex = i;
+      }
+    });
+
+    return bestIndex >= 0 && bestDist < TAP_RADIUS_X ? bestIndex : null;
+  };
+
   const pan = useRef(
     PanResponder.create({
       /* CAPTURE variants, so the gesture layer claims the touch before any
          child can. Combined with pointerEvents="none" on the Svg, this is
-         what makes a two-finger pinch actually arrive here. */
+         what lets a two-finger pinch arrive here at all. */
       onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
 
-      onPanResponderGrant: () => {
+      onPanResponderGrant: (evt) => {
         startTx.current = txRef.current;
         pinchStart.current = null;
         moved.current = 0;
+        downAt.current = {
+          x: evt.nativeEvent.locationX,
+          y: evt.nativeEvent.locationY,
+        };
       },
 
       onPanResponderMove: (evt, g) => {
@@ -531,7 +576,7 @@ function FullChart({
           const midX = (touches[0].locationX + touches[1].locationX) / 2;
 
           if (!pinchStart.current) {
-            pinchStart.current = { dist, zoom: zoomRef.current, tx: txRef.current };
+            pinchStart.current = { dist, zoom: zoomRef.current };
             return;
           }
 
@@ -548,34 +593,22 @@ function FullChart({
         setTx(next);
       },
 
-      onPanResponderRelease: (evt) => {
+      onPanResponderRelease: () => {
         pinchStart.current = null;
 
-        /* a TAP is a gesture that barely moved. Anything else was a drag, and
-           treating a drag as a tap would pop a label open every time you
-           scrolled. */
-        if (moved.current > 8) return;
+        /* a TAP is a gesture that barely moved. TAP_SLOP is generous because
+           a real finger always slides a few pixels, and rejecting those as
+           drags is what made dots feel unresponsive. */
+        const start = downAt.current;
+        downAt.current = null;
+        if (!start || moved.current > TAP_SLOP) return;
 
-        const { locationX, locationY } = evt.nativeEvent;
+        setPicked(pickAt(start.x));
+      },
 
-        /* nearest dot to the finger. Tracked as two plain numbers rather than
-           an object that starts out empty — TypeScript reads an
-           initially-null holder as never-assigned and then refuses to let the
-           result be read back. */
-        let bestIndex = -1;
-        let bestDist = Infinity;
-
-        model.points.forEach((p, i) => {
-          const dx = x(p.t) - locationX;
-          const dy = y(p.kg) - locationY;
-          const d = Math.sqrt(dx * dx + dy * dy);
-          if (d < bestDist) {
-            bestDist = d;
-            bestIndex = i;
-          }
-        });
-
-        setPicked(bestIndex >= 0 && bestDist < TAP_RADIUS ? bestIndex : null);
+      onPanResponderTerminate: () => {
+        pinchStart.current = null;
+        downAt.current = null;
       },
     })
   ).current;
@@ -620,11 +653,11 @@ function FullChart({
             </>
           ) : (
             <>
-              <Text style={s.readoutIdle}>Tap any dot to see that weigh-in</Text>
+              <Text style={s.readoutIdle}>Tap anywhere above a dot to see that weigh-in</Text>
               <Text style={s.readoutHint}>
                 {zoom > 1.05
                   ? "Drag left and right to move through time"
-                  : "Pinch or use + below to zoom in, then drag"}
+                  : "Use + below to zoom in, then drag"}
               </Text>
             </>
           )}
@@ -648,6 +681,20 @@ function FullChart({
                 </SvgText>
               </React.Fragment>
             ))}
+
+            {/* THE PICKED COLUMN, drawn behind everything. It's what makes
+                "tap the column, not the dot" visible rather than a secret. */}
+            {picked != null && model.points[picked] && (
+              <Rect
+                x={x(model.points[picked].t) - 16}
+                y={P_T}
+                width={32}
+                height={plotH}
+                fill={T.green}
+                opacity={0.08}
+                rx={8}
+              />
+            )}
 
             {model.targetVisible && (
               <>
@@ -712,7 +759,7 @@ function FullChart({
                       y2={P_T + plotH}
                       stroke={T.green}
                       strokeWidth={1}
-                      opacity={0.35}
+                      opacity={0.45}
                     />
                   )}
                   <Circle
@@ -734,7 +781,7 @@ function FullChart({
               const step = Math.ceil(
                 model.points.length / Math.max(2, Math.floor((plotW * zoom) / 62))
               );
-              if (i % step !== 0 && i !== model.points.length - 1) return null;
+              if (i % step !== 0 && i !== model.points.length - 1 && i !== picked) return null;
               const px = x(p.t);
               if (px < P_L - 20 || px > W - P_R + 20) return null;
               return (
@@ -754,9 +801,9 @@ function FullChart({
           </Svg>
         </View>
 
-        {/* ZOOM BUTTONS. Pinch works, but it depends on the device passing
-            both fingers through cleanly, and a chart you can't zoom is a
-            chart you can't read. These always work. */}
+        {/* ZOOM BUTTONS. Pinch works on some devices and not others, and a
+            chart you can't zoom is a chart you can't read. These always
+            work. */}
         <View style={s.zoomRow}>
           <Pressable
             onPress={() => applyZoom(zoomRef.current / ZOOM_STEP, P_L + plotW / 2)}

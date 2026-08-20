@@ -18,6 +18,11 @@
 // user for the life of the app — and the transcription is the part a phone
 // already does well.
 //
+// THE MIC IS THE ANIMATED ONE. This is the moment the app asks someone to
+// speak, and a frozen line drawing gives no sign anything is alive. A Lottie
+// can't be tinted at runtime, so the colour has to come from the FILE: the
+// dark mic on the green button, the solid green one on dark surfaces.
+//
 // ⚠️ THE NATIVE MODULE VERSION MATTERS. expo-speech-recognition renumbered its
 // releases at v56 to track Expo SDK versions; before that it used its own
 // scheme. On SDK 54 the correct version is 3.1.3, NOT 56.x — installing 56
@@ -29,12 +34,13 @@ import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from "expo-speech-recognition";
-import { AlertTriangle, Check, Info, Mic, Type, X } from "lucide-react-native";
+import { AlertTriangle, Check, Info, Type, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Modal, Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
+import Icon from "./Icon";
 import Tap from "./Tap";
 
 /* how long before the recogniser is stopped automatically.
@@ -264,7 +270,7 @@ export default function VoiceCapture({
           {state === "denied" ? (
             <>
               <View style={s.deniedIcon}>
-                <Mic size={30} color={T.sub} />
+                <Icon name="mic" size={30} mode="still" />
               </View>
               <Text style={s.title}>MOTION needs to listen</Text>
               <Text style={s.sub}>
@@ -361,7 +367,11 @@ export default function VoiceCapture({
           </View>
         )}
 
-        {/* the mic */}
+        {/* THE MIC. The DARK animation, because it sits on a solid green
+            button — a green mic on a green circle disappears. It loops while
+            idle, which is the invitation to tap; while listening the button
+            becomes a stop square, since a mic still animating there would say
+            "tap to start" at the moment it means "tap to finish". */}
         <View style={s.controls}>
           {state !== "denied" && (
             <Pressable onPress={state === "listening" ? stop : start}>
@@ -375,7 +385,7 @@ export default function VoiceCapture({
               >
                 {state === "listening"
                   ? <View style={s.stopSquare} />
-                  : <Mic size={30} color={T.ink} />}
+                  : <Icon name="micDark" size={42} mode="loop" />}
               </Animated.View>
             </Pressable>
           )}

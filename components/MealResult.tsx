@@ -27,6 +27,9 @@
 // A HAND CORRECTION OUTRANKS A SPOKEN ONE. Once someone has set an amount
 // themselves, voice never overwrites it: they typed a number, and a model
 // re-reading a sentence is not grounds to change it back.
+//
+// THE MIC ON THAT ROW IS THE ANIMATED ONE. A Lottie can't be tinted at
+// runtime, so the colour comes from the file rather than from a prop.
 import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, Mic, Plus, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
@@ -42,6 +45,7 @@ import { uploadMealPhoto } from "../constants/photos";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
+import Icon from "./Icon";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 import VoiceCapture from "./VoiceCapture";
@@ -392,7 +396,10 @@ export default function MealResult({
             and above the item list, because describing the meal is the single
             most useful thing someone can do here — far more than tapping
             through amounts. A photo can't see oil, butter, stock or what a
-            dish actually is. */}
+            dish actually is.
+
+            The mic LOOPS rather than sitting still: this row is an invitation
+            to speak, and a frozen icon reads as a label. */}
         <Tap
           onPress={() => { if (!fixing) { H.tap(); setVoiceOpen(true); } }}
           style={{ marginTop: 14 }}
@@ -402,7 +409,7 @@ export default function MealResult({
               {fixing ? (
                 <ActivityIndicator size="small" color={T.green} />
               ) : (
-                <Mic size={19} color={T.green} />
+                <Icon name="mic" size={26} mode="loop" />
               )}
             </View>
             <View style={{ flex: 1 }}>
@@ -471,7 +478,9 @@ export default function MealResult({
                   <View style={{ flex: 1, minWidth: 0, paddingLeft: 12 }}>
                     {/* WHAT THE DESCRIPTION JUST DID. Without this, a
                         correction that worked perfectly looks like nothing
-                        happened. */}
+                        happened. Lucide here rather than the animation — at
+                        9px a Lottie is unreadable and costs a frame budget
+                        for nothing. */}
                     {item.justChanged ? (
                       <View style={s.changedTag}>
                         <Mic size={9} color={T.green} />
