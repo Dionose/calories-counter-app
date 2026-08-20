@@ -2,6 +2,11 @@
 // Stats is one tab holding four views — main, steps, calories, weight — swapped
 // by a single `view` state rather than routing, so the tab bar stays put.
 //
+// ONE EXCEPTION TO THAT: a `view=weight` parameter can be handed in from
+// outside. Home's expected-weight sheet uses it, so "I've weighed myself"
+// lands on the weigh-in screen instead of dropping the user on the Stats
+// front page to find it themselves.
+//
 // EVERYTHING HERE IS REAL:
 //   Calories    — summed from logged meals
 //   Consistency — counted from logged days
@@ -17,7 +22,7 @@
 // numbers — if the reader has to decode the chart before they can read it,
 // the chart has failed.
 import { LinearGradient } from "expo-linear-gradient";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Activity, ArrowDown, ChevronLeft, Crown, Footprints, Lock, TrendingDown, TrendingUp } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -28,12 +33,13 @@ import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import WeighInSheet from "../../components/WeighInSheet";
+import WeightChart from "../../components/WeightChart";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
 import { DayActivity, isHealthAvailable, loadActivity, recentHeartRate, requestHealthPermission } from "../../constants/health";
 import { loadDayTotals, loggedDayCount, todayLocal } from "../../constants/meals";
 import { FONTS, tierForStreak } from "../../constants/theme";
-import { actualPacePerWeek, fromKg, loadWeighIns, smoothedKg, WeighIn } from "../../constants/weight";
+import { actualPacePerWeek, fromKg, loadWeighIns, toKg, WeighIn } from "../../constants/weight";
 
 type Range = "Week" | "Month" | "Year";
 type View_ = null | "steps" | "calories" | "weight";
@@ -123,7 +129,25 @@ export default function Stats() {
   const router = useRouter();
   const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, userId } = useApp();
   const [range, setRange] = useState<Range>("Week");
-  const [view, setView] = useState<View_>(null);
+
+  /* ---------- ARRIVING FROM SOMEWHERE ELSE ----------
+     Home's expected-weight sheet sends `?view=weight`. Read on the first
+     render so the weight screen is what appears, rather than the Stats front
+     page flashing first. */
+  const params = useLocalSearchParams<{ view?: string }>();
+  const [view, setView] = useState<View_>(params.view === "weight" ? "weight" : null);
+
+  /* The tab may already be mounted from an earlier visit, in which case the
+     useState above never runs again — so react to the parameter arriving too.
+     It's CLEARED straight after: without that, every later tap on the Stats
+     tab would reopen the weight screen, because the stale parameter is still
+     sitting in the route. */
+  useEffect(() => {
+    if (params.view === "weight") {
+      setView("weight");
+      router.setParams({ view: undefined });
+    }
+  }, [params.view]);
 
   const s = styles(T);
   const rangeWord = RANGE_WORD[range];
@@ -356,14 +380,35 @@ export default function Stats() {
   const calLabelW = range === "Month" ? 78 : 40;
   const stepBarW = range === "Year" ? 12 : range === "Month" ? 24 : 17;
 
-  /* ---------- weight ---------- */
+  /* ---------- weight ----------
+     THE NEWEST READING, not an average of the last three. Averaging was built
+     for people who weigh in daily; someone logging every few weeks got a
+     number blended with month-old readings — a weight they hadn't been in
+     ages, with nothing on screen to explain the difference. */
   const unit = profile.weightUnit;
-  const currentKg = smoothedKg(weighIns);
+  const currentKg = weighIns.length ? weighIns[weighIns.length - 1].weightKg : null;
 
   const changeKg = weighIns.length >= 2
     ? weighIns[weighIns.length - 1].weightKg - weighIns[0].weightKg
     : null;
   const shownChange = changeKg != null ? fromKg(changeKg, unit as "kg" | "lbs") : null;
+
+  /* ---------- THE PLAN'S OWN NUMBERS ----------
+     The chart draws a second line showing where the plan expects you to be,
+     and that needs the same three inputs expectedKgToday() takes. They live on
+     the profile in the USER'S unit, so they convert to kg here — everything
+     downstream of this point is kg, exactly like weight.ts. */
+  const startKg = toKg(profile.startWeight || 0, unit as "kg" | "lbs");
+  const targetKg = toKg(profile.targetWeight || 0, unit as "kg" | "lbs");
+  const paceKg = profile.paceRate || 0.5;
+
+  /* signup_date comes back as "2026-08-19". Parsed by hand rather than with
+     new Date(string), which reads a bare date as UTC and can land a day out. */
+  const signupDate = useMemo(() => {
+    if (!profile.memberSince) return new Date();
+    const [y, m, d] = String(profile.memberSince).split("-").map(Number);
+    return isNaN(y) || isNaN(m) || isNaN(d) ? new Date() : new Date(y, m - 1, d);
+  }, [profile.memberSince]);
 
   const typicalCal = periodAvg;
   const typicalProtein = Math.round(plan.protein * 0.8);
@@ -522,13 +567,17 @@ export default function Stats() {
         s={s}
         unit={unit as "kg" | "lbs"}
         entries={weighIns}
-        target={profile.targetWeight}
+        targetKg={targetKg}
+        startKg={startKg}
+        paceKgPerWeek={paceKg}
+        signupDate={signupDate}
+        range={range}
         onBack={() => setView(null)}
         onLog={() => setWeighOpen(true)}
         weighOpen={weighOpen}
         closeWeigh={() => setWeighOpen(false)}
         onSaved={() => setWeighTick((k) => k + 1)}
-        lastKg={weighIns.length ? weighIns[weighIns.length - 1].weightKg : null}
+        lastKg={currentKg}
       />
     );
   }
@@ -788,7 +837,7 @@ export default function Stats() {
         visible={weighOpen}
         onClose={() => setWeighOpen(false)}
         onSaved={() => setWeighTick((k) => k + 1)}
-        lastKg={weighIns.length ? weighIns[weighIns.length - 1].weightKg : null}
+        lastKg={currentKg}
       />
     </View>
   );
@@ -1211,17 +1260,32 @@ function CaloriesView({
 }
 
 /* ---------- weight history ----------
-   A CHART, not an editor. Logging happens in one place — the weigh-in sheet —
-   because two ways to record the same number is how two numbers end up
-   disagreeing. */
+   THE ONLY PLACE A WEIGHT IS ENTERED. Home shows where the plan expects you to
+   be and hands off here; recording the number in two places is how two numbers
+   end up disagreeing.
+
+   THE CHART IS A LINE, not columns. A column only means something next to
+   other columns, so a single weigh-in rendered as one lonely bar said nothing
+   at all. The line carries a second, dashed line showing where the plan
+   expects you to be — which is the comparison people actually came for, and
+   which gives even a first reading something to sit against.
+
+   EVERYTHING IN HERE IS KG until the moment it's displayed. targetKg arrives
+   already converted — it used to arrive in the user's own unit and then get
+   run through fromKg() a second time, which multiplied an lbs target by 2.2. */
 function WeightView({
-  T, s, unit, entries, target, onBack, onLog, weighOpen, closeWeigh, onSaved, lastKg,
+  T, s, unit, entries, targetKg, startKg, paceKgPerWeek, signupDate, range,
+  onBack, onLog, weighOpen, closeWeigh, onSaved, lastKg,
 }: {
   T: any;
   s: any;
   unit: "kg" | "lbs";
   entries: WeighIn[];
-  target: number;
+  targetKg: number;
+  startKg: number;
+  paceKgPerWeek: number;
+  signupDate: Date;
+  range: "Week" | "Month" | "Year";
   onBack: () => void;
   onLog: () => void;
   weighOpen: boolean;
@@ -1230,14 +1294,6 @@ function WeightView({
   lastKg: number | null;
 }) {
   const vals = entries.map((e) => fromKg(e.weightKg, unit));
-  const min = vals.length ? Math.min(...vals) : 0;
-  const max = vals.length ? Math.max(...vals) : 0;
-  /* a little headroom so the highest and lowest points aren't glued to the
-     edges — and a floor on the span, or two near-identical readings would
-     render as a dramatic cliff */
-  const span = Math.max(2, max - min);
-  const lo = min - span * 0.15;
-  const hi = max + span * 0.15;
 
   const change = vals.length >= 2 ? vals[vals.length - 1] - vals[0] : null;
   const pace = actualPacePerWeek(entries);
@@ -1300,30 +1356,16 @@ function WeightView({
                   )}
                 </View>
 
-                {/* a plain column chart. Every bar is a real reading — no
-                    interpolation between them, because a smooth line would
-                    imply measurements nobody took. */}
-                <View style={s.wChart}>
-                  {entries.slice(-14).map((e, i) => {
-                    const v = fromKg(e.weightKg, unit);
-                    const h = hi > lo ? ((v - lo) / (hi - lo)) * 90 : 45;
-                    const [, m, d] = e.measuredOn.split("-").map(Number);
-                    return (
-                      <View key={e.id || i} style={s.wCol}>
-                        <Text style={s.wVal}>{v.toFixed(1)}</Text>
-                        <View style={s.wTrack}>
-                          <LinearGradient
-                            colors={["#22C55E", "#15803D"]}
-                            style={[s.wBar, { height: Math.max(6, h) }]}
-                          />
-                        </View>
-                        {/* "Aug 18", not "A18" — a bare number reads as
-                            nothing, and one letter doesn't help either */}
-                        <Text style={s.wLabel}>{MSHORT[m - 1]}{"\n"}{d}</Text>
-                      </View>
-                    );
-                  })}
-                </View>
+                <WeightChart
+                  T={T}
+                  unit={unit}
+                  entries={entries}
+                  startKg={startKg}
+                  targetKg={targetKg}
+                  paceKgPerWeek={paceKgPerWeek}
+                  signupDate={signupDate}
+                  range={range}
+                />
 
                 {entries.length === 1 && (
                   <Text style={s.noDataNote}>
@@ -1341,8 +1383,8 @@ function WeightView({
             </Tap>
 
             <Text style={s.weightFoot}>
-              {target
-                ? `Target ${fromKg(target, unit).toFixed(1)} ${unit}. Day-to-day swings are mostly water — it's the direction over weeks that counts.`
+              {targetKg
+                ? `Target ${fromKg(targetKg, unit).toFixed(1)} ${unit}. Day-to-day swings are mostly water — it's the direction over weeks that counts.`
                 : "Day-to-day swings are mostly water — it's the direction over weeks that counts."}
             </Text>
           </>
@@ -1480,7 +1522,9 @@ const styles = (T: any) =>
     stepBarInside: { fontSize: 11, color: "#0A0A0A", fontFamily: FONTS.headingMed },
     refLine: { position: "absolute", top: 0, bottom: 0, width: 2, backgroundColor: T.text, opacity: 0.5, borderRadius: 2 },
 
-    /* weight chart */
+    /* weight chart — the column styles below are no longer used by
+       WeightView (it renders components/WeightChart.tsx now) and are kept
+       only so nothing else that might reference them breaks */
     wChart: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-around", height: 138 },
     wCol: { alignItems: "center", gap: 4, flex: 1 },
     wVal: { fontSize: 8, color: T.sub, fontFamily: FONTS.headingMed },

@@ -5,23 +5,34 @@ import { ChevronLeft, ChevronRight, HelpCircle, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
+import ExpectedWeightSheet from "../../components/ExpectedWeightSheet";
 import GradientText from "../../components/GradientText";
 import Icon, { IconName } from "../../components/Icon";
 import PageHeader from "../../components/PageHeader";
 import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
-import WeighInSheet from "../../components/WeighInSheet";
 import { useApp } from "../../constants/AppState";
 import { loadDay, todayLocal } from "../../constants/meals";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
-import { expectedKgToday, fromKg, loadWeighIns, smoothedKg, toKg } from "../../constants/weight";
+import { expectedKgToday, fromKg, loadWeighIns, toKg } from "../../constants/weight";
 
 const SCREEN_H = Dimensions.get("window").height;
 
 // Both sheets get an EXPLICIT height — TravelBorder's card sizes to its content.
 const SHEET_H = Math.round(SCREEN_H * 0.72);
 const HERO_H = Math.round(SCREEN_H * 0.62);
+
+const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-08-19" → "Aug 19". Split by hand rather than with new Date(string),
+    which reads a bare date as UTC and can land a day out — the same trap
+    todayLocal() exists to avoid. */
+function shortDay(isoDate: string): string | null {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
+  return `${MSHORT[m - 1]} ${d}`;
+}
 
 /* How far over the target before the wording gets firmer. Below this you've
    essentially hit your number — estimates carry more error than 150 calories,
@@ -137,13 +148,12 @@ export default function Home() {
   const [todayMacros, setTodayMacros] = useState({ p: 0, c: 0, f: 0 });
   const [mealsLoaded, setMealsLoaded] = useState(false);
 
-  /* ---------- WEIGH-INS ---------- */
-  const [weighOpen, setWeighOpen] = useState(false);
+  /* ---------- WEIGH-INS ----------
+     Read only. Home no longer records a weight — see the note on the chip. */
+  const [expectedOpen, setExpectedOpen] = useState(false);
   const [lastKg, setLastKg] = useState<number | null>(null);
-  const [smoothKg, setSmoothKg] = useState<number | null>(null);
+  const [lastOn, setLastOn] = useState<string | null>(null);
   const [weighCount, setWeighCount] = useState(0);
-  /* bumped after a save so the chip refetches without leaving the screen */
-  const [weighTick, setWeighTick] = useState(0);
 
   /* useFocusEffect rather than useEffect: coming BACK from the camera after
      logging has to show the new number. A mount-only effect wouldn't re-run,
@@ -180,6 +190,9 @@ export default function Home() {
     }, [userId])
   );
 
+  /* Refetched on focus, which is what picks up a weigh-in saved over in Stats
+     — the user walks back to Home and the sheet's "last weigh-in" is current
+     without anything needing to be pushed here. */
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -189,15 +202,18 @@ export default function Home() {
         const { entries } = await loadWeighIns(userId);
         if (cancelled) return;
         setWeighCount(entries.length);
-        setLastKg(entries.length ? entries[entries.length - 1].weightKg : null);
-        /* the SMOOTHED figure, not the newest reading — see weight.ts. A
-           single morning's number swings a kilo on water alone, and showing
-           that as "progress" tells people something false about their week. */
-        setSmoothKg(smoothedKg(entries));
+
+        const newest = entries.length ? entries[entries.length - 1] : null;
+        /* THE NUMBER THEY TYPED, not an average of the last three. Averaging
+           was built for daily weighers; someone logging every few weeks got a
+           figure blended with month-old readings — a weight they hadn't been
+           in ages, with nothing on screen explaining why. */
+        setLastKg(newest ? newest.weightKg : null);
+        setLastOn(newest ? shortDay(newest.measuredOn) : null);
       })();
 
       return () => { cancelled = true; };
-    }, [userId, weighTick])
+    }, [userId])
   );
 
   // guards against rapid repeat taps
@@ -212,7 +228,7 @@ export default function Home() {
     setBoardMounted(false);
     setBoardBody(false);
     setHowOpen(false);
-    setWeighOpen(false);
+    setExpectedOpen(false);
   }, [tabResetKey]);
 
   const tier = tierForStreak(streakDays);
@@ -325,9 +341,14 @@ export default function Home() {
   const losing = profile.targetWeight < profile.startWeight;
 
   /* ---------- THE WEIGHT CHIP ----------
-     Three states, and which one shows depends on what the user has actually
-     given us. The chip used to always claim "on track" from the plan alone —
-     a promise made with no evidence behind it. */
+     READ-ONLY, and always the plan's expected weight. It used to show your
+     real weight once you'd logged one, which meant the chip quietly changed
+     what it was measuring depending on your history — and tapping it opened a
+     weigh-in, so the same number could be entered here and in Stats.
+
+     Now there's one place to read (here) and one place to write (Stats), and
+     this chip only ever answers one question: where does the plan say I
+     should be today? */
   const startKg = toKg(profile.startWeight || 0, unit as "kg" | "lbs");
   const targetKg = toKg(profile.targetWeight || 0, unit as "kg" | "lbs");
   const paceKg = profile.paceRate || 0.5;
@@ -339,34 +360,18 @@ export default function Home() {
   }, [profile.memberSince]);
 
   const expectedKg = expectedKgToday(startKg, targetKg, paceKg, signupDate);
+  const expectedShown = fromKg(expectedKg, unit as "kg" | "lbs");
+  const lastShown = lastKg != null ? fromKg(lastKg, unit as "kg" | "lbs") : null;
 
-  /* the number on the chip: their real smoothed weight if they've weighed in,
-     otherwise what the plan projects. Both are shown in their own unit. */
-  const shownWeight = smoothKg != null
-    ? fromKg(smoothKg, unit as "kg" | "lbs")
-    : fromKg(expectedKg, unit as "kg" | "lbs");
-
-  /* how far real is from expected — only meaningful once there are at least
-     two weigh-ins, because one reading is a starting point, not a trend */
-  const aheadKg = smoothKg != null && weighCount >= 2
-    ? (losing ? expectedKg - smoothKg : smoothKg - expectedKg)
-    : null;
-
-  let weightNote: string;
-  if (weighCount === 0) {
-    weightNote = "Estimated · tap to log your real weight";
-  } else if (aheadKg == null) {
-    weightNote = "First weigh-in logged · tap to add another";
-  } else if (Math.abs(aheadKg) < 0.3) {
-    weightNote = "Right on schedule";
-  } else if (aheadKg > 0) {
-    weightNote = `${fromKg(Math.abs(aheadKg), unit as "kg" | "lbs").toFixed(1)} ${unit} ahead of plan`;
-  } else {
-    /* BEHIND is stated plainly and without alarm. Weight moves in steps, not
-       lines — someone a kilo behind in week two is having a normal week, and
-       telling them otherwise is how people quit. */
-    weightNote = `${fromKg(Math.abs(aheadKg), unit as "kg" | "lbs").toFixed(1)} ${unit} behind · this evens out`;
-  }
+  /* The note states a fact and nothing more. No verdict, because a verdict
+     needs the plan to have been re-anchored to a real reading first — that's
+     the next piece of work, not this one. */
+  const weightNote =
+    weighCount === 0
+      ? "An estimate until you weigh in · tap to see how it works"
+      : lastShown != null && lastOn
+        ? `You last weighed ${lastShown.toFixed(1)} ${unit} on ${lastOn}`
+        : "Tap to see how this is worked out";
 
   const s = styles(T);
 
@@ -651,21 +656,20 @@ export default function Home() {
             </View>
           </Tap>
 
-          {/* THE WEIGHT CHIP — now opens the weigh-in sheet rather than
-              wandering off to Stats. The number is their real smoothed weight
-              once they've logged one; before that it's the plan's estimate and
-              says so, because claiming "on track" with no weigh-ins behind it
-              is a promise the app can't keep. */}
+          {/* THE WEIGHT CHIP — opens an explainer, never a weigh-in. Tapping it
+              used to open a text field, which put weight entry in two places
+              and left the user unsure which number the app was actually
+              using. */}
           <View style={{ flex: 1 }}>
             <BlurLock label="Your weight" locked={freeLocked} radius={14} compact>
-              <Tap onPress={() => setWeighOpen(true)}>
+              <Tap onPress={() => setExpectedOpen(true)}>
                 <View style={s.chipCard}>
                   <View style={s.rowBetween}>
-                    <Text style={s.micro}>{weighCount ? "YOUR WEIGHT" : "EXPECTED WEIGHT"}</Text>
+                    <Text style={s.micro}>EXPECTED WEIGHT</Text>
                     <ChevronRight size={13} color={T.micro} />
                   </View>
                   <View style={s.wRow}>
-                    <Text style={s.wBig}>{shownWeight ? shownWeight.toFixed(1) : "—"}</Text>
+                    <Text style={s.wBig}>{expectedShown ? expectedShown.toFixed(1) : "—"}</Text>
                     <Text style={s.wUnit}>{unit}</Text>
                     <Text style={s.wTrend}>{losing ? "↓" : "↑"} {rate.toFixed(1)}</Text>
                   </View>
@@ -677,12 +681,20 @@ export default function Home() {
         </View>
       </ScrollView>
 
-      {/* the weigh-in sheet — refreshes the chip on save via weighTick */}
-      <WeighInSheet
-        visible={weighOpen}
-        onClose={() => setWeighOpen(false)}
-        onSaved={() => setWeighTick((k) => k + 1)}
-        lastKg={lastKg}
+      {/* THE EXPLAINER — reads only. Its button hands off to the weight screen
+          in Stats, which is the single place a real weight is recorded. */}
+      <ExpectedWeightSheet
+        T={T}
+        visible={expectedOpen}
+        onClose={() => setExpectedOpen(false)}
+        onGoLog={() => router.push("/(tabs)/stats?view=weight")}
+        expectedShown={expectedShown}
+        unit={unit as "kg" | "lbs"}
+        losing={losing}
+        paceShown={rate}
+        targetShown={profile.targetWeight || 0}
+        lastShown={lastShown}
+        lastOn={lastOn}
       />
 
       {/* CALORIE DETAIL POP-OUT */}

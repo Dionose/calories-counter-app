@@ -29,6 +29,7 @@ import { useApp } from "../../constants/AppState";
 import { signOut } from "../../constants/auth";
 import * as H from "../../constants/haptics";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
+import { deleteWeighIn, loadWeighIns, saveWeighIn, toKg } from "../../constants/weight";
 
 type View_ =
   | null | "account" | "goal" | "calories" | "targetweight" | "units"
@@ -50,19 +51,46 @@ const FLAME_FOR_TIER: Record<string, IconName> = {
   Ultimate: "flameUltimate",
 };
 
+/* ---------- DEV SEED SHAPE ----------
+   Ten readings, one every three days, ending today.
+
+   The WOBBLE is the point. Real weight doesn't fall in a straight line — it
+   drops, bounces, drops further — and a chart built from two readings can't
+   show that, so the seeded set alternates above and below a gently falling
+   trend. That's the up-down-up-down shape you'd see on a real user's chart
+   after a month. */
+const SEED_COUNT = 10;
+const SEED_GAP_DAYS = 3;
+const SEED_TREND_PER_READING = 0.28;   // kg drifting down each time
+const SEED_WOBBLE = [0, 0.7, -0.5, 0.9, -0.3, 0.6, -0.8, 0.4, -0.6, 0.2];
+
+/** N days ago as YYYY-MM-DD in the DEVICE's timezone — same reasoning as
+    todayLocal(): toISOString() shifts to UTC and can file a reading under the
+    wrong day. */
+function dayAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export default function Profile() {
   const router = useRouter();
   const {
     T, freeLocked, isPro, togglePro, openPaywall,
     plan, profile, streakDays, setDemoStreak,
     settings, setSetting, themeMode, tabResetKey,
-    devMode, toggleDevMode,
+    devMode, toggleDevMode, userId,
   } = useApp();
 
   const [themeOpen, setThemeOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View_>(null);
   const [logoutOpen, setLogoutOpen] = useState(false);
+
+  /* dev seeding — `seedMsg` reports what happened, because these buttons write
+     to the database and a silent button that touched real rows is unnerving */
+  const [seedBusy, setSeedBusy] = useState(false);
+  const [seedMsg, setSeedMsg] = useState<string | null>(null);
 
   const s = styles(T);
 
@@ -96,6 +124,7 @@ export default function Profile() {
     setLoading(false);
     setThemeOpen(false);
     setLogoutOpen(false);
+    setSeedMsg(null);
   }, [tabResetKey]);
 
   /* the identity card opens the account screen behind a short load — it's
@@ -107,6 +136,68 @@ export default function Profile() {
       setLoading(false);
       setView("account");
     }, 1300);
+  };
+
+  /* ---------- DEV: FILL THE WEIGHT CHART ----------
+     The chart draws one point per weigh-in, and saveWeighIn upserts on
+     (user, date) — so entering ten numbers today leaves you with ONE row, and
+     a chart that can only ever draw a straight line. This writes ten rows on
+     ten different dates, which is the only way to see the real shape without
+     waiting a month.
+
+     Anchored to the user's own start weight so the seeded readings sit in a
+     sensible place next to their plan line. */
+  const seedWeighIns = async () => {
+    if (!userId || seedBusy) return;
+    H.tap();
+    setSeedBusy(true);
+    setSeedMsg(null);
+
+    const unit = (profile.weightUnit || "kg") as "kg" | "lbs";
+    const startKg = toKg(profile.startWeight || 80, unit);
+
+    let written = 0;
+    let failed: string | null = null;
+
+    for (let i = 0; i < SEED_COUNT; i++) {
+      /* i = 0 is the OLDEST reading, so the trend falls as i grows and the
+         newest lands nearest today */
+      const kg = startKg - SEED_TREND_PER_READING * i + SEED_WOBBLE[i];
+      const day = dayAgo((SEED_COUNT - 1 - i) * SEED_GAP_DAYS);
+
+      const { error } = await saveWeighIn(userId, kg, "kg", day);
+      if (error) { failed = error; break; }
+      written++;
+    }
+
+    setSeedBusy(false);
+    setSeedMsg(
+      failed
+        ? `Stopped after ${written} — ${failed}`
+        : `Wrote ${written} weigh-ins across the last ${(SEED_COUNT - 1) * SEED_GAP_DAYS} days. Open Stats → Weight.`
+    );
+  };
+
+  /* ---------- DEV: WIPE THEM ----------
+     Deletes every weigh-in on this account. There's no undo, which is fine in
+     dev and is exactly why this must never ship. */
+  const clearWeighIns = async () => {
+    if (!userId || seedBusy) return;
+    H.warn();
+    setSeedBusy(true);
+    setSeedMsg(null);
+
+    const { entries } = await loadWeighIns(userId);
+    let removed = 0;
+
+    for (const e of entries) {
+      if (!e.id) continue;
+      const { error } = await deleteWeighIn(e.id);
+      if (!error) removed++;
+    }
+
+    setSeedBusy(false);
+    setSeedMsg(`Deleted ${removed} weigh-ins. The chart is empty now.`);
   };
 
   /* Logging out lands on SIGN IN, not onboarding. Someone with an account
@@ -468,6 +559,36 @@ export default function Profile() {
                   );
                 })}
               </View>
+
+              {/* WEIGH-IN SEEDING — unlike the tier chips, these write REAL
+                  rows to Supabase. That's the only way to test the chart:
+                  the weigh-in table allows one row per day, so the shape of a
+                  month's readings can't be faked from today alone.
+                  Clearing removes real data with no undo. */}
+              <Text style={s.devHint}>
+                Weight chart test data — these write real rows to your account.
+              </Text>
+              <View style={s.tierRow}>
+                <Pressable
+                  onPress={seedWeighIns}
+                  disabled={seedBusy}
+                  style={[s.tierChip, { borderColor: `${T.green}66`, backgroundColor: `${T.green}18`, opacity: seedBusy ? 0.5 : 1 }]}
+                >
+                  <Text style={[s.tierChipText, { color: T.green }]}>
+                    {seedBusy ? "Working…" : `Seed ${SEED_COUNT} weigh-ins`}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={clearWeighIns}
+                  disabled={seedBusy}
+                  style={[s.tierChip, { borderColor: `${T.red}66`, backgroundColor: "rgba(239,68,68,0.10)", opacity: seedBusy ? 0.5 : 1 }]}
+                >
+                  <Text style={[s.tierChipText, { color: T.red }]}>Clear all weigh-ins</Text>
+                </Pressable>
+              </View>
+
+              {seedMsg && <Text style={s.devResult}>{seedMsg}</Text>}
             </>
           )}
 
@@ -531,6 +652,7 @@ const styles = (T: any) =>
     devDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: T.border },
     devMasterText: { fontSize: 10.5, color: T.sub, fontFamily: FONTS.headingMed, letterSpacing: 0.4 },
     devHint: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, marginTop: 12, marginBottom: 8, lineHeight: 15 },
+    devResult: { fontSize: 10, color: T.sub, fontFamily: FONTS.body, marginTop: 10, lineHeight: 15 },
 
     tierRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
     tierChip: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 6 },
