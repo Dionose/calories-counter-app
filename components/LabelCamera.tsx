@@ -1,17 +1,23 @@
 // components/LabelCamera.tsx
-// Photographing a nutrition panel.
+// Photographing a packet — either the front of it or the nutrition panel.
+//
+// ONE CAMERA, TWO JOBS. The front photo answers "what is this?"; the panel
+// photo answers "what's in it?". They need different wording, a different
+// framing guide and a different help sheet, but the same taller viewfinder —
+// so `mode` switches the content rather than a second component duplicating
+// the whole thing.
 //
 // DELIBERATELY TALLER than the meal camera. That one is a card floating over
 // the screen; this one nearly fills it. The difference is the point: framing
-// matters far more here. A meal photo just needs the plate in shot, but a
-// panel photo has to be readable text, and a bigger viewfinder makes people
-// take more care without being told to.
+// matters far more here. A meal photo just needs the plate in shot, but this
+// has to be READABLE TEXT, and a bigger viewfinder makes people take more care
+// without being told to.
 //
 // WHY THIS EXISTS AT ALL. Open Food Facts is volunteer-entered, so a record
 // often disagrees with the packet in the user's hand — a bottle reading
-// "¼ cup (60 ml)" can be stored as "1 tbsp (19 g)". Neither is wrong; they
-// came from different labels. Nothing in our code can resolve that, because
-// only the person holding the bottle can see what it says. This is them
+// "¼ cup (60 ml)" can be stored as "1 tbsp (19 g)". And plenty of real
+// products aren't in any database. Nothing in our code resolves that, because
+// only the person holding the packet can see what it says. This is them
 // showing us.
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
@@ -26,15 +32,14 @@ import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
 const { height: SCREEN_H } = Dimensions.get("window");
-/* ~62% of the screen for the viewfinder alone. The meal camera's preview is
-   300px on a card; this is deliberately much larger, because the user needs
-   to see whether the small print is actually in focus before they shoot. */
 const PREVIEW_H = Math.round(SCREEN_H * 0.52);
+
+export type CameraMode = "panel" | "front";
 
 /* ---------- the shutter ----------
    The same squircle as the meal camera, so it still reads as MOTION's — but
    gold rather than green, matching the "exactly as the pack states it" rung
-   this photo is going to produce. */
+   these photos produce. */
 function Shutter({ onPress, busy }: { onPress: () => void; busy?: boolean }) {
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -80,19 +85,22 @@ function Shutter({ onPress, busy }: { onPress: () => void; busy?: boolean }) {
 }
 
 export default function LabelCamera({
-  visible, productName, onClose, onCapture, onSkip,
+  visible, mode = "panel", productName, onClose, onCapture, onSkip,
 }: {
   visible: boolean;
-  /** what the barcode found, so the screen can confirm we got the right thing
-      before asking for anything else */
+  /** "front" reads the NAME off the packet; "panel" reads the numbers */
+  mode?: CameraMode;
+  /** what's already known, so the screen can confirm it before asking for more */
   productName?: string | null;
   onClose: () => void;
   onCapture: (uri: string) => void;
-  /** "use what we found" — the database result, without the label photo */
-  onSkip: () => void;
+  /** the escape. Absent when there IS no alternative — without a panel photo
+      there are no numbers at all, so that step can't be skipped. */
+  onSkip?: () => void;
 }) {
   const { T } = useApp();
   const s = styles(T);
+  const front = mode === "front";
 
   const [permission, requestPermission] = useCameraPermissions();
   const camRef = useRef<CameraView>(null);
@@ -131,8 +139,6 @@ export default function LabelCamera({
     ]).start();
 
     try {
-      /* HIGHER QUALITY than a meal photo. Small print needs the detail — a
-         compressed label is exactly the case where a 6 becomes an 8. */
       const photo = await camRef.current.takePictureAsync({ quality: 1, skipProcessing: false });
       setTaking(false);
       if (photo?.uri) onCapture(photo.uri);
@@ -164,31 +170,35 @@ export default function LabelCamera({
       <View style={s.screen}>
         <Animated.View style={{ flex: 1, opacity: rise, transform: [{ translateY }] }}>
 
-          {/* header — confirms the product BEFORE asking for anything */}
           <View style={s.head}>
             <Pressable onPress={onClose} hitSlop={12} style={s.headBtn}>
               <X size={20} color={T.text} />
             </Pressable>
             <View style={{ flex: 1, alignItems: "center" }}>
-              <Text style={s.headTitle}>Nutrition panel</Text>
+              <Text style={s.headTitle}>
+                {front ? "The front of the pack" : "Nutrition facts"}
+              </Text>
             </View>
             <Pressable onPress={() => { H.tap(); setShowHelp(true); }} hitSlop={12} style={s.headBtn}>
               <Info size={19} color={T.gold} />
             </Pressable>
           </View>
 
+          {/* what's already known. On the panel step this confirms we got the
+              right product before asking for anything else. */}
           {productName ? (
             <View style={s.foundCard}>
-              <Text style={s.foundLabel}>FOUND YOUR PRODUCT</Text>
+              <Text style={s.foundLabel}>{front ? "ADDING" : "GOT IT"}</Text>
               <Text style={s.foundName} numberOfLines={2}>{productName}</Text>
             </View>
           ) : null}
 
           <Text style={s.ask}>
-            Now snap the nutrition panel and MOTION reads the exact numbers off your packet.
+            {front
+              ? "Point at the front of the packet and MOTION reads the name — no typing."
+              : "Now the nutrition facts panel, and MOTION reads the exact numbers off your packet."}
           </Text>
 
-          {/* the viewfinder */}
           <View style={s.previewWrap}>
             <TravelBorder color={T.gold} cardBg="#000000" borderColor={T.border} radius={22} strokeWidth={2.5}>
               <View style={s.preview}>
@@ -205,7 +215,7 @@ export default function LabelCamera({
                           <Camera size={34} color="rgba(255,255,255,0.35)" />
                           <Text style={s.permText}>
                             {permission.canAskAgain
-                              ? "MOTION needs camera access to read the label."
+                              ? "MOTION needs camera access to read the packet."
                               : "Camera access is off. Turn it on in Settings → MOTION."}
                           </Text>
                           {permission.canAskAgain && (
@@ -221,17 +231,21 @@ export default function LabelCamera({
                   </View>
                 )}
 
-                {/* the framing guide — a tall portrait box, because that's the
-                    shape a nutrition panel actually is */}
+                {/* THE FRAMING GUIDE, shaped for what's being photographed.
+                    A panel is a tall narrow column; a product front is wider
+                    than it is tall. A square box would encourage the wrong
+                    framing for both. */}
                 {ready && (
                   <View style={s.guideWrap} pointerEvents="none">
-                    <View style={s.guide}>
+                    <View style={front ? s.guideWide : s.guideTall}>
                       <View style={[s.corner, s.cornerTL]} />
                       <View style={[s.corner, s.cornerTR]} />
                       <View style={[s.corner, s.cornerBL]} />
                       <View style={[s.corner, s.cornerBR]} />
                     </View>
-                    <Text style={s.guideText}>Fill the box with the panel</Text>
+                    <Text style={s.guideText}>
+                      {front ? "Get the name in the box" : "Fill the box with the panel"}
+                    </Text>
                   </View>
                 )}
 
@@ -243,7 +257,6 @@ export default function LabelCamera({
             </TravelBorder>
           </View>
 
-          {/* controls */}
           <View style={s.controls}>
             <Pressable onPress={pickFromGallery} style={s.sideBtn}>
               <ImageIcon size={19} color="rgba(255,255,255,0.9)" />
@@ -251,27 +264,33 @@ export default function LabelCamera({
 
             <Shutter onPress={shoot} busy={taking || !ready} />
 
-            {/* balances the row — the flip button makes no sense here, since
-                nobody photographs a label with the front camera */}
+            {/* balances the row — nobody photographs a packet with the front
+                camera, so the flip button has no place here */}
             <View style={{ width: 40 }} />
           </View>
 
-          {/* THE SKIP. Framed honestly: what we already have isn't vague, it's
-              the label's own nutrition with an estimated portion. Someone
-              logging the same yogurt every day shouldn't have to photograph it
-              each time. */}
-          <Tap onPress={() => { H.tick(); onSkip(); }} style={s.skipWrap}>
-            <View style={s.skipCard}>
-              <Text style={s.skipTitle}>Use what we found instead</Text>
-              <Text style={s.skipBody}>
-                The nutrition already came off this product's label. Only the serving size is
-                MOTION's estimate — fine for most things, and you can adjust it after.
-              </Text>
-            </View>
-          </Tap>
+          {/* THE ESCAPE, framed honestly and kept quiet. On the front step it's
+              typing; on the panel step it's the database figures. Absent
+              entirely when there's no alternative worth offering. */}
+          {onSkip ? (
+            <Tap onPress={() => { H.tick(); onSkip(); }} style={s.skipWrap}>
+              <View style={s.skipCard}>
+                <Text style={s.skipTitle}>
+                  {front ? "Type the name instead" : "Use what we found instead"}
+                </Text>
+                <Text style={s.skipBody}>
+                  {front
+                    ? "For a jar with a handwritten sticker, or anything the camera can't make out."
+                    : "The nutrition already came off this product's label. Only the serving size is MOTION's estimate — fine for most things, and you can adjust it after."}
+                </Text>
+              </View>
+            </Tap>
+          ) : (
+            <View style={{ height: 26 }} />
+          )}
         </Animated.View>
 
-        {/* WHAT A PANEL LOOKS LIKE. Not everyone knows the phrase "nutrition
+        {/* WHAT TO PHOTOGRAPH. Not everyone knows the phrase "nutrition
             facts", and the panel sits in a different place on every packet. */}
         <Modal visible={showHelp} transparent animationType="fade" onRequestClose={() => setShowHelp(false)}>
           <View style={{ flex: 1 }}>
@@ -286,47 +305,71 @@ export default function LabelCamera({
                 </View>
 
                 <ScrollView style={{ maxHeight: SCREEN_H * 0.5 }} showsVerticalScrollIndicator={false}>
-                  <Text style={s.helpBody}>
-                    The panel is usually on the back or side of the packet, headed{" "}
-                    <Text style={s.helpBold}>Nutrition Facts</Text>,{" "}
-                    <Text style={s.helpBold}>Nutritional Value</Text> or{" "}
-                    <Text style={s.helpBold}>Nutrition Information</Text>.
-                  </Text>
+                  {front ? (
+                    <>
+                      <Text style={s.helpBody}>
+                        The side of the packet with the product's name on it — usually the biggest
+                        text, the bit you'd read from across a shop.
+                      </Text>
+                      <Text style={[s.helpBody, { marginTop: 12 }]}>
+                        MOTION only needs the name and the brand. Nothing else on the front
+                        matters, so don't worry about getting the whole packet in.
+                      </Text>
 
-                  {/* a drawn mock-up beats a description — most people
-                      recognise the shape instantly even if the words vary */}
-                  <View style={s.mock}>
-                    <Text style={s.mockHead}>Nutrition Facts</Text>
-                    <View style={s.mockRule} />
-                    <Text style={s.mockServing}>Per 1/2 cup (125 ml)</Text>
-                    <View style={s.mockRuleThick} />
-                    <View style={s.mockRow}>
-                      <Text style={s.mockCal}>Calories</Text>
-                      <Text style={s.mockCalNum}>100</Text>
-                    </View>
-                    <View style={s.mockRule} />
-                    {[["Fat", "0.5 g"], ["Carbohydrate", "18 g"], ["Protein", "6 g"]].map(([k, v]) => (
-                      <View key={k} style={s.mockRow}>
-                        <Text style={s.mockKey}>{k}</Text>
-                        <Text style={s.mockVal}>{v}</Text>
+                      <View style={s.helpDivider} />
+
+                      <Text style={s.helpSubhead}>For a clean read</Text>
+                      <Text style={s.helpBody}>
+                        Hold steady and let the camera focus. Angle away from bright light rather
+                        than under it — glossy packaging reflects badly.
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={s.helpBody}>
+                        The panel is usually on the back or side of the packet, headed{" "}
+                        <Text style={s.helpBold}>Nutrition Facts</Text>,{" "}
+                        <Text style={s.helpBold}>Nutritional Value</Text> or{" "}
+                        <Text style={s.helpBold}>Nutrition Information</Text>.
+                      </Text>
+
+                      {/* a drawn mock-up beats a description — most people
+                          recognise the shape instantly even if the words
+                          vary */}
+                      <View style={s.mock}>
+                        <Text style={s.mockHead}>Nutrition Facts</Text>
+                        <View style={s.mockRule} />
+                        <Text style={s.mockServing}>Per 1/2 cup (125 ml)</Text>
+                        <View style={s.mockRuleThick} />
+                        <View style={s.mockRow}>
+                          <Text style={s.mockCal}>Calories</Text>
+                          <Text style={s.mockCalNum}>100</Text>
+                        </View>
+                        <View style={s.mockRule} />
+                        {[["Fat", "0.5 g"], ["Carbohydrate", "18 g"], ["Protein", "6 g"]].map(([k, v]) => (
+                          <View key={k} style={s.mockRow}>
+                            <Text style={s.mockKey}>{k}</Text>
+                            <Text style={s.mockVal}>{v}</Text>
+                          </View>
+                        ))}
                       </View>
-                    ))}
-                  </View>
 
-                  <Text style={s.helpBody}>
-                    That's the whole thing — the serving size at the top and the numbers under it.
-                    Get all of it in frame, including the serving line, since that's the part the
-                    database most often gets wrong.
-                  </Text>
+                      <Text style={s.helpBody}>
+                        That's the whole thing — the serving size at the top and the numbers under
+                        it. Get all of it in frame, including the serving line, since that's the
+                        part databases most often get wrong.
+                      </Text>
 
-                  <View style={s.helpDivider} />
+                      <View style={s.helpDivider} />
 
-                  <Text style={s.helpSubhead}>For a clean read</Text>
-                  <Text style={s.helpBody}>
-                    Hold steady and let the camera focus before you shoot. Flatten a curved packet
-                    if you can. Avoid glare — angle away from a bright light rather than under it.
-                    Small print is where blur costs you.
-                  </Text>
+                      <Text style={s.helpSubhead}>For a clean read</Text>
+                      <Text style={s.helpBody}>
+                        Hold steady and let the camera focus before you shoot. Flatten a curved
+                        packet if you can. Avoid glare — angle away from a bright light rather
+                        than under it. Small print is where blur costs you.
+                      </Text>
+                    </>
+                  )}
                 </ScrollView>
 
                 <Tap onPress={() => setShowHelp(false)} style={{ marginTop: 16 }}>
@@ -409,10 +452,11 @@ const styles = (T: any) =>
     permBtn: { backgroundColor: T.gold, borderRadius: 11, paddingVertical: 11, paddingHorizontal: 22 },
     permBtnText: { fontSize: 13, color: "#0A0A0A", fontFamily: FONTS.headingMed },
 
-    /* a TALL portrait guide — that's the shape a nutrition panel is, and a
-       square box would encourage the wrong framing */
     guideWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 14 },
-    guide: { width: "58%", height: "72%", position: "relative" },
+    /* a panel is a tall narrow column */
+    guideTall: { width: "58%", height: "72%", position: "relative" },
+    /* a product front is wider than it is tall */
+    guideWide: { width: "82%", height: "48%", position: "relative" },
     corner: { position: "absolute", width: 26, height: 26, borderColor: "#FBBF24" },
     cornerTL: { top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 8 },
     cornerTR: { top: 0, right: 0, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 8 },
@@ -435,10 +479,10 @@ const styles = (T: any) =>
 
     skipWrap: { paddingHorizontal: 18, paddingBottom: 26 },
     skipCard: {
-      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 14, padding: 14,
     },
-    skipTitle: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed },
+    skipTitle: { fontSize: 13.5, color: T.green, fontFamily: FONTS.headingMed },
     skipBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 4, lineHeight: 16.5 },
 
     /* help */

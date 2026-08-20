@@ -14,33 +14,27 @@
 //   PLAIN INGREDIENTS (USDA) are listed as ingredients, not as dishes. "Rice"
 //   is there; "basmati rice pilaf" isn't. FEWER words.
 //
-// And both match WHOLE WORDS — "broc" returns nothing at all from either. A
-// local prefix list sits in front to soften that.
-//
-// ON THE AMOUNT SCREEN, one rung may be GOLD: the pack's own stated serving,
-// measured by the manufacturer rather than converted by us.
-import { BadgeCheck, Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, SearchX, Sparkles, Utensils, WifiOff, X } from "lucide-react-native";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+// AND WHEN NEITHER HAS IT, that's not a dead end any more. A bag of large
+// green lentils has a name on the front and a nutrition panel on the back —
+// the user is holding the answer, and AddFoodFlow is how they hand it over.
+import { BadgeCheck, Camera, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, SearchX, Sparkles, Trash2, Utensils, WifiOff, X } from "lucide-react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { useApp } from "../constants/AppState";
+import { CustomFood, customToFoodDef, deleteCustomFood, listCustomFoods, searchCustomFoods } from "../constants/customFoods";
 import { searchFoodsChecked } from "../constants/foodApi";
 import { prefixMatches } from "../constants/foodNames";
 import { FOOD_DB, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { FONTS } from "../constants/theme";
+import AddFoodFlow from "./AddFoodFlow";
 import Tap from "./Tap";
 
 const RECENT = ["Greek yogurt", "Banana", "Black coffee"];
-const SAVED = ["My morning oats", "Chicken & rice bowl"];
 
-/* How long to wait after the last keystroke before searching.
-
-   Without this, "chicken" fires seven requests — one per letter — and the
-   answers arrive out of order, so the list flickers through partial results
-   and can settle on the wrong one. */
 const DEBOUNCE_MS = 350;
 
 export type PickedFood = {
@@ -50,9 +44,7 @@ export type PickedFood = {
   p: number;
   c: number;
   f: number;
-  /** the grams behind the words — so the edit sheet can re-derive everything */
   grams: number;
-  /** what the user chose, in words — shown on the bar */
   amountLabel: string;
 };
 
@@ -64,26 +56,38 @@ export default function FoodPicker({
   onClose: () => void;
   onPick: (f: PickedFood) => void;
 }) {
-  const { T } = useApp();
+  const { T, userId } = useApp();
   const s = styles(T);
 
   const [q, setQ] = useState("");
   const [food, setFood] = useState<FoodDef | null>(null);
   const [idx, setIdx] = useState(0);
-  /* how many of the selected rung — a label saying "2 tsp" needs exactly two
-     teaspoons, not one tablespoon rounded off */
   const [count, setCount] = useState(1);
 
   const [remote, setRemote] = useState<FoodDef[]>([]);
+  const [mine, setMine] = useState<FoodDef[]>([]);
+  const [saved, setSaved] = useState<CustomFood[]>([]);
   const [searching, setSearching] = useState(false);
-  /* THE REQUEST FAILED, as distinct from finding nothing. These look identical
-     from the outside and need opposite advice — one says type more, the other
-     says check your wifi. */
   const [offline, setOffline] = useState(false);
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
 
-  /* LOCAL FIRST. The built-in foods are matched instantly with no network at
-     all, and shown while the API is still thinking. */
+  /* adding a food nothing has heard of */
+  const [adding, setAdding] = useState(false);
+
+  /* ---------- the user's own foods ----------
+     Loaded once when the picker opens, so they're there instantly. These are
+     foods somebody stood in their kitchen and photographed; they've earned
+     top billing over anything a database returns. */
+  const loadSaved = useCallback(async () => {
+    if (!userId) return;
+    const list = await listCustomFoods(userId);
+    setSaved(list);
+  }, [userId]);
+
+  useEffect(() => {
+    if (visible) loadSaved();
+  }, [visible, loadSaved]);
+
   const local = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return [];
@@ -92,19 +96,26 @@ export default function FoodPicker({
     );
   }, [q]);
 
-  /* WHAT THE PREFIX LIST THINKS THEY MEANT. "broc" → ["broccoli"].
-     Offered as taps rather than applied silently: "cau" could reasonably mean
-     cauliflower or cauliflower rice. */
   const suggestions = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (needle.length < 2) return [];
     return prefixMatches(needle, 6).filter((h) => h !== needle);
   }, [q]);
 
+  /* THE USER'S OWN FIRST. They photographed this packet themselves; it beats
+     anything a volunteer typed into a database on the other side of the
+     world. */
   const list = useMemo(() => {
-    const seen = new Set(local.map((f) => f.name.toLowerCase()));
-    return [...local, ...remote.filter((f) => !seen.has(f.name.toLowerCase()))];
-  }, [local, remote]);
+    const seen = new Set<string>();
+    const out: FoodDef[] = [];
+    [...mine, ...local, ...remote].forEach((f) => {
+      const k = f.name.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(f);
+    });
+    return out;
+  }, [mine, local, remote]);
 
   /* ---------- the debounced search ---------- */
   const timer = useRef<any>(null);
@@ -116,6 +127,7 @@ export default function FoodPicker({
 
     if (needle.length < 2) {
       setRemote([]);
+      setMine([]);
       setSearching(false);
       setOffline(false);
       setSearchedFor(null);
@@ -126,22 +138,23 @@ export default function FoodPicker({
     setOffline(false);
 
     timer.current = setTimeout(async () => {
-      /* every request carries a number, and only the LATEST one is allowed to
-         write its results — a slow early request can otherwise land after a
-         fast later one and overwrite the right answer */
-      const mine = ++reqId.current;
+      const my = ++reqId.current;
+
+      /* the user's own foods come back first and locally — no reason to wait
+         on USDA to show someone their own lentils */
+      if (userId) {
+        const own = await searchCustomFoods(userId, needle);
+        if (my === reqId.current) setMine(own.map(customToFoodDef));
+      }
 
       let { foods, online } = await searchFoodsChecked(needle);
       let usedTerm: string | null = null;
 
-      /* THE PREFIX FALLBACK. Nothing came back for what they typed, but the
-         local list recognises it as the start of a real food — so try that
-         whole word instead. */
       if (foods.length === 0 && online) {
         const guess = prefixMatches(needle, 1)[0];
         if (guess && guess !== needle.toLowerCase()) {
           const second = await searchFoodsChecked(guess);
-          if (mine !== reqId.current) return;
+          if (my !== reqId.current) return;
           if (second.foods.length) {
             foods = second.foods;
             usedTerm = guess;
@@ -149,7 +162,7 @@ export default function FoodPicker({
         }
       }
 
-      if (mine !== reqId.current) return;
+      if (my !== reqId.current) return;
 
       setRemote(foods);
       setSearchedFor(usedTerm);
@@ -158,10 +171,10 @@ export default function FoodPicker({
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timer.current);
-  }, [q]);
+  }, [q, userId]);
 
   const reset = () => { setFood(null); setIdx(0); setCount(1); };
-  const close = () => { reset(); setQ(""); setRemote([]); setSearchedFor(null); onClose(); };
+  const close = () => { reset(); setQ(""); setRemote([]); setMine([]); setSearchedFor(null); onClose(); };
 
   const openFood = (f: FoodDef) => {
     H.tap();
@@ -182,37 +195,59 @@ export default function FoodPicker({
     onPick({
       name: food.name,
       key: food.key,
-      cal: n.cal,
-      p: n.p,
-      c: n.c,
-      f: n.f,
+      cal: n.cal, p: n.p, c: n.c, f: n.f,
       grams,
       amountLabel: label,
     });
     reset();
     setQ("");
     setRemote([]);
+    setMine([]);
   };
 
-  const FoodRow = ({ f }: { f: FoodDef }) => {
-    const d = f.amounts[f.defaultIndex];
+  const removeSaved = async (id: string) => {
+    if (!userId) return;
+    H.warn();
+    await deleteCustomFood(userId, id);
+    loadSaved();
+  };
+
+  const FoodRow = ({ f, own }: { f: FoodDef; own?: boolean }) => {
+    const d = f.amounts[f.defaultIndex] || f.amounts[0];
     return (
       <Tap onPress={() => openFood(f)}>
         <View style={s.row}>
-          <View style={s.rowIcon}>
-            <Utensils size={15} color={T.micro} />
+          <View style={[s.rowIcon, own && s.rowIconOwn]}>
+            {own ? <BadgeCheck size={15} color={T.gold} /> : <Utensils size={15} color={T.micro} />}
           </View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={s.rowName} numberOfLines={1}>{f.name}</Text>
             <Text style={s.rowSub} numberOfLines={1}>
               {nutritionFor(f, d.grams).cal} cal for {d.label.toLowerCase()}
-              {f.sub && f.sub !== "generic" ? ` · ${f.sub}` : ""}
+              {own ? " · yours" : f.sub && f.sub !== "generic" ? ` · ${f.sub}` : ""}
             </Text>
           </View>
         </View>
       </Tap>
     );
   };
+
+  /* ---------- adding a food ---------- */
+  if (adding) {
+    return (
+      <AddFoodFlow
+        visible
+        meal={title || "meal"}
+        initialName={q.trim() || null}
+        onClose={() => { setAdding(false); loadSaved(); }}
+        onDone={({ food: f }) => {
+          setAdding(false);
+          loadSaved();
+          openFood(f);
+        }}
+      />
+    );
+  }
 
   /* ---------- how much? ---------- */
   if (food) {
@@ -254,38 +289,25 @@ export default function FoodPicker({
                 return (
                   <View key={`${a.label}-${i}`} style={{ gap: 8 }}>
                     <Tap onPress={() => { H.tick(); setIdx(i); setCount(1); }}>
-                      <View style={[
-                        s.option,
-                        gold && s.optionGold,
-                        on && (gold ? s.optionGoldOn : s.optionOn),
-                      ]}>
+                      <View style={[s.option, gold && s.optionGold, on && (gold ? s.optionGoldOn : s.optionOn)]}>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          {/* THE GOLD BADGE — says why this rung differs in
-                              KIND, not just in colour */}
                           {gold && (
                             <View style={s.exactTag}>
                               <BadgeCheck size={11} color={T.gold} />
                               <Text style={s.exactTagText}>EXACTLY AS THE PACK STATES IT</Text>
                             </View>
                           )}
-                          <Text style={[s.optionLabel, on && { color: gold ? T.gold : T.green }]}>
-                            {a.label}
-                          </Text>
-                          {/* THE ANCHOR — without it the label alone is a
-                              guess dressed up as a choice */}
+                          <Text style={[s.optionLabel, on && { color: gold ? T.gold : T.green }]}>{a.label}</Text>
                           {a.hint ? <Text style={s.optionHint}>{a.hint}</Text> : null}
                         </View>
                         <View style={{ alignItems: "flex-end" }}>
-                          <Text style={[s.optionCal, on && { color: gold ? T.gold : T.green }]}>
-                            {rowCal}
-                          </Text>
+                          <Text style={[s.optionCal, on && { color: gold ? T.gold : T.green }]}>{rowCal}</Text>
                           <Text style={s.optionCalUnit}>cal</Text>
                         </View>
                         {on && <Check size={17} color={gold ? T.gold : T.green} style={{ marginLeft: 8 }} />}
                       </View>
                     </Tap>
 
-                    {/* the counter, under the rung you just tapped */}
                     {on && canCount && (
                       <View style={[s.counter, gold && s.counterGold]}>
                         <Pressable
@@ -298,9 +320,7 @@ export default function FoodPicker({
                         </Pressable>
 
                         <View style={{ flex: 1, alignItems: "center" }}>
-                          <Text style={[s.counterNum, gold && { color: T.gold }]}>
-                            {rungLabel(a, count)}
-                          </Text>
+                          <Text style={[s.counterNum, gold && { color: T.gold }]}>{rungLabel(a, count)}</Text>
                           <Text style={s.counterDetail}>
                             {rungDetail(a, count, nutritionFor(food, a.grams * count).cal)}
                           </Text>
@@ -345,10 +365,7 @@ export default function FoodPicker({
   /* ---------- search ---------- */
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close} presentationStyle="fullScreen">
-      <KeyboardAvoidingView
-        style={s.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <KeyboardAvoidingView style={s.screen} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={s.head}>
           <View style={{ width: 38 }} />
           <Text style={s.headTitle}>{title || "Add an item"}</Text>
@@ -377,7 +394,6 @@ export default function FoodPicker({
             )}
           </View>
 
-          {/* DID YOU MEAN — offered rather than applied */}
           {suggestions.length > 0 && (
             <ScrollView
               horizontal
@@ -404,27 +420,33 @@ export default function FoodPicker({
         >
           {q.length === 0 ? (
             <>
-              <View style={s.sectionRow}>
-                <Bookmark size={12} color={T.green} />
-                <Text style={s.micro}>Your saved meals</Text>
-              </View>
-              <View style={s.group}>
-                {SAVED.map((name, i) => (
-                  <View key={name}>
-                    {i > 0 && <View style={s.divider} />}
-                    <Tap onPress={() => H.tap()}>
-                      <View style={s.row}>
-                        <View style={s.rowIcon}>
-                          <Utensils size={15} color={T.micro} />
-                        </View>
-                        <Text style={s.rowName}>{name}</Text>
-                      </View>
-                    </Tap>
+              {/* THE USER'S OWN FOODS, real ones now. This section used to show
+                  two hardcoded placeholder names. */}
+              {saved.length > 0 && (
+                <>
+                  <View style={s.sectionRow}>
+                    <BadgeCheck size={12} color={T.gold} />
+                    <Text style={s.micro}>Foods you added</Text>
                   </View>
-                ))}
-              </View>
+                  <View style={s.group}>
+                    {saved.map((c, i) => (
+                      <View key={c.id}>
+                        {i > 0 && <View style={s.divider} />}
+                        <View style={s.savedRow}>
+                          <View style={{ flex: 1 }}>
+                            <FoodRow f={customToFoodDef(c)} own />
+                          </View>
+                          <Pressable onPress={() => removeSaved(c.id)} hitSlop={10} style={s.deleteBtn}>
+                            <Trash2 size={14} color={T.micro} />
+                          </Pressable>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              )}
 
-              <View style={[s.sectionRow, { marginTop: 18 }]}>
+              <View style={[s.sectionRow, saved.length > 0 && { marginTop: 18 }]}>
                 <Clock size={12} color={T.sub} />
                 <Text style={s.micro}>Recent</Text>
               </View>
@@ -441,8 +463,24 @@ export default function FoodPicker({
                 })}
               </View>
 
-              {/* HOW TO SEARCH. Split in two, because the right advice is
-                  genuinely OPPOSITE for the two sources. */}
+              {/* ADD ONE YOURSELF, available without failing a search first —
+                  someone who already knows their food isn't listed shouldn't
+                  have to prove it again */}
+              <Tap onPress={() => { H.tap(); setAdding(true); }} style={{ marginTop: 18 }}>
+                <View style={s.addOwnCard}>
+                  <View style={s.addOwnIcon}>
+                    <Camera size={17} color={T.gold} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.addOwnTitle}>Add a food yourself</Text>
+                    <Text style={s.addOwnBody}>
+                      Two photos — the front of the packet and the nutrition panel — and MOTION
+                      reads the rest. No typing.
+                    </Text>
+                  </View>
+                </View>
+              </Tap>
+
               <View style={s.tipCard}>
                 <View style={s.tipHead}>
                   <Info size={14} color={T.green} />
@@ -489,16 +527,10 @@ export default function FoodPicker({
                   {list.map((f, i) => (
                     <View key={`${f.name}-${i}`}>
                       {i > 0 && <View style={s.divider} />}
-                      <FoodRow f={f} />
+                      <FoodRow f={f} own={f.sub === "your own"} />
                     </View>
                   ))}
                 </View>
-              )}
-
-              {!searching && list.length > 0 && q.trim().length < 14 && (
-                <Text style={s.keepTyping}>
-                  Not seeing it? Add the brand name if it came in a packet.
-                </Text>
               )}
 
               {searching && list.length === 0 && (
@@ -508,8 +540,8 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* NOTHING CAME BACK — and which of these shows depends on
-                  whether the request actually reached anyone. */}
+              {/* NOTHING CAME BACK. Which of these shows depends on whether the
+                  request actually reached anyone. */}
               {!searching && list.length === 0 && (
                 offline ? (
                   <View style={s.emptyBox}>
@@ -520,9 +552,6 @@ export default function FoodPicker({
                     <Text style={s.empty}>
                       The search needs a connection, and this one didn't get through. Check your
                       wifi or mobile data and try again.
-                      {"\n\n"}
-                      You can still log without it — the common foods above work offline, and you
-                      can add anything else once you're back online.
                     </Text>
                   </View>
                 ) : (
@@ -533,45 +562,43 @@ export default function FoodPicker({
 
                     <Text style={s.emptyTitle}>Nothing matches "{q}" yet</Text>
 
-                    <Text style={s.empty}>
-                      The word "yet" is doing real work there — the database matches whole words,
-                      so a half-typed name genuinely finds nothing until it's finished.
-                    </Text>
+                    {/* THE WAY OUT, first and prominent. A failed search used
+                        to be a dead end — the user gave up on logging
+                        something they were holding in their hand. */}
+                    <Tap onPress={() => { H.tap(); setAdding(true); }} style={{ width: "100%", marginTop: 4 }}>
+                      <View style={s.rescueCard}>
+                        <View style={s.addOwnIcon}>
+                          <Camera size={17} color={T.gold} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.rescueTitle}>Add it yourself instead</Text>
+                          <Text style={s.rescueBody}>
+                            Some products are too small or too local to be in any database. Two
+                            photos — the front of the packet and the nutrition panel — and MOTION
+                            reads the rest. Save it once and it's there for good.
+                          </Text>
+                        </View>
+                      </View>
+                    </Tap>
 
-                    <View style={s.emptyCard}>
-                      <Text style={s.emptyHead}>Keep typing</Text>
-                      <Text style={s.emptyBody}>
-                        "honey sri" returns nothing. "honey sriracha sauce" returns plenty. Finish
-                        the name before deciding it isn't there.
-                      </Text>
-                    </View>
+                    <Text style={s.emptyOr}>or try the search again</Text>
 
                     <View style={s.emptyCard}>
                       <Text style={s.emptyHead}>If it came in a packet, add the brand</Text>
                       <Text style={s.emptyBody}>
-                        This is the one that catches most people. Packaged foods are listed under
-                        the name on the front of the bottle, brand included — so "honey sriracha
-                        Lee Kum Kee" finds what "honey sriracha sauce" misses entirely.
-                        {"\n\n"}
-                        Look at the label and type what you see there.
+                        Packaged foods are listed under the name on the front of the bottle, brand
+                        included — so "honey sriracha Lee Kum Kee" finds what "honey sriracha
+                        sauce" misses entirely.
                       </Text>
                     </View>
 
                     <View style={s.emptyCard}>
                       <Text style={s.emptyHead}>If it's a plain ingredient, use fewer words</Text>
                       <Text style={s.emptyBody}>
-                        The opposite rule, for the opposite kind of food. "Rice" is listed;
-                        "basmati rice pilaf" isn't, because the database holds ingredients rather
-                        than every dish made from them. Search the ingredient, then add the other
-                        parts of the meal separately.
+                        "Rice" is listed; "basmati rice pilaf" isn't, because the database holds
+                        ingredients rather than every dish made from them.
                       </Text>
                     </View>
-
-                    <Text style={s.emptyFoot}>
-                      Still nothing? Some local and own-brand products simply aren't listed. Search
-                      for something close instead — the calories will be near enough, and you can
-                      adjust the amount afterwards.
-                    </Text>
                   </View>
                 )
               )}
@@ -611,13 +638,34 @@ const styles = (T: any) =>
     },
     suggestText: { fontSize: 12, color: T.green, fontFamily: FONTS.headingMed },
     searchedFor: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginBottom: 10, marginLeft: 2 },
-    keepTyping: {
-      fontSize: 11, color: T.micro, fontFamily: FONTS.body,
-      textAlign: "center", marginTop: 14, lineHeight: 16,
+
+    /* add your own */
+    addOwnCard: {
+      flexDirection: "row", alignItems: "center", gap: 13,
+      backgroundColor: "rgba(251,191,36,0.07)",
+      borderWidth: 1, borderColor: `${T.gold}55`,
+      borderRadius: 15, padding: 15,
     },
+    addOwnIcon: {
+      width: 38, height: 38, borderRadius: 12,
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}44`,
+      alignItems: "center", justifyContent: "center",
+    },
+    addOwnTitle: { fontSize: 13.5, color: T.gold, fontFamily: FONTS.headingMed },
+    addOwnBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 16.5 },
+
+    rescueCard: {
+      flexDirection: "row", alignItems: "flex-start", gap: 13,
+      backgroundColor: "rgba(251,191,36,0.10)",
+      borderWidth: 1, borderColor: `${T.gold}77`,
+      borderRadius: 16, padding: 16,
+    },
+    rescueTitle: { fontSize: 14.5, color: T.gold, fontFamily: FONTS.headingMed },
+    rescueBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 4, lineHeight: 17.5 },
+    emptyOr: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6, marginBottom: 2 },
 
     tipCard: {
-      marginTop: 22, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      marginTop: 18, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 14, padding: 15,
     },
     tipHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 9 },
@@ -631,14 +679,16 @@ const styles = (T: any) =>
     divider: { height: 1, backgroundColor: T.border, marginLeft: 56 },
     row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 13, paddingHorizontal: 13 },
     rowIcon: { width: 32, height: 32, borderRadius: 10, backgroundColor: T.cardHi, alignItems: "center", justifyContent: "center" },
+    rowIconOwn: { backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: `${T.gold}44` },
     rowName: { flex: 1, fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed },
     rowSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+
+    savedRow: { flexDirection: "row", alignItems: "center" },
+    deleteBtn: { width: 42, height: 42, alignItems: "center", justifyContent: "center", marginRight: 4 },
 
     searchingBox: { alignItems: "center", gap: 12, paddingVertical: 34 },
     searchingText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
 
-    /* the empty state — deliberately long. Someone reading it has already hit
-       a dead end, and a one-line shrug leaves them there. */
     emptyBox: { alignItems: "center", paddingTop: 20, paddingBottom: 10, gap: 12 },
     emptyIcon: {
       width: 58, height: 58, borderRadius: 19,
@@ -653,7 +703,6 @@ const styles = (T: any) =>
     },
     emptyHead: { fontSize: 12.5, color: T.green, fontFamily: FONTS.headingMed, marginBottom: 6 },
     emptyBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
-    emptyFoot: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 16.5, marginTop: 6, paddingHorizontal: 6 },
 
     /* how much */
     question: { fontSize: 22, color: T.text, fontFamily: FONTS.heading },
@@ -665,16 +714,8 @@ const styles = (T: any) =>
       borderRadius: 15, paddingVertical: 14, paddingHorizontal: 15,
     },
     optionOn: { borderColor: T.green, backgroundColor: T.greenBg },
-    /* GOLD — the pack's own number. Visible even unselected, because the point
-       is to draw the eye to it before anything is tapped. */
-    optionGold: {
-      borderColor: `${T.gold}66`,
-      backgroundColor: "rgba(251,191,36,0.07)",
-    },
-    optionGoldOn: {
-      borderColor: T.gold,
-      backgroundColor: "rgba(251,191,36,0.14)",
-    },
+    optionGold: { borderColor: `${T.gold}66`, backgroundColor: "rgba(251,191,36,0.07)" },
+    optionGoldOn: { borderColor: T.gold, backgroundColor: "rgba(251,191,36,0.14)" },
     exactTag: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 },
     exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
 
@@ -684,8 +725,7 @@ const styles = (T: any) =>
     optionCalUnit: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
 
     counter: {
-      flexDirection: "row", alignItems: "center",
-      marginLeft: 14,
+      flexDirection: "row", alignItems: "center", marginLeft: 14,
       backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 14, paddingVertical: 10, paddingHorizontal: 12,
     },

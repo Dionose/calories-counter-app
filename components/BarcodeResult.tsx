@@ -1,7 +1,7 @@
 // components/BarcodeResult.tsx
 // What a barcode scan lands on.
 //
-// THREE STAGES, and the order matters:
+// THE STAGES, and the order matters:
 //
 //   1. FOUND — the product name, and nothing else. No calories yet, because
 //      showing numbers first invites the user to accept them before we've
@@ -10,22 +10,23 @@
 //      Gemini and gives the manufacturer's exact figures.
 //   3. RESULT — the amount ladder and the log button.
 //
-// WHY THE PANEL STEP EXISTS. Open Food Facts is volunteer-entered, so a record
-// often disagrees with the packet in the user's hand — a bottle reading
-// "¼ cup (60 ml)" gets stored as "1 tbsp (19 g)". Neither is wrong; they came
-// from different labels. Nothing in our code resolves that, because only the
-// person holding the bottle can see what it says.
+// AND WHEN THE SCAN FINDS NOTHING, that's no longer a dead end. A bag of large
+// green lentils has a name on the front and a nutrition panel on the back —
+// the user is holding the answer, so AddFoodFlow takes two photos and saves
+// the food against this barcode. Scanning the same packet next month finds
+// their own entry instantly.
 //
-// AND NOTHING READ FROM A PHOTO IS APPLIED SILENTLY. A misread panel is WORSE
-// than no panel: the user trusts it because it came from their own label. So
-// the figures are shown for confirmation first.
+// NOTHING READ FROM A PHOTO IS APPLIED SILENTLY. A misread panel is WORSE than
+// no panel: the user trusts it because it came from their own label. So the
+// figures are shown for confirmation first.
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, BadgeCheck, Check, ChevronRight, Info, Minus, Plus, RefreshCw, ScanLine, X } from "lucide-react-native";
+import { AlertTriangle, BadgeCheck, Camera, Check, ChevronRight, Info, Minus, Plus, RefreshCw, ScanLine, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
+import { customToFoodDef, findCustomByBarcode } from "../constants/customFoods";
 import { lookupBarcode } from "../constants/foodApi";
 import { colorFor } from "../constants/foodColors";
 import { Amount, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
@@ -33,6 +34,7 @@ import * as H from "../constants/haptics";
 import { saveMeal } from "../constants/meals";
 import { LabelReading, per100From, readNutritionLabel } from "../constants/nutritionLabel";
 import { FONTS } from "../constants/theme";
+import AddFoodFlow from "./AddFoodFlow";
 import AmountSheet from "./AmountSheet";
 import Icon from "./Icon";
 import { IsoMGlow } from "./IsoM";
@@ -40,7 +42,7 @@ import LabelCamera from "./LabelCamera";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
-type Stage = "looking" | "found" | "reading" | "confirm" | "result" | "done" | "missing";
+type Stage = "looking" | "found" | "reading" | "confirm" | "result" | "done" | "missing" | "adding";
 
 /* ---------- a loading state ---------- */
 function Busy({ title, sub }: { title: string; sub?: string | null }) {
@@ -78,8 +80,6 @@ function Bar({ label, grams, cal, colorKey, delay }: {
     }).start();
   }, []);
 
-  /* proportion of the item's calories this macro accounts for — protein and
-     carbs are 4 cal a gram, fat is 9 */
   const target = Math.max(26, Math.min(100, cal > 0 ? (grams * (label === "Fat" ? 9 : 4) / cal) * 100 : 26));
   const width = grow.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${target}%`] });
 
@@ -117,14 +117,10 @@ export default function BarcodeResult({
   const [stage, setStage] = useState<Stage>("looking");
   const [food, setFood] = useState<FoodDef | null>(null);
 
-  /* what the label photo produced, before the user has confirmed it */
   const [reading, setReading] = useState<LabelReading | null>(null);
-  /* set once they accept it — from then on the ladder uses the label's own
-     figures rather than the database's */
   const [fromLabel, setFromLabel] = useState(false);
-  /* what the reader is doing right now. A silent spinner at thirty seconds
-     reads as broken; "the reader's busy, trying again" reads as slow, and
-     those are very different feelings. */
+  /* this food came from the user's own saved list, matched on the barcode */
+  const [fromSaved, setFromSaved] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
 
   const [idx, setIdx] = useState(0);
@@ -134,12 +130,32 @@ export default function BarcodeResult({
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
 
-  /* ---------- THE LOOKUP ---------- */
+  /* ---------- THE LOOKUP ----------
+     THE USER'S OWN FOODS FIRST. Someone who photographed this packet once
+     shouldn't be asked to do it again — and their own entry beats anything a
+     volunteer typed into a database on the other side of the world. */
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       if (!code) { setStage("missing"); return; }
+
+      if (userId) {
+        const own = await findCustomByBarcode(userId, code);
+        if (cancelled) return;
+        if (own) {
+          const f = customToFoodDef(own);
+          setFood(f);
+          setIdx(0);
+          setCount(1);
+          setFromSaved(true);
+          H.success();
+          /* straight to the result — there's nothing to photograph, they
+             already did it */
+          setStage("result");
+          return;
+        }
+      }
 
       const f = await lookupBarcode(code);
       if (cancelled) return;
@@ -150,13 +166,11 @@ export default function BarcodeResult({
       setIdx(f.defaultIndex);
       setCount(1);
       H.success();
-      /* FOUND, not result — the product name goes up first and the panel
-         offer follows, before any calorie figure is shown */
       setStage("found");
     })();
 
     return () => { cancelled = true; };
-  }, [code]);
+  }, [code, userId]);
 
   /* ---------- READING THE PANEL ----------
      The image work and the API call are in SEPARATE try blocks on purpose.
@@ -170,15 +184,14 @@ export default function BarcodeResult({
     let b64: string;
 
     try {
-      /* SMALL, DELIBERATELY. A nutrition panel is high-contrast printed text,
-         which survives compression far better than a photo of food — and the
-         upload is a real share of a wait the user is sitting through watching
-         a spinner.
+      /* SMALL, DELIBERATELY. Packaging text is high-contrast print, which
+         survives compression far better than a photo of food — and the upload
+         is a real share of a wait the user sits through watching a spinner.
+         The progression was 1400px/0.9 (≈600 KB, 20–40 s), then 1000px/0.65,
+         now 800px/0.55 at ≈100 KB and about two seconds.
 
-         The progression here was 1400px/0.9 (≈600 KB, 20–40 s), then
-         1000px/0.65 (≈200 KB), now 800px/0.55. IF READINGS START COMING BACK
-         UNCONFIDENT on genuinely clear photos, raise these first — that's the
-         signal we've gone too far, not anything wrong with the model. */
+         IF READINGS START COMING BACK UNCONFIDENT on genuinely clear photos,
+         raise these first. */
       const ctx = ImageManipulator.manipulate(uri).resize({ width: 800 });
       const image = await ctx.renderAsync();
       const out = await image.saveAsync({ compress: 0.55, format: SaveFormat.JPEG });
@@ -197,15 +210,10 @@ export default function BarcodeResult({
       return;
     }
 
-    /* readNutritionLabel never throws — every failure inside it comes back as
-       a reading with confident:false and a problem message */
     const r = await readNutritionLabel(b64, setProgress);
 
     setProgress(null);
     setReading(r);
-    /* ALWAYS to confirm, even when the model is confident. A misread figure is
-       worse than none, because it came from the user's own packet and they'll
-       believe it. */
     setStage("confirm");
     if (r.confident) H.success(); else H.warn();
   };
@@ -219,11 +227,9 @@ export default function BarcodeResult({
 
     const servingG = reading.servingGrams ?? reading.servingMl ?? null;
 
-    /* EVERY MEASURE THE LABEL GAVE, in one line. Someone who thinks in cups,
-       someone who thinks in ml and someone who thinks in grams are all looking
-       at the same rung, and each should find their own unit without converting
-       anything. The cup lives in the rung's NAME (servingText is printed
-       verbatim); the ml and grams go underneath. */
+    /* EVERY MEASURE THE LABEL GAVE. Someone who thinks in cups, someone who
+       thinks in ml and someone who thinks in grams are all looking at the same
+       rung, and each should find their own unit without converting anything. */
     const measures: string[] = [];
     if (reading.servingMl) measures.push(`${Math.round(reading.servingMl)} ml`);
     if (reading.servingGrams) measures.push(`${Math.round(reading.servingGrams)} g`);
@@ -241,8 +247,6 @@ export default function BarcodeResult({
       exact: true,
     };
 
-    /* keep the database's other rungs as alternatives, minus any that
-       duplicate the label's serving */
     const others = food.amounts.filter(
       (a) => !a.exact && Math.abs(a.grams - (servingG || 0)) > (servingG || 100) * 0.08
     );
@@ -267,12 +271,26 @@ export default function BarcodeResult({
   /* ---------- LOOKING ---------- */
   if (stage === "looking") return <Busy title="Looking up that barcode…" sub={code} />;
   if (stage === "reading") {
+    return <Busy title="Reading the label…" sub={progress || "A few seconds"} />;
+  }
+
+  /* ---------- ADDING IT YOURSELF ----------
+     The barcode goes in, so scanning this packet again finds their own entry
+     rather than the not-found screen a second time. */
+  if (stage === "adding") {
     return (
-      <Busy
-        title="Reading the label…"
-        /* the progress message replaces the generic line the moment there's
-           something more honest to say */
-        sub={progress || "A few seconds"}
+      <AddFoodFlow
+        visible
+        meal={meal}
+        barcode={code}
+        onClose={() => setStage("missing")}
+        onDone={({ food: f }) => {
+          setFood(f);
+          setIdx(0);
+          setCount(1);
+          setFromLabel(true);
+          setStage("result");
+        }}
       />
     );
   }
@@ -281,7 +299,7 @@ export default function BarcodeResult({
   if (stage === "missing" || !food) {
     return (
       <View style={s.screen}>
-        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56 }}>
+        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56, paddingBottom: 30 }}>
           <View style={s.head}>
             <Pressable onPress={onExit} hitSlop={10} style={{ padding: 4, marginLeft: -4 }}>
               <X size={22} color={T.text} />
@@ -295,29 +313,45 @@ export default function BarcodeResult({
               <ScanLine size={30} color={T.sub} />
             </View>
 
-            <Text style={s.missTitle}>Nothing edible came back</Text>
+            <Text style={s.missTitle}>Not in the database</Text>
 
             <Text style={s.missBody}>
-              Either that product isn't in the food database, or it isn't food. The database is
-              built by volunteers, so it covers most supermarket brands but misses local products
-              and own-brand items.
+              That product isn't listed — the database is built by volunteers, so it covers most
+              supermarket brands but misses local and own-brand items. It might also not be food
+              at all.
               {code ? `\n\nScanned: ${code}` : ""}
             </Text>
 
-            <Text style={s.missBody}>
-              If it is food, searching by name usually works — the nutrition will be close even
-              when the exact brand isn't listed.
-            </Text>
-
-            <Tap onPress={onRescan} style={{ width: "100%", marginTop: 20 }}>
-              <View style={s.missPrimary}>
-                <Text style={s.missPrimaryText}>Scan another barcode</Text>
+            {/* THE WAY OUT, first and prominent. This screen used to end here,
+                and the user gave up on logging something they were holding. */}
+            <Tap onPress={() => { H.tap(); setStage("adding"); }} style={{ width: "100%", marginTop: 18 }}>
+              <View style={s.rescueCard}>
+                <View style={s.rescueIcon}>
+                  <Camera size={18} color={T.gold} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rescueTitle}>Add it yourself</Text>
+                  <Text style={s.rescueBody}>
+                    Two photos — the front of the packet and the nutrition panel — and MOTION
+                    reads the rest. No typing.
+                    {"\n\n"}
+                    Save it once and scanning this barcode will find it straight away from now on.
+                  </Text>
+                </View>
               </View>
             </Tap>
 
-            <Tap onPress={onExit} style={{ width: "100%", marginTop: 10 }}>
+            <Text style={s.missOr}>or</Text>
+
+            <Tap onPress={onExit} style={{ width: "100%" }}>
               <View style={s.missGhost}>
-                <Text style={s.missGhostText}>Search for it by name instead</Text>
+                <Text style={s.missGhostText}>Search for it by name</Text>
+              </View>
+            </Tap>
+
+            <Tap onPress={onRescan} style={{ width: "100%", marginTop: 10 }}>
+              <View style={s.missGhost}>
+                <Text style={s.missGhostText}>Scan a different barcode</Text>
               </View>
             </Tap>
           </View>
@@ -331,6 +365,7 @@ export default function BarcodeResult({
     return (
       <LabelCamera
         visible
+        mode="panel"
         productName={food.name}
         onClose={onExit}
         onCapture={readLabel}
@@ -491,9 +526,7 @@ export default function BarcodeResult({
         protein: n.p,
         carbs: n.c,
         fat: n.f,
-        /* whether these came off a photographed label or the database —
-           worth keeping apart, since one is the user's own packet */
-        source: fromLabel ? "label" : "barcode",
+        source: fromLabel || fromSaved ? "label" : "barcode",
       }],
     });
 
@@ -546,25 +579,25 @@ export default function BarcodeResult({
           <View style={{ width: 22 }} />
         </View>
 
-        {/* where these numbers came from — three different provenances, and
-            the user deserves to know which */}
+        {/* where these numbers came from — four provenances now, and the user
+            deserves to know which */}
         <View style={s.exactRow}>
           <Icon name="barcode" size={15} mode="loop" />
-          <Text style={[s.exactText, !hasAnyExact && !fromLabel && { color: T.sub }]}>
-            {fromLabel
-              ? "READ FROM YOUR OWN LABEL"
-              : hasAnyExact
-                ? "EXACT · FROM THE LABEL"
-                : "FROM THE LABEL · AMOUNT ESTIMATED"}
+          <Text style={[s.exactText, !hasAnyExact && !fromLabel && !fromSaved && { color: T.sub }]}>
+            {fromSaved
+              ? "ONE OF YOUR OWN FOODS"
+              : fromLabel
+                ? "READ FROM YOUR OWN LABEL"
+                : hasAnyExact
+                  ? "EXACT · FROM THE LABEL"
+                  : "FROM THE LABEL · AMOUNT ESTIMATED"}
           </Text>
         </View>
 
         <Text style={s.productName}>{food.name}</Text>
         {code ? <Text style={s.codeLine}>Barcode {code}</Text> : null}
 
-        {/* no stated serving AND no label photo — offer the photo again,
-            since it's the thing that would fix this */}
-        {!hasAnyExact && !fromLabel && (
+        {!hasAnyExact && !fromLabel && !fromSaved && (
           <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 16 }}>
             <View style={s.checkCard}>
               <View style={s.checkHead}>
@@ -588,7 +621,7 @@ export default function BarcodeResult({
                 <View style={s.exactTag}>
                   <BadgeCheck size={11} color={T.gold} />
                   <Text style={s.exactTagText}>
-                    {fromLabel ? "READ FROM YOUR LABEL" : "EXACTLY AS THE PACK STATES IT"}
+                    {fromSaved ? "FROM THE LABEL YOU SAVED" : fromLabel ? "READ FROM YOUR LABEL" : "EXACTLY AS THE PACK STATES IT"}
                   </Text>
                 </View>
               ) : (
@@ -657,7 +690,7 @@ export default function BarcodeResult({
               <Text style={s.per100}>
                 {food.per100} cal per 100 g · {food.p}g protein · {food.c}g carbs · {food.f}g fat
               </Text>
-              {!hasAnyExact && !fromLabel && (
+              {!hasAnyExact && !fromLabel && !fromSaved && (
                 <Text style={s.per100Note}>
                   These per-100 g figures are the label's own. Only the portion size below is
                   estimated.
@@ -729,7 +762,6 @@ const styles = (T: any) =>
 
     head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
 
-    /* confirm */
     confirmTitle: { fontSize: 21, color: T.text, fontFamily: FONTS.heading, marginTop: 6 },
     confirmSub: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, marginTop: 8, lineHeight: 18.5 },
 
@@ -788,10 +820,7 @@ const styles = (T: any) =>
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 16, padding: 16,
     },
-    amountRowGold: {
-      borderColor: `${T.gold}66`,
-      backgroundColor: "rgba(251,191,36,0.07)",
-    },
+    amountRowGold: { borderColor: `${T.gold}66`, backgroundColor: "rgba(251,191,36,0.07)" },
     exactTag: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 },
     exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
 
@@ -805,10 +834,7 @@ const styles = (T: any) =>
       backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 15, paddingVertical: 11, paddingHorizontal: 13,
     },
-    countRowGold: {
-      backgroundColor: "rgba(251,191,36,0.07)",
-      borderColor: `${T.gold}55`,
-    },
+    countRowGold: { backgroundColor: "rgba(251,191,36,0.07)", borderColor: `${T.gold}55` },
     countBtn: {
       width: 42, height: 42, borderRadius: 13,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
@@ -845,16 +871,31 @@ const styles = (T: any) =>
     },
     rescanText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
 
-    missWrap: { alignItems: "center", paddingTop: 30, gap: 12 },
+    /* not found */
+    missWrap: { alignItems: "center", paddingTop: 24, gap: 10 },
     missIcon: {
       width: 62, height: 62, borderRadius: 20,
       backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
       alignItems: "center", justifyContent: "center", marginBottom: 4,
     },
-    missTitle: { fontSize: 18, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
-    missBody: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 19.5 },
-    missPrimary: { backgroundColor: T.green, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
-    missPrimaryText: { fontSize: 14, color: T.ink, fontFamily: FONTS.headingMed },
+    missTitle: { fontSize: 19, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
+    missBody: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 18.5 },
+    missOr: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginVertical: 4 },
+
+    rescueCard: {
+      flexDirection: "row", alignItems: "flex-start", gap: 13,
+      backgroundColor: "rgba(251,191,36,0.10)",
+      borderWidth: 1, borderColor: `${T.gold}77`,
+      borderRadius: 16, padding: 16,
+    },
+    rescueIcon: {
+      width: 40, height: 40, borderRadius: 13,
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}44`,
+      alignItems: "center", justifyContent: "center",
+    },
+    rescueTitle: { fontSize: 15, color: T.gold, fontFamily: FONTS.headingMed },
+    rescueBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 4, lineHeight: 17.5 },
+
     missGhost: {
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 14, paddingVertical: 14, alignItems: "center",
