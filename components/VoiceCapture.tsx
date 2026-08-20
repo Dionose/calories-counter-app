@@ -17,6 +17,14 @@
 // audio to Gemini would work too but charges per second of speech for every
 // user for the life of the app — and the transcription is the part a phone
 // already does well.
+//
+// ⚠️ THE NATIVE MODULE VERSION MATTERS. expo-speech-recognition renumbered its
+// releases at v56 to track Expo SDK versions; before that it used its own
+// scheme. On SDK 54 the correct version is 3.1.3, NOT 56.x — installing 56
+// succeeds silently, passes `expo install --check`, and then never autolinks,
+// producing "Cannot find native module 'ExpoSpeechRecognition'" with nothing
+// in the build log to explain it. The tell is the pods list: if
+// `Installing ExpoSpeechRecognition` isn't there, the version is wrong.
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
@@ -82,12 +90,24 @@ export default function VoiceCapture({
     console.log("VOICE recognition error:", e.error, e.message);
     setState("idle");
 
-    /* "no-speech" isn't an error worth alarming anyone about — they tapped
-       the mic and said nothing, which is a thing people do */
+    /* NOT REALLY ERRORS, either of them.
+
+       "aborted" is OUR OWN cleanup firing when the screen closes — the effect
+       below calls abort() deliberately, and the recogniser reports it back as
+       a failure. "interrupted" is iOS taking the audio session for something
+       else, a phone call or another app.
+
+       Both are normal, and showing an alarming message for either would make
+       a working feature look broken to someone who did nothing wrong. */
+    if (e.error === "aborted" || e.error === "interrupted") return;
+
+    /* they tapped the mic and said nothing, which is a thing people do —
+       worth saying, but not worth alarming anyone about */
     if (e.error === "no-speech") {
       setError("MOTION didn't hear anything. Tap the mic and describe your meal.");
       return;
     }
+
     setError("Something went wrong listening. Try again?");
   });
 
@@ -155,7 +175,8 @@ export default function VoiceCapture({
   }, [state]);
 
   /* leaving the screen must stop the recogniser — a phone still listening
-     after the sheet closed is both a battery drain and a privacy problem */
+     after the sheet closed is both a battery drain and a privacy problem.
+     This is what produces the "aborted" the error handler ignores. */
   useEffect(() => {
     if (!visible) {
       ExpoSpeechRecognitionModule.abort();
