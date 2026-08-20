@@ -10,11 +10,12 @@
 // Now it shows the FOOD'S OWN ladder — built in portions.ts, anchored to
 // physical things. "A tablespoon (tbsp) · your whole thumb · 15 ml, about 17 g."
 //
-// AND EVERY RUNG COUNTS. Tap "A teaspoon" and a counter opens beneath THAT
-// rung, so a label reading "2 tsp" can be entered as exactly that rather than
-// approximated with a bigger unit. The counter appears under whichever rung is
-// selected, so it's always where you just tapped.
-import { Check, Minus, Plus, Trash2, X } from "lucide-react-native";
+// AND ONE RUNG MAY BE GOLD. When the pack states its own serving, that number
+// was measured by the manufacturer rather than converted by us — a different
+// kind of claim, and the one to pick. Gold marks it, and our own version of
+// the same measure is removed upstream so there's never a choice between two
+// half-cups with different calorie counts.
+import { BadgeCheck, Check, Minus, Plus, Trash2, X } from "lucide-react-native";
 import React, { useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
@@ -70,6 +71,7 @@ export default function AmountSheet({
 
   const list = amounts?.length ? amounts : fallback;
   const usingFallback = !amounts?.length;
+  const hasExact = list.some((a) => a.exact);
 
   /* start on whichever rung matches what's already selected, so opening the
      sheet doesn't silently move the amount */
@@ -128,7 +130,9 @@ export default function AmountSheet({
           <Text style={s.questionSub}>
             {usingFallback
               ? "Compared to what's currently logged."
-              : "Each option says what it looks like. Tap one, then use + and − for more than one."}
+              : hasExact
+                ? "The gold one is straight off the label — the rest are estimates you can picture."
+                : "Each option says what it looks like. Tap one, then use + and − for more than one."}
           </Text>
 
           <ScrollView
@@ -140,22 +144,46 @@ export default function AmountSheet({
               const on = i === idx;
               const rowCal = Math.round(a.grams * perGram.cal);
               const countable = !!a.unit;
+              const gold = !!a.exact;
 
               return (
                 <View key={`${a.label}-${i}`} style={{ gap: 8 }}>
                   <Tap onPress={() => pick(i)}>
-                    <View style={[s.option, on && s.optionOn]}>
+                    <View style={[
+                      s.option,
+                      gold && s.optionGold,
+                      on && (gold ? s.optionGoldOn : s.optionOn),
+                    ]}>
                       <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={[s.optionLabel, on && { color: T.green }]}>{a.label}</Text>
+                        {/* THE GOLD BADGE. Says why this rung is different in
+                            kind, not just different in colour — a colour with
+                            no explanation is decoration. */}
+                        {gold && (
+                          <View style={s.exactTag}>
+                            <BadgeCheck size={11} color={T.gold} />
+                            <Text style={s.exactTagText}>EXACTLY AS THE PACK STATES IT</Text>
+                          </View>
+                        )}
+                        <Text style={[
+                          s.optionLabel,
+                          on && { color: gold ? T.gold : T.green },
+                        ]}>
+                          {a.label}
+                        </Text>
                         {/* THE ANCHOR. Without it the label alone is a guess
                             dressed up as a choice. */}
                         {a.hint ? <Text style={s.optionHint}>{a.hint}</Text> : null}
                       </View>
                       <View style={{ alignItems: "flex-end" }}>
-                        <Text style={[s.optionCal, on && { color: T.green }]}>{rowCal}</Text>
+                        <Text style={[
+                          s.optionCal,
+                          on && { color: gold ? T.gold : T.green },
+                        ]}>
+                          {rowCal}
+                        </Text>
                         <Text style={s.optionCalUnit}>cal</Text>
                       </View>
-                      {on && <Check size={17} color={T.green} style={{ marginLeft: 8 }} />}
+                      {on && <Check size={17} color={gold ? T.gold : T.green} style={{ marginLeft: 8 }} />}
                     </View>
                   </Tap>
 
@@ -164,7 +192,7 @@ export default function AmountSheet({
                       approximation — so it belongs to the rung rather than
                       sitting in one fixed place at the bottom. */}
                   {on && countable && (
-                    <View style={s.counter}>
+                    <View style={[s.counter, gold && s.counterGold]}>
                       <Pressable
                         onPress={() => { H.tick(); setCount((n) => Math.max(1, n - 1)); }}
                         style={[s.counterBtn, count <= 1 && { opacity: 0.35 }]}
@@ -175,7 +203,9 @@ export default function AmountSheet({
                       </Pressable>
 
                       <View style={{ flex: 1, alignItems: "center" }}>
-                        <Text style={s.counterNum}>{rungLabel(a, count)}</Text>
+                        <Text style={[s.counterNum, gold && { color: T.gold }]}>
+                          {rungLabel(a, count)}
+                        </Text>
                         {/* ml AND grams — a pack states one or the other with
                             no consistency, so both go in */}
                         <Text style={s.counterDetail}>
@@ -251,6 +281,19 @@ const styles = (T: any) =>
       borderRadius: 15, paddingVertical: 14, paddingHorizontal: 15,
     },
     optionOn: { borderColor: T.green, backgroundColor: T.greenBg },
+    /* GOLD — the pack's own number. Visible even unselected, because the point
+       is to draw the eye to it before anything is tapped. */
+    optionGold: {
+      borderColor: `${T.gold}66`,
+      backgroundColor: "rgba(251,191,36,0.07)",
+    },
+    optionGoldOn: {
+      borderColor: T.gold,
+      backgroundColor: "rgba(251,191,36,0.14)",
+    },
+    exactTag: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 },
+    exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
+
     optionLabel: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
     /* the anchor line. Wraps to two lines happily — a taller row that
        explains itself beats a short one that doesn't. */
@@ -266,6 +309,7 @@ const styles = (T: any) =>
       backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 14, paddingVertical: 10, paddingHorizontal: 12,
     },
+    counterGold: { borderColor: `${T.gold}55` },
     counterBtn: {
       width: 40, height: 40, borderRadius: 12,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,

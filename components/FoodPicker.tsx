@@ -15,9 +15,11 @@
 //   is there; "basmati rice pilaf" isn't. FEWER words.
 //
 // And both match WHOLE WORDS — "broc" returns nothing at all from either. A
-// local prefix list sits in front to soften that, turning three letters into a
-// word the network can actually find.
-import { Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, SearchX, Sparkles, Utensils, WifiOff, X } from "lucide-react-native";
+// local prefix list sits in front to soften that.
+//
+// ON THE AMOUNT SCREEN, one rung may be GOLD: the pack's own stated serving,
+// measured by the manufacturer rather than converted by us.
+import { BadgeCheck, Bookmark, Check, ChevronLeft, Clock, Info, Minus, Plus, Search, SearchX, Sparkles, Utensils, WifiOff, X } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable,
@@ -38,8 +40,7 @@ const SAVED = ["My morning oats", "Chicken & rice bowl"];
 
    Without this, "chicken" fires seven requests — one per letter — and the
    answers arrive out of order, so the list flickers through partial results
-   and can settle on the wrong one. 350ms is long enough to catch a normal
-   typing rhythm and short enough that it still feels instant. */
+   and can settle on the wrong one. */
 const DEBOUNCE_MS = 350;
 
 export type PickedFood = {
@@ -77,14 +78,12 @@ export default function FoodPicker({
   const [searching, setSearching] = useState(false);
   /* THE REQUEST FAILED, as distinct from finding nothing. These look identical
      from the outside and need opposite advice — one says type more, the other
-     says check your wifi. Telling someone with full signal to check their
-     connection is how an app loses trust. */
+     says check your wifi. */
   const [offline, setOffline] = useState(false);
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
 
   /* LOCAL FIRST. The built-in foods are matched instantly with no network at
-     all, and shown while the API is still thinking. Someone typing "banana"
-     sees a banana immediately rather than a spinner. */
+     all, and shown while the API is still thinking. */
   const local = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return [];
@@ -95,8 +94,7 @@ export default function FoodPicker({
 
   /* WHAT THE PREFIX LIST THINKS THEY MEANT. "broc" → ["broccoli"].
      Offered as taps rather than applied silently: "cau" could reasonably mean
-     cauliflower or cauliflower rice, and guessing wrong would be worse than
-     the strict matching this exists to soften. */
+     cauliflower or cauliflower rice. */
   const suggestions = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (needle.length < 2) return [];
@@ -129,8 +127,8 @@ export default function FoodPicker({
 
     timer.current = setTimeout(async () => {
       /* every request carries a number, and only the LATEST one is allowed to
-         write its results. Without this, a slow early request can land after a
-         fast later one and overwrite the right answer with a stale one. */
+         write its results — a slow early request can otherwise land after a
+         fast later one and overwrite the right answer */
       const mine = ++reqId.current;
 
       let { foods, online } = await searchFoodsChecked(needle);
@@ -138,8 +136,7 @@ export default function FoodPicker({
 
       /* THE PREFIX FALLBACK. Nothing came back for what they typed, but the
          local list recognises it as the start of a real food — so try that
-         whole word instead. This is what turns "broc" into results without
-         the user ever knowing the API was strict about whole words. */
+         whole word instead. */
       if (foods.length === 0 && online) {
         const guess = prefixMatches(needle, 1)[0];
         if (guess && guess !== needle.toLowerCase()) {
@@ -224,6 +221,7 @@ export default function FoodPicker({
     const grams = (rung?.grams ?? 0) * count;
     const label = countable && count > 1 ? rungLabel(rung, count) : rung?.label ?? "";
     const n = nutritionFor(food, grams);
+    const hasExact = food.amounts.some((a) => a.exact);
 
     return (
       <Modal visible={visible} animationType="slide" onRequestClose={close} presentationStyle="fullScreen">
@@ -241,7 +239,9 @@ export default function FoodPicker({
           <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
             <Text style={s.question}>How much did you have?</Text>
             <Text style={s.questionSub}>
-              Each option says what it looks like. Tap one, then use + and − for more than one.
+              {hasExact
+                ? "The gold one is straight off the label — the rest are estimates you can picture."
+                : "Each option says what it looks like. Tap one, then use + and − for more than one."}
             </Text>
 
             <View style={{ gap: 9, marginTop: 20 }}>
@@ -249,28 +249,45 @@ export default function FoodPicker({
                 const on = i === idx;
                 const rowCal = nutritionFor(food, a.grams).cal;
                 const canCount = !!a.unit;
+                const gold = !!a.exact;
 
                 return (
                   <View key={`${a.label}-${i}`} style={{ gap: 8 }}>
                     <Tap onPress={() => { H.tick(); setIdx(i); setCount(1); }}>
-                      <View style={[s.option, on && s.optionOn]}>
+                      <View style={[
+                        s.option,
+                        gold && s.optionGold,
+                        on && (gold ? s.optionGoldOn : s.optionOn),
+                      ]}>
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={[s.optionLabel, on && { color: T.green }]}>{a.label}</Text>
+                          {/* THE GOLD BADGE — says why this rung differs in
+                              KIND, not just in colour */}
+                          {gold && (
+                            <View style={s.exactTag}>
+                              <BadgeCheck size={11} color={T.gold} />
+                              <Text style={s.exactTagText}>EXACTLY AS THE PACK STATES IT</Text>
+                            </View>
+                          )}
+                          <Text style={[s.optionLabel, on && { color: gold ? T.gold : T.green }]}>
+                            {a.label}
+                          </Text>
                           {/* THE ANCHOR — without it the label alone is a
                               guess dressed up as a choice */}
                           {a.hint ? <Text style={s.optionHint}>{a.hint}</Text> : null}
                         </View>
                         <View style={{ alignItems: "flex-end" }}>
-                          <Text style={[s.optionCal, on && { color: T.green }]}>{rowCal}</Text>
+                          <Text style={[s.optionCal, on && { color: gold ? T.gold : T.green }]}>
+                            {rowCal}
+                          </Text>
                           <Text style={s.optionCalUnit}>cal</Text>
                         </View>
-                        {on && <Check size={17} color={T.green} style={{ marginLeft: 8 }} />}
+                        {on && <Check size={17} color={gold ? T.gold : T.green} style={{ marginLeft: 8 }} />}
                       </View>
                     </Tap>
 
                     {/* the counter, under the rung you just tapped */}
                     {on && canCount && (
-                      <View style={s.counter}>
+                      <View style={[s.counter, gold && s.counterGold]}>
                         <Pressable
                           onPress={() => { H.tick(); setCount((c) => Math.max(1, c - 1)); }}
                           style={[s.counterBtn, count <= 1 && { opacity: 0.35 }]}
@@ -281,7 +298,9 @@ export default function FoodPicker({
                         </Pressable>
 
                         <View style={{ flex: 1, alignItems: "center" }}>
-                          <Text style={s.counterNum}>{rungLabel(a, count)}</Text>
+                          <Text style={[s.counterNum, gold && { color: T.gold }]}>
+                            {rungLabel(a, count)}
+                          </Text>
                           <Text style={s.counterDetail}>
                             {rungDetail(a, count, nutritionFor(food, a.grams * count).cal)}
                           </Text>
@@ -358,8 +377,7 @@ export default function FoodPicker({
             )}
           </View>
 
-          {/* DID YOU MEAN — offered rather than applied, since "cau" could be
-              cauliflower or cauliflower rice */}
+          {/* DID YOU MEAN — offered rather than applied */}
           {suggestions.length > 0 && (
             <ScrollView
               horizontal
@@ -424,9 +442,7 @@ export default function FoodPicker({
               </View>
 
               {/* HOW TO SEARCH. Split in two, because the right advice is
-                  genuinely OPPOSITE for the two sources: packaged products
-                  need the brand, plain ingredients need fewer words. One
-                  combined rule would contradict itself. */}
+                  genuinely OPPOSITE for the two sources. */}
               <View style={s.tipCard}>
                 <View style={s.tipHead}>
                   <Info size={14} color={T.green} />
@@ -492,9 +508,8 @@ export default function FoodPicker({
                 </View>
               )}
 
-              {/* NOTHING CAME BACK — and which of these two shows depends on
-                  whether the request actually reached anyone. Same empty list,
-                  opposite advice. */}
+              {/* NOTHING CAME BACK — and which of these shows depends on
+                  whether the request actually reached anyone. */}
               {!searching && list.length === 0 && (
                 offline ? (
                   <View style={s.emptyBox}>
@@ -650,6 +665,19 @@ const styles = (T: any) =>
       borderRadius: 15, paddingVertical: 14, paddingHorizontal: 15,
     },
     optionOn: { borderColor: T.green, backgroundColor: T.greenBg },
+    /* GOLD — the pack's own number. Visible even unselected, because the point
+       is to draw the eye to it before anything is tapped. */
+    optionGold: {
+      borderColor: `${T.gold}66`,
+      backgroundColor: "rgba(251,191,36,0.07)",
+    },
+    optionGoldOn: {
+      borderColor: T.gold,
+      backgroundColor: "rgba(251,191,36,0.14)",
+    },
+    exactTag: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 },
+    exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
+
     optionLabel: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
     optionHint: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 15.5 },
     optionCal: { fontSize: 15, color: T.sub, fontFamily: FONTS.heading },
@@ -661,6 +689,7 @@ const styles = (T: any) =>
       backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 14, paddingVertical: 10, paddingHorizontal: 12,
     },
+    counterGold: { borderColor: `${T.gold}55` },
     counterBtn: {
       width: 40, height: 40, borderRadius: 12,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,

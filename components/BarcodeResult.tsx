@@ -7,11 +7,12 @@
 // MOTION AI: an estimate and a label reading are different kinds of claim,
 // and the app shouldn't blur them.
 //
-// The AMOUNT still uses words, anchored to physical things, with ml alongside
-// grams wherever the food pours — and every rung can be counted, so a label
-// reading "2 tsp" can be entered as exactly that.
+// THE AMOUNT CARRIES THAT DISTINCTION TOO. One rung may be gold — the pack's
+// own stated serving, measured rather than converted by us. Our version of the
+// same measure is removed upstream, so there's never a choice between two
+// half-cups with different calorie counts.
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, Check, ChevronRight, Minus, Plus, ScanLine, X } from "lucide-react-native";
+import { AlertTriangle, BadgeCheck, Check, ChevronRight, Minus, Plus, ScanLine, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
@@ -201,6 +202,7 @@ export default function BarcodeResult({
 
   const rung = food.amounts[idx] ?? food.amounts[0];
   const countable = !!rung?.unit;
+  const gold = !!rung?.exact;
   const grams = (rung?.grams ?? 0) * count;
   const label = countable && count > 1 ? rungLabel(rung, count) : rung?.label ?? "";
   const n = nutritionFor(food, grams);
@@ -289,14 +291,23 @@ export default function BarcodeResult({
         <Text style={s.productName}>{food.name}</Text>
         {code ? <Text style={s.codeLine}>Barcode {code}</Text> : null}
 
-        {/* the amount, in words, WITH its anchor — "a golf ball, or a shot
-            glass and a bit more" is the difference between a real answer and
-            a guess dressed up as one */}
+        {/* the amount, in words, WITH its anchor. GOLD when it's the pack's own
+            stated serving rather than our conversion — a different kind of
+            claim, and the one worth picking. */}
         <Tap onPress={() => { H.tap(); setEditing(true); }} style={{ marginTop: 18 }}>
-          <View style={s.amountRow}>
+          <View style={[s.amountRow, gold && s.amountRowGold]}>
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={s.micro}>How much</Text>
-              <Text style={s.amountLabel}>{label}</Text>
+              {gold ? (
+                <View style={s.exactTag}>
+                  <BadgeCheck size={11} color={T.gold} />
+                  <Text style={s.exactTagText}>EXACTLY AS THE PACK STATES IT</Text>
+                </View>
+              ) : (
+                <Text style={s.micro}>How much</Text>
+              )}
+
+              <Text style={[s.amountLabel, gold && { color: T.gold }]}>{label}</Text>
+
               <Text style={s.amountHint}>
                 {count > 1 || !rung?.hint
                   ? rungDetail(rung, count, n.cal).replace(/^\d+ cal · /, "")
@@ -304,7 +315,7 @@ export default function BarcodeResult({
               </Text>
             </View>
             <View style={{ alignItems: "flex-end" }}>
-              <Text style={s.amountCal}>{n.cal}</Text>
+              <Text style={[s.amountCal, gold && { color: T.gold }]}>{n.cal}</Text>
               <Text style={s.amountCalUnit}>cal</Text>
             </View>
             <ChevronRight size={18} color={T.micro} style={{ marginLeft: 6 }} />
@@ -314,7 +325,7 @@ export default function BarcodeResult({
         {/* THE COUNTER for whatever rung is selected. A pack reading "2 tsp"
             needs teaspoons counted, not a tablespoon approximation. */}
         {countable && (
-          <View style={s.countRow}>
+          <View style={[s.countRow, gold && s.countRowGold]}>
             <Pressable
               onPress={() => { H.tick(); setCount((c) => Math.max(1, c - 1)); }}
               style={[s.countBtn, count <= 1 && { opacity: 0.35 }]}
@@ -325,7 +336,7 @@ export default function BarcodeResult({
             </Pressable>
 
             <View style={{ flex: 1, alignItems: "center" }}>
-              <Text style={s.countNum}>{rungLabel(rung, count)}</Text>
+              <Text style={[s.countNum, gold && { color: T.gold }]}>{rungLabel(rung, count)}</Text>
               <Text style={s.countCal}>{rungDetail(rung, count, n.cal)}</Text>
             </View>
 
@@ -385,7 +396,7 @@ export default function BarcodeResult({
       </ScrollView>
 
       {/* change the amount — THE FOOD'S OWN LADDER goes in, so every option
-          arrives with its anchor and its own counter */}
+          arrives with its anchor, its counter, and the gold rung on top */}
       {editing && (
         <AmountSheet
           visible
@@ -441,6 +452,14 @@ const styles = (T: any) =>
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 16, padding: 16,
     },
+    /* GOLD — the pack's own number rather than our conversion of it */
+    amountRowGold: {
+      borderColor: `${T.gold}66`,
+      backgroundColor: "rgba(251,191,36,0.07)",
+    },
+    exactTag: { flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 },
+    exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
+
     amountLabel: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginTop: 4 },
     /* the anchor line — wraps freely, because a taller row that explains
        itself beats a short one that doesn't */
@@ -452,6 +471,10 @@ const styles = (T: any) =>
       flexDirection: "row", alignItems: "center", marginTop: 10,
       backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
       borderRadius: 15, paddingVertical: 11, paddingHorizontal: 13,
+    },
+    countRowGold: {
+      backgroundColor: "rgba(251,191,36,0.07)",
+      borderColor: `${T.gold}55`,
     },
     countBtn: {
       width: 42, height: 42, borderRadius: 13,

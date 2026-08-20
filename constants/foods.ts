@@ -36,6 +36,14 @@ export type Amount = {
      exactly that, rather than approximating it with a bigger unit. */
   unit?: string;
   unitPlural?: string;
+  /* THE PACK'S OWN NUMBER, not our conversion of it.
+
+     Everything else in a ladder is an anchored estimate — good, but derived.
+     This one was measured by the manufacturer and printed on the label, which
+     makes it a different kind of claim entirely. It's rendered in gold so it
+     reads as the one to pick, and our own version of the same measure is
+     removed rather than sitting beneath it with a different number. */
+  exact?: boolean;
 };
 
 export type FoodDef = {
@@ -51,8 +59,8 @@ export type FoodDef = {
   /** which one is selected by default — an index into amounts */
   defaultIndex: number;
   /* For foods that come in countable units, these let the user set an exact
-     number when the listed amounts don't cover it. Kept for callers that
-     want a single default unit; the per-rung `unit` above is finer-grained. */
+     number when the listed amounts don't cover it. Kept for callers that want
+     a single default unit; the per-rung `unit` above is finer-grained. */
   countUnit?: string;
   countUnitPlural?: string;
   gramsPerUnit?: number;
@@ -98,7 +106,7 @@ export const FOOD_DB: FoodDef[] = [
     defaultIndex: 1,
     countUnit: "avocado", countUnitPlural: "avocados", gramsPerUnit: 150,
     amounts: [
-      { label: "A few slices", hint: "three or four slices · about 45 g", grams: 45, unit: "few slices", unitPlural: "sets of slices" },
+      { label: "A few slices", hint: "three or four slices · about 45 g", grams: 45 },
       { label: "Half an avocado", hint: "one half, scooped out · about 75 g", grams: 75 },
       { label: "A whole avocado", hint: "one medium avocado · about 150 g", grams: 150, unit: "avocado", unitPlural: "avocados" },
       { label: "Two avocados", hint: "about 300 g", grams: 300 },
@@ -119,8 +127,8 @@ export const FOOD_DB: FoodDef[] = [
     defaultIndex: 1,
     countUnit: "cup", countUnitPlural: "cups", gramsPerUnit: 180,
     amounts: [
-      { label: "Half a cup", hint: "a tennis ball, or half a small mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
-      { label: "A cup", hint: "your closed fist, or a small mug filled · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
+      { label: "Half a cup (½ cup)", hint: "a tennis ball · a small teacup filled, or half a mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
+      { label: "A cup (1 cup)", hint: "your closed fist · a small mug filled to the brim · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
       { label: "A cup and a half", hint: "a small bowl, half full · about 280 g", grams: 280 },
       { label: "Two cups", hint: "a cereal bowl, filled · about 400 g", grams: 400 },
     ],
@@ -130,8 +138,8 @@ export const FOOD_DB: FoodDef[] = [
     defaultIndex: 1,
     countUnit: "cup", countUnitPlural: "cups", gramsPerUnit: 180,
     amounts: [
-      { label: "Half a cup", hint: "a tennis ball, or half a small mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
-      { label: "A cup", hint: "your closed fist, or a small mug filled · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
+      { label: "Half a cup (½ cup)", hint: "a tennis ball · a small teacup filled, or half a mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
+      { label: "A cup (1 cup)", hint: "your closed fist · a small mug filled to the brim · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
       { label: "A cup and a half", hint: "a small bowl, half full · about 280 g", grams: 280 },
       { label: "Two cups", hint: "a cereal bowl, filled · about 400 g", grams: 400 },
     ],
@@ -141,8 +149,8 @@ export const FOOD_DB: FoodDef[] = [
     defaultIndex: 1,
     countUnit: "cup", countUnitPlural: "cups", gramsPerUnit: 180,
     amounts: [
-      { label: "Half a cup", hint: "a tennis ball, or half a small mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
-      { label: "A cup", hint: "your closed fist, or a small mug filled · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
+      { label: "Half a cup (½ cup)", hint: "a tennis ball · a small teacup filled, or half a mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
+      { label: "A cup (1 cup)", hint: "your closed fist · a small mug filled to the brim · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
       { label: "A cup and a half", hint: "a small bowl, half full · about 280 g", grams: 280 },
       { label: "Two cups", hint: "a cereal bowl, filled · about 400 g", grams: 400 },
     ],
@@ -214,7 +222,7 @@ export const FOOD_DB: FoodDef[] = [
     defaultIndex: 0,
     countUnit: "cup", countUnitPlural: "cups", gramsPerUnit: 240, mlPerUnit: 240,
     amounts: [
-      { label: "A cup", hint: "a standard mug · 240 ml, about 240 g", grams: 240, ml: 240, unit: "cup", unitPlural: "cups" },
+      { label: "A cup (1 cup)", hint: "a standard mug · 240 ml, about 240 g", grams: 240, ml: 240, unit: "cup", unitPlural: "cups" },
       { label: "A big mug", hint: "the large one you use at home · 350 ml, about 350 g", grams: 350, ml: 350, unit: "big mug", unitPlural: "big mugs" },
       { label: "Two cups", hint: "480 ml, about 480 g", grams: 480, ml: 480 },
     ],
@@ -278,7 +286,7 @@ export function findFood(name: string) {
   return FOOD_DB.find((f) => f.name.toLowerCase() === name.toLowerCase());
 }
 
-/** "4 small cups" — for the exact-number entry */
+/** "4 small cups" — for a food's single default unit */
 export function countLabel(food: FoodDef, n: number) {
   const unit = n === 1 ? food.countUnit : food.countUnitPlural;
   return `${n} ${unit}`;
@@ -310,8 +318,8 @@ export function rungDetail(a: Amount, n: number, cal: number) {
 export const GENERIC_AMOUNTS: Amount[] = [
   { label: "A small handful", hint: "what fits in one cupped hand, loosely · about 40 g", grams: 40, unit: "small handful", unitPlural: "small handfuls" },
   { label: "A handful", hint: "one cupped hand, filled · about 80 g", grams: 80, unit: "handful", unitPlural: "handfuls" },
-  { label: "Half a cup", hint: "a tennis ball, or half a small mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
-  { label: "A cup", hint: "your closed fist, or a small mug filled · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
+  { label: "Half a cup (½ cup)", hint: "a tennis ball · a small teacup filled, or half a mug · about 90 g", grams: 90, unit: "half cup", unitPlural: "half cups" },
+  { label: "A cup (1 cup)", hint: "your closed fist · a small mug filled to the brim · about 180 g", grams: 180, unit: "cup", unitPlural: "cups" },
   { label: "A small bowl", hint: "a cereal bowl about half full · about 250 g", grams: 250, unit: "small bowl", unitPlural: "small bowls" },
   { label: "A full bowl", hint: "a cereal bowl filled to the top · about 400 g", grams: 400, unit: "bowl", unitPlural: "bowls" },
 ];
