@@ -16,19 +16,17 @@
 // of claim arriving by different doors — both produce a list of estimated
 // items that the person can correct.
 //
-// ⚠️ VOICE IS COMMENTED OUT. expo-speech-recognition is a NATIVE module and
-// three separate dev builds have failed to compile it in, all throwing
-// "Cannot find native module 'ExpoSpeechRecognition'" at load time — which
-// kills this ENTIRE TAB, not just the voice feature, because the import runs
-// before anything renders.
+// ⚠️ VoiceCapture imports a NATIVE module (expo-speech-recognition). If this
+// tab ever dies with "Cannot find native module 'ExpoSpeechRecognition'", the
+// dev build on the phone doesn't contain it — the import throws before
+// anything renders and takes the whole screen down, not just voice.
 //
-// Ruled out so far: the package IS installed (npm ls confirms 56.0.1), it IS
-// in package.json dependencies, the plugin IS in app.json, and the lock file
-// has been committed. The remaining suspect is the PREBUILD phase of the EAS
-// build, where config plugins get applied — that log hasn't been read yet.
-//
-// Everything below the voice lines works. Uncomment the two marked spots once
-// a build lands with the module actually in it.
+// THAT COST THREE BUILDS TO FIND. The cause was package-lock.json: EAS runs
+// `npm ci`, which installs STRICTLY from the lock file and ignores
+// package.json entirely. The lock file was updated locally but never
+// committed, so every build installed 990 packages without it while `npm ls`
+// locally insisted the package was there. The tell is in the build log —
+// "audited 990 packages" versus 991. Check that number before installing.
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -43,8 +41,7 @@ import MealPicker from "../../components/MealPicker";
 import MealResult from "../../components/MealResult";
 import NoPhotoFlow from "../../components/NoPhotoFlow";
 import Tap from "../../components/Tap";
-// ⚠️ UNCOMMENT WITH THE BLOCK NEAR THE BOTTOM
-// import VoiceCapture from "../../components/VoiceCapture";
+import VoiceCapture from "../../components/VoiceCapture";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
 import { MealItem, readMealPhoto } from "../../constants/mealPhoto";
@@ -172,9 +169,8 @@ export default function CameraScreen() {
   /* ---------- THE VOICE PATH ----------
      Same estimation problem as the photo, minus the picture — which arguably
      makes it harder, since a photo at least shows how much is on the plate.
-
-     This function is live and correct; only the CAPTURE screen is commented
-     out below, because that's what imports the native module. */
+     What the person SAYS about the amount is the only thing standing in for
+     that, which is why the capture screen coaxes for detail. */
   const heard = async (transcript: string) => {
     setCame("voice");
     setPhotoUri(null);
@@ -224,6 +220,9 @@ export default function CameraScreen() {
           onRetake={() => {
             setItems([]);
             setSummary(null);
+            /* back through whichever door they came in — offering a camera to
+               someone who spoke, or a mic to someone who photographed, would
+               be quietly changing what they asked for */
             setStage(came === "voice" ? "voice" : "camera");
           }}
         />
@@ -252,23 +251,43 @@ export default function CameraScreen() {
               <AlertTriangle size={26} color={T.gold} />
             </View>
 
-            <Text style={s.failTitle}>Couldn't read that one</Text>
+            <Text style={s.failTitle}>
+              {came === "voice" ? "Didn't catch that" : "Couldn't read that one"}
+            </Text>
             <Text style={s.failBody}>
               {problem}
               {"\n\n"}
               Rather than guess at numbers going into your diary, MOTION would rather ask again.
             </Text>
 
-            <Tap onPress={() => { H.tap(); setStage("camera"); }} style={{ width: "100%", marginTop: 20 }}>
+            <Tap
+              onPress={() => { H.tap(); setStage(came === "voice" ? "voice" : "camera"); }}
+              style={{ width: "100%", marginTop: 20 }}
+            >
               <View style={s.failPrimary}>
                 <RefreshCw size={15} color={T.ink} />
-                <Text style={s.failPrimaryText}>Take another photo</Text>
+                <Text style={s.failPrimaryText}>
+                  {came === "voice" ? "Try saying it again" : "Take another photo"}
+                </Text>
               </View>
             </Tap>
 
             <Text style={s.failOr}>or</Text>
 
-            <Tap onPress={() => { H.tap(); setStage("search"); }} style={{ width: "100%" }}>
+            {/* the OTHER estimation route — someone whose photo failed may
+                have better luck describing it, and the reverse */}
+            <Tap
+              onPress={() => { H.tap(); setStage(came === "voice" ? "camera" : "voice"); }}
+              style={{ width: "100%" }}
+            >
+              <View style={s.failGhost}>
+                <Text style={s.failGhostText}>
+                  {came === "voice" ? "Take a photo instead" : "Describe it out loud instead"}
+                </Text>
+              </View>
+            </Tap>
+
+            <Tap onPress={() => { H.tap(); setStage("search"); }} style={{ width: "100%", marginTop: 10 }}>
               <View style={s.failGhost}>
                 <Text style={s.failGhostText}>Search for it by name</Text>
               </View>
@@ -453,16 +472,15 @@ export default function CameraScreen() {
         onBarcode={(code) => { setScannedCode(code); setStage("barcoderesult"); }}
       />
 
-      {/* ⚠️ UNCOMMENT WITH THE IMPORT AT THE TOP, once a dev build actually
-          contains the speech module.
-
+      {/* describing it out loud. The transcript is hidden by default —
+          dictation errors look like failure when the model understands them
+          fine — but there's a toggle for anyone who wants to see it. */}
       <VoiceCapture
         visible={stage === "voice"}
         meal={meal}
         onClose={backToHub}
         onTranscript={heard}
       />
-      */}
     </View>
   );
 }
