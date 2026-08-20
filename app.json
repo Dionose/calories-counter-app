@@ -15,6 +15,7 @@
         "NSCameraUsageDescription": "MOTION uses your camera to photograph meals so it can estimate their calories.",
         "NSPhotoLibraryUsageDescription": "MOTION lets you pick a photo of a meal you've already taken, so you can log it later.",
         "NSMicrophoneUsageDescription": "MOTION lets you describe a meal out loud when a photo alone isn't enough.",
+        "NSSpeechRecognitionUsageDescription": "MOTION turns what you say into text on your phone, so you can describe a meal out loud instead of typing it.",
         "NSHealthShareUsageDescription": "MOTION reads your steps, active minutes and calories burned so your daily numbers reflect what you actually did.",
         "NSHealthUpdateUsageDescription": "MOTION never writes to Health. This permission is required by iOS even for read-only access.",
         "ITSAppUsesNonExemptEncryption": false
@@ -63,7 +64,8 @@
       "expo-notifications",
       "expo-apple-authentication",
       "react-native-health-connect",
-      "@kingstinct/react-native-healthkit"
+      "@kingstinct/react-native-healthkit",
+      "expo-speech-recognition"
     ],
     "experiments": {
       "typedRoutes": true,
