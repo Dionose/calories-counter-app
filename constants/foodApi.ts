@@ -14,7 +14,7 @@
 // change to how amounts or editing work.
 import { Amount, FoodDef } from "./foods";
 import {
-  kindFor, liquidPortions, packPortions, pinchPortions,
+  dryDensityFor, kindFor, liquidPortions, packPortions, pinchPortions,
   Portion,
   powderPortions,
   proteinPortions, scoopPortions, spreadPortions,
@@ -45,8 +45,8 @@ const COLOR_RULES: [RegExp, string][] = [
   [/salmon|tuna|cod|fish|shrimp|prawn/i, "fish"],
   [/bread|toast|bagel|roll|baguette/i, "bread"],
   [/banana/i, "banana"],
-  [/almond|nut|cashew|peanut|walnut|pistachio|protein|whey/i, "nuts"],
-  [/oil|butter|ghee|margarine/i, "oil"],
+  [/almond|nut|cashew|peanut|walnut|pistachio|protein|whey|seed/i, "nuts"],
+  [/oil|butter|margarine|ghee/i, "oil"],
   [/coffee|espresso|americano/i, "coffee"],
   [/juice|smoothie/i, "juice"],
   [/salad|lettuce|spinach|kale|greens|broccoli|cauliflower|bean/i, "greens"],
@@ -106,25 +106,28 @@ function toAmounts(portions: Portion[], scale = 1): Amount[] {
    the manufacturer, which makes it a different kind of claim, and it goes at
    the top in gold.
 
-   TWO RULES, DELIBERATELY SEPARATE, because mixing them produces nonsense:
+   THREE ROUTES TO THE MEASURE, in descending order of trust:
 
-   1. WHEN THE RECORD NAMES A MEASURE — "½ cup", "1 1/2 tbsp", "1 scoop" — use
-      those words, in the pack's own notation. Works for anything: oats,
-      protein powder, sauce.
+   1. THE RECORD NAMES IT — "½ cup", "1 1/2 tbsp", "1 scoop". Use those words.
+      Nothing to infer; the manufacturer said it.
 
-   2. WHEN IT GIVES ONLY MILLILITRES, add the spoon or cup equivalent by
-      arithmetic. Safe ONLY for liquids, where ml is a real volume.
+   2. IT GIVES MILLILITRES — add the spoon or cup equivalent by arithmetic.
+      Safe for liquids, where ml IS the volume.
 
-   Rule 2 must never be applied to grams. A label reading "1/2 cup (40 g)" of
-   oats does not mean 40 ml — dry oats are about 0.4 g/ml, so that half cup is
-   nearer 120 ml. Converting grams to cups needs a density that varies wildly
-   between dry goods (oats 0.4, flour 0.53, sugar 0.85), so we don't try. */
+   3. IT GIVES ONLY GRAMS, and we recognise the food well enough to estimate
+      its density. 50 g of pumpkin seeds at 0.6 g/ml is about 83 ml, which is
+      a third of a cup. Advisory only — the CALORIES come from the grams,
+      which are exact, so a density that's somewhat off costs nothing that
+      matters. Hence "roughly", and hence nothing at all when the food is
+      unrecognised: popcorn and sugar differ sixfold, so a guess there would
+      be worse than silence. */
 function exactRungFrom(
   servingText: string | undefined,
   servingG: number | undefined,
-  /* only liquids may have ml inferred; a gram figure for a solid is not a
-     volume and must not be treated as one */
-  isPourable: boolean
+  /* only pourable foods may have ml inferred from a spoon or cup word */
+  isPourable: boolean,
+  /* grams per ml for a solid, when we have a reasonable estimate */
+  dryDensity?: number | null
 ): Amount | null {
   if (!servingG || !servingText) return null;
 
@@ -138,10 +141,18 @@ function exactRungFrom(
   let hint = parts.join(" · ");
 
   /* the equivalent line — only when the label DIDN'T already name a measure,
-     since repeating "2 tsp" under a rung already called "2 teaspoons" is noise */
-  if (!named && ml) {
-    const eq = volumeEquivalent(ml);
-    if (eq) hint += ` — roughly ${eq}`;
+     since repeating "2 tsp" under a rung already called "2 teaspoons" is
+     noise */
+  if (!named) {
+    if (ml) {
+      const eq = volumeEquivalent(ml);
+      if (eq) hint += ` — roughly ${eq}`;
+    } else if (dryDensity) {
+      /* route 3: work the volume back from a density estimate for this kind
+         of food, so a bare "50 g" can still say "roughly ⅓ cup" */
+      const eq = volumeEquivalent(servingG / dryDensity);
+      if (eq) hint += ` — roughly ${eq}`;
+    }
   }
 
   return {
@@ -202,9 +213,14 @@ function ladderFor(
 ): Ladder {
   const kind = kindFor(name, categories, servingText || "");
 
-  /* liquids and spreads pour; everything else is weighed */
+  /* liquids, spreads and seasonings pour or spoon; everything else is weighed */
   const pourable = kind === "liquid" || kind === "spread" || kind === "pinch";
-  const exact = exactRungFrom(servingText, servingG, pourable);
+  const exact = exactRungFrom(
+    servingText,
+    servingG,
+    pourable,
+    pourable ? null : dryDensityFor(name, categories)
+  );
 
   switch (kind) {
     case "liquid": {
@@ -238,9 +254,9 @@ function ladderFor(
       const amounts = withExactRung(toAmounts(ps), exact, servingText);
       return {
         amounts,
-        defaultIndex: exact ? 0 : 1,
+        defaultIndex: exact ? 0 : 2,
         countUnit: "scoop", countUnitPlural: "scoops",
-        gramsPerUnit: amounts[1]?.grams ?? amounts[0].grams,
+        gramsPerUnit: servingG || 30,
       };
     }
 
@@ -250,9 +266,9 @@ function ladderFor(
       const amounts = withExactRung(toAmounts(ps, scale), exact, servingText);
       return {
         amounts,
-        defaultIndex: exact ? 0 : 1,
+        defaultIndex: exact ? 0 : 2,
         countUnit: "tablespoon", countUnitPlural: "tablespoons",
-        gramsPerUnit: amounts.find((a) => a.ml === 15)?.grams ?? amounts[1]?.grams ?? amounts[0].grams,
+        gramsPerUnit: amounts.find((a) => a.ml === 15)?.grams ?? amounts[2]?.grams ?? amounts[0].grams,
         mlPerUnit: 15,
       };
     }
@@ -275,16 +291,17 @@ function ladderFor(
       const amounts = withExactRung(toAmounts(ps), exact, servingText);
       return {
         amounts,
-        defaultIndex: exact ? 0 : 1,
+        defaultIndex: exact ? 0 : 2,
         countUnit: "palm-sized piece", countUnitPlural: "palm-sized pieces",
         gramsPerUnit: 100,
       };
     }
 
     case "scoop": {
-      /* oats, rice, cereal, frozen veg. A pack reading "1/2 cup (40 g)" names
-         its measure in words, so the exact rung says "Half a cup (½ cup)" —
-         but the 40 g is NOT 40 ml and no volume is inferred from it. */
+      /* oats, rice, cereal, frozen veg, seeds. A pack reading "1/3 cup (50 g)"
+         names its measure in words, so the exact rung says so — and when the
+         record has only the grams, dryDensityFor lets the hint add "roughly
+         ⅓ cup" anyway. */
       const ps = scoopPortions();
       const amounts = withExactRung(toAmounts(ps), exact, servingText);
       return {
@@ -401,18 +418,15 @@ function fractionText(n: number): string {
   return String(Math.round(n * 10) / 10);
 }
 
-/** "125 ml" → "½ cup". "10 ml" → "2 tsp". "45 ml" → "3 tbsp".
+/** "125 ml" → "½ cup". "10 ml" → "2 tsp". "83 ml" → "⅓ cup".
 
     Written as SYMBOLS and abbreviations rather than words, so the reader
     matches what's on the screen to what's printed on the pack without
-    translating in their head — "2 tsp" beside "2 tsp" is instant.
+    translating in their head — "⅓ cup" beside "1/3 cup" is instant.
 
     WHICH UNIT depends on the size. Nobody thinks of 10 ml as a fraction of a
     cup, and nobody measures 250 ml in teaspoons — so small volumes get spoons
-    and larger ones get cups, which is how the measures are actually used.
-
-    ONLY EVER CALLED WITH MILLILITRES. Passing grams here would be a category
-    error: 40 g of oats is about 120 ml, not 40. */
+    and larger ones get cups, which is how the measures are actually used. */
 function volumeEquivalent(ml: number): string | null {
   /* SPOONS below 50 ml. A teaspoon is 5, a tablespoon 15 — and a pack saying
      "2 tsp" is exactly the case this exists for. */
@@ -424,12 +438,12 @@ function volumeEquivalent(ml: number): string | null {
        better than "9 tsp" */
     if (tbsp >= 1) {
       for (const [value, text] of [[1, "1 tbsp"], [1.5, "1½ tbsp"], [2, "2 tbsp"], [3, "3 tbsp"]] as [number, string][]) {
-        if (Math.abs(tbsp - value) < value * 0.08) return text;
+        if (Math.abs(tbsp - value) < value * 0.1) return text;
       }
     }
 
     for (const [value, text] of [[0.5, "½ tsp"], [1, "1 tsp"], [1.5, "1½ tsp"], [2, "2 tsp"], [3, "3 tsp"], [4, "4 tsp"]] as [number, string][]) {
-      if (Math.abs(tsp - value) < value * 0.08) return text;
+      if (Math.abs(tsp - value) < value * 0.1) return text;
     }
     return null;
   }
@@ -453,7 +467,10 @@ function volumeEquivalent(ml: number): string | null {
   ];
 
   for (const [value, text] of NAMED) {
-    if (Math.abs(cups - value) < value * 0.06) return text;
+    /* 10% here rather than 6%: a dry-density estimate carries more spread than
+       a stated millilitre figure, and "roughly ⅓ cup" is still the most useful
+       thing to say when the true answer is 0.36 of one */
+    if (Math.abs(cups - value) < value * 0.1) return text;
   }
 
   /* nothing close to a familiar measure. "Roughly 0.43 cups" would be worse
@@ -463,13 +480,12 @@ function volumeEquivalent(ml: number): string | null {
 }
 
 /** "1 1/2 tbsp (23 g)" → "1½ tablespoons (1½ tbsp)".
-    "1/2 cup (40 g)"    → "Half a cup (½ cup)".
+    "1/3 cup (50 g)"    → "A third of a cup (⅓ cup)".
     "1 scoop (33g)"     → "One scoop".
 
     THE PACK'S OWN WORDS, in the app's wording, with the pack's own notation.
     Fractions stay fractions — a reader holding a packet that says "1 1/2"
-    should see "1½", not "1.5", because recognising those as the same number
-    is work the app can do for them. */
+    should see "1½", not "1.5". */
 function servingLabelFrom(raw: string): string | null {
   const r = raw.toLowerCase();
 
@@ -526,8 +542,9 @@ function servingLabelFrom(raw: string): string | null {
 }
 
 /** does our rung name the same measure the pack does?
-    "Half a cup (½ cup)" against "1/2 cup (40 g)" — both cups, both a half,
-    so ours has to go or the user sees two half-cups with different numbers. */
+    "A third of a cup (⅓ cup)" against "1/3 cup (50 g)" — both cups, both a
+    third, so ours has to go or the user sees two thirds-of-a-cup with
+    different numbers. */
 function sharesMeasureWord(label: string, servingText: string): boolean {
   const l = label.toLowerCase();
   const s = servingText.toLowerCase();
@@ -693,9 +710,9 @@ function offToFood(p: any): FoodDef | null {
       "1 serving (125 ml)"  → 125, straight off the digits
       "1 1/2 tbsp (23 g)"   → 22.5, because a tablespoon IS 15 ml
 
-    CALLERS MUST ONLY USE THIS FOR POURABLE FOODS. "1/2 cup (40 g)" of oats
-    would return 120 here from the cup conversion, which is roughly true as a
-    volume but useless — the 40 g is what matters. */
+    CALLERS MUST ONLY USE THIS FOR POURABLE FOODS. "1/3 cup (50 g)" of seeds
+    would return 80 here from the cup conversion, which is a fine volume but
+    the wrong basis for anything — the 50 g is what the calories come from. */
 function parseServingMl(raw?: string): number | undefined {
   if (!raw) return undefined;
 
@@ -723,7 +740,7 @@ function parseServingMl(raw?: string): number | undefined {
   return undefined;
 }
 
-/** "170 g", "1 scoop (33g)", "1/2 cup (40 g)", "1 1/2 tbsp (23 g)" → 170 / 33 / 40 / 23
+/** "170 g", "1 scoop (33g)", "1/3 cup (50 g)", "1 1/2 tbsp (23 g)" → 170 / 33 / 50 / 23
 
     THIS IS WHAT KEEPS TWO PROTEIN TUBS APART. One says "1 scoop (33g)", another
     says "1 scoop (5g)"; reading the number off each label is the difference

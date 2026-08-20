@@ -1,42 +1,56 @@
 // components/BarcodeResult.tsx
-// What a barcode scan lands on — a real product, looked up by its digits.
+// What a barcode scan lands on.
 //
-// The whole point of this path is that nothing is estimated. Open Food Facts
-// returns what's printed on the packet, so the numbers are as exact as the
-// manufacturer's own label. That's why the header says EXACT rather than
-// MOTION AI: an estimate and a label reading are different kinds of claim,
-// and the app shouldn't blur them.
+// THREE STAGES, and the order matters:
 //
-// THE AMOUNT CARRIES THAT DISTINCTION TOO. One rung may be gold — the pack's
-// own stated serving, measured rather than converted by us. Our version of the
-// same measure is removed upstream, so there's never a choice between two
-// half-cups with different calorie counts.
+//   1. FOUND — the product name, and nothing else. No calories yet, because
+//      showing numbers first invites the user to accept them before we've
+//      offered the better route.
+//   2. LABEL — snap the nutrition panel, or skip. The panel is read by
+//      Gemini and gives the manufacturer's exact figures.
+//   3. RESULT — the amount ladder and the log button.
+//
+// WHY THE PANEL STEP EXISTS. Open Food Facts is volunteer-entered, so a record
+// often disagrees with the packet in the user's hand — a bottle reading
+// "¼ cup (60 ml)" gets stored as "1 tbsp (19 g)". Neither is wrong; they came
+// from different labels. Nothing in our code resolves that, because only the
+// person holding the bottle can see what it says.
+//
+// AND NOTHING READ FROM A PHOTO IS APPLIED SILENTLY. A misread panel is WORSE
+// than no panel: the user trusts it because it came from their own label. So
+// the figures are shown for confirmation first.
+import * as FileSystem from "expo-file-system/legacy";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, BadgeCheck, Check, ChevronRight, Minus, Plus, ScanLine, X } from "lucide-react-native";
+import { AlertTriangle, BadgeCheck, Check, ChevronRight, Info, Minus, Plus, RefreshCw, ScanLine, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import { lookupBarcode } from "../constants/foodApi";
 import { colorFor } from "../constants/foodColors";
-import { FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
+import { Amount, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { saveMeal } from "../constants/meals";
+import { LabelReading, per100From, readNutritionLabel } from "../constants/nutritionLabel";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
 import Icon from "./Icon";
 import { IsoMGlow } from "./IsoM";
+import LabelCamera from "./LabelCamera";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
-/* ---------- the lookup animation ---------- */
-function Looking({ code }: { code?: string | null }) {
+type Stage = "looking" | "found" | "reading" | "confirm" | "result" | "done" | "missing";
+
+/* ---------- a loading state ---------- */
+function Busy({ title, sub }: { title: string; sub?: string | null }) {
   const { T } = useApp();
   const s = styles(T);
   return (
     <View style={s.centre}>
       <IsoMGlow size={92} />
-      <Text style={s.centreText}>Looking up the label…</Text>
-      {code ? <Text style={s.centreCode}>{code}</Text> : null}
+      <Text style={s.centreText}>{title}</Text>
+      {sub ? <Text style={s.centreCode}>{sub}</Text> : null}
     </View>
   );
 }
@@ -65,7 +79,7 @@ function Bar({ label, grams, cal, colorKey, delay }: {
   }, []);
 
   /* proportion of the item's calories this macro accounts for — protein and
-     carbs are 4 cal a gram, fat is 9. Never below 26% or the label won't fit. */
+     carbs are 4 cal a gram, fat is 9 */
   const target = Math.max(26, Math.min(100, cal > 0 ? (grams * (label === "Fat" ? 9 : 4) / cal) * 100 : 26));
   const width = grow.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${target}%`] });
 
@@ -93,7 +107,6 @@ export default function BarcodeResult({
   meal, code, onExit, onRescan,
 }: {
   meal: string;
-  /** the digits the scanner read. null means we got here without a scan. */
   code?: string | null;
   onExit: () => void;
   onRescan: () => void;
@@ -101,58 +114,171 @@ export default function BarcodeResult({
   const { T, userId, refreshStreak } = useApp();
   const s = styles(T);
 
+  const [stage, setStage] = useState<Stage>("looking");
   const [food, setFood] = useState<FoodDef | null>(null);
-  const [looking, setLooking] = useState(true);
-  const [notFound, setNotFound] = useState(false);
+
+  /* what the label photo produced, before the user has confirmed it */
+  const [reading, setReading] = useState<LabelReading | null>(null);
+  /* set once they accept it — from then on the ladder uses the label's own
+     figures rather than the database's */
+  const [fromLabel, setFromLabel] = useState(false);
+  /* what the reader is doing right now. A silent spinner at thirty seconds
+     reads as broken; "the reader's busy, trying again" reads as slow, and
+     those are very different feelings. */
+  const [progress, setProgress] = useState<string | null>(null);
 
   const [idx, setIdx] = useState(0);
-  /* how many of the selected rung — a pack saying "2 tsp" needs exactly two
-     teaspoons, not one tablespoon rounded off */
   const [count, setCount] = useState(1);
   const [editing, setEditing] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
 
-  /* ---------- THE LOOKUP ----------
-     Open Food Facts is community-maintained, which means coverage is very good
-     for mass-market products and patchy for local or own-brand ones. A miss is
-     a normal outcome, not an error — so it gets its own screen rather than a
-     scary message.
-
-     lookupBarcode also returns null for anything that ISN'T FOOD. The scanner
-     will happily read a can of bug spray, and anything you leave open, someone
-     will point at exactly that. */
+  /* ---------- THE LOOKUP ---------- */
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      if (!code) { setLooking(false); setNotFound(true); return; }
+      if (!code) { setStage("missing"); return; }
 
       const f = await lookupBarcode(code);
       if (cancelled) return;
 
-      if (!f) {
-        setLooking(false);
-        setNotFound(true);
-        return;
-      }
+      if (!f) { setStage("missing"); return; }
 
       setFood(f);
       setIdx(f.defaultIndex);
       setCount(1);
-      setLooking(false);
       H.success();
+      /* FOUND, not result — the product name goes up first and the panel
+         offer follows, before any calorie figure is shown */
+      setStage("found");
     })();
 
     return () => { cancelled = true; };
   }, [code]);
 
-  if (looking) return <Looking code={code} />;
+  /* ---------- READING THE PANEL ----------
+     The image work and the API call are in SEPARATE try blocks on purpose.
+     They were together once, and a throw anywhere in the chain replaced a
+     perfectly good reading with a "couldn't read that" blank — so the terminal
+     showed correct figures while the screen showed a failure. */
+  const readLabel = async (uri: string) => {
+    setProgress(null);
+    setStage("reading");
 
-  /* ---------- not in the database, or not food ---------- */
-  if (notFound || !food) {
+    let b64: string;
+
+    try {
+      /* SMALL, DELIBERATELY. A nutrition panel is high-contrast printed text,
+         which survives compression far better than a photo of food — and the
+         upload is a real share of a wait the user is sitting through watching
+         a spinner.
+
+         The progression here was 1400px/0.9 (≈600 KB, 20–40 s), then
+         1000px/0.65 (≈200 KB), now 800px/0.55. IF READINGS START COMING BACK
+         UNCONFIDENT on genuinely clear photos, raise these first — that's the
+         signal we've gone too far, not anything wrong with the model. */
+      const ctx = ImageManipulator.manipulate(uri).resize({ width: 800 });
+      const image = await ctx.renderAsync();
+      const out = await image.saveAsync({ compress: 0.55, format: SaveFormat.JPEG });
+      b64 = await FileSystem.readAsStringAsync(out.uri, { encoding: "base64" });
+
+      console.log("LABEL: sending ≈", Math.round(b64.length * 0.75 / 1024), "KB");
+    } catch (e: any) {
+      console.log("LABEL: image prep failed →", e?.message || e);
+      setReading({
+        servingText: null, servingGrams: null, servingMl: null,
+        calories: null, protein: null, carbs: null, fat: null,
+        servingsPerContainer: null, confident: false,
+        problem: "Couldn't process that photo on this phone. Try taking it again.",
+      });
+      setStage("confirm");
+      return;
+    }
+
+    /* readNutritionLabel never throws — every failure inside it comes back as
+       a reading with confident:false and a problem message */
+    const r = await readNutritionLabel(b64, setProgress);
+
+    setProgress(null);
+    setReading(r);
+    /* ALWAYS to confirm, even when the model is confident. A misread figure is
+       worse than none, because it came from the user's own packet and they'll
+       believe it. */
+    setStage("confirm");
+    if (r.confident) H.success(); else H.warn();
+  };
+
+  /** accept the reading — rebuild the food from the LABEL'S numbers */
+  const acceptReading = () => {
+    if (!food || !reading) return;
+
+    const per100 = per100From(reading);
+    if (!per100) { setStage("result"); return; }
+
+    const servingG = reading.servingGrams ?? reading.servingMl ?? null;
+
+    /* EVERY MEASURE THE LABEL GAVE, in one line. Someone who thinks in cups,
+       someone who thinks in ml and someone who thinks in grams are all looking
+       at the same rung, and each should find their own unit without converting
+       anything. The cup lives in the rung's NAME (servingText is printed
+       verbatim); the ml and grams go underneath. */
+    const measures: string[] = [];
+    if (reading.servingMl) measures.push(`${Math.round(reading.servingMl)} ml`);
+    if (reading.servingGrams) measures.push(`${Math.round(reading.servingGrams)} g`);
+    else if (reading.servingMl) measures.push(`about ${Math.round(reading.servingMl)} g`);
+
+    const labelRung: Amount = {
+      label: reading.servingText || "One serving",
+      hint: measures.length
+        ? `${measures.join(", ")} — read from your packet`
+        : "read from your packet",
+      grams: Math.round(servingG || 100),
+      ml: reading.servingMl ?? undefined,
+      unit: "serving",
+      unitPlural: "servings",
+      exact: true,
+    };
+
+    /* keep the database's other rungs as alternatives, minus any that
+       duplicate the label's serving */
+    const others = food.amounts.filter(
+      (a) => !a.exact && Math.abs(a.grams - (servingG || 0)) > (servingG || 100) * 0.08
+    );
+
+    setFood({
+      ...food,
+      per100: per100.per100,
+      p: per100.p,
+      c: per100.c,
+      f: per100.f,
+      amounts: [labelRung, ...others],
+      defaultIndex: 0,
+    });
+
+    setIdx(0);
+    setCount(1);
+    setFromLabel(true);
+    H.success();
+    setStage("result");
+  };
+
+  /* ---------- LOOKING ---------- */
+  if (stage === "looking") return <Busy title="Looking up that barcode…" sub={code} />;
+  if (stage === "reading") {
+    return (
+      <Busy
+        title="Reading the label…"
+        /* the progress message replaces the generic line the moment there's
+           something more honest to say */
+        sub={progress || "A few seconds"}
+      />
+    );
+  }
+
+  /* ---------- NOT FOUND ---------- */
+  if (stage === "missing" || !food) {
     return (
       <View style={s.screen}>
         <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56 }}>
@@ -200,14 +326,153 @@ export default function BarcodeResult({
     );
   }
 
+  /* ---------- FOUND — the panel offer ---------- */
+  if (stage === "found") {
+    return (
+      <LabelCamera
+        visible
+        productName={food.name}
+        onClose={onExit}
+        onCapture={readLabel}
+        onSkip={() => { H.tick(); setStage("result"); }}
+      />
+    );
+  }
+
+  /* ---------- CONFIRM WHAT WE READ ---------- */
+  if (stage === "confirm" && reading) {
+    const per100 = per100From(reading);
+    const usable = reading.confident && !!per100;
+
+    return (
+      <View style={s.screen}>
+        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56, paddingBottom: 30 }}>
+          <View style={s.head}>
+            <Pressable onPress={() => setStage("found")} hitSlop={10} style={{ padding: 4, marginLeft: -4 }}>
+              <X size={22} color={T.text} />
+            </Pressable>
+            <Text style={s.micro}>Check the reading</Text>
+            <View style={{ width: 22 }} />
+          </View>
+
+          {usable ? (
+            <>
+              <Text style={s.confirmTitle}>Does this match your packet?</Text>
+              <Text style={s.confirmSub}>
+                MOTION read these off your photo. Have a quick look before it goes in your diary —
+                a misread number is worse than none, because it looks like it came from the label.
+              </Text>
+
+              <View style={{ marginTop: 20 }}>
+                <TravelBorder color={T.gold} cardBg={T.card} borderColor={T.border} radius={18}>
+                  <View style={{ padding: 18 }}>
+                    <View style={s.readHead}>
+                      <BadgeCheck size={13} color={T.gold} />
+                      <Text style={s.readHeadText}>READ FROM YOUR LABEL</Text>
+                    </View>
+
+                    {reading.servingText ? (
+                      <>
+                        <Text style={s.readServingLabel}>Serving size</Text>
+                        <Text style={s.readServing}>{reading.servingText}</Text>
+                      </>
+                    ) : null}
+
+                    <View style={s.readCalRow}>
+                      <Text style={s.readCalNum}>{reading.calories}</Text>
+                      <Text style={s.readCalUnit}>calories per serving</Text>
+                    </View>
+
+                    <View style={s.readMacros}>
+                      {[
+                        ["Protein", reading.protein],
+                        ["Carbs", reading.carbs],
+                        ["Fat", reading.fat],
+                      ].map(([k, v]: any) => (
+                        <View key={k} style={s.readMacro}>
+                          <Text style={s.readMacroNum}>{v != null ? `${v}g` : "—"}</Text>
+                          <Text style={s.readMacroKey}>{k}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                </TravelBorder>
+              </View>
+
+              <Tap onPress={acceptReading} style={{ marginTop: 18 }}>
+                <View style={s.confirmBtn}>
+                  <Text style={s.confirmBtnText}>Yes, that's my label</Text>
+                </View>
+              </Tap>
+
+              <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 10 }}>
+                <View style={s.retryBtn}>
+                  <RefreshCw size={15} color={T.sub} />
+                  <Text style={s.retryText}>Something's off — take it again</Text>
+                </View>
+              </Tap>
+
+              <Tap onPress={() => { H.tick(); setStage("result"); }} style={{ marginTop: 10 }}>
+                <View style={s.ghostBtn}>
+                  <Text style={s.ghostText}>Use the database figures instead</Text>
+                </View>
+              </Tap>
+            </>
+          ) : (
+            <>
+              <View style={s.failIcon}>
+                <AlertTriangle size={26} color={T.gold} />
+              </View>
+
+              <Text style={s.confirmTitle}>Couldn't read that one</Text>
+              <Text style={s.confirmSub}>
+                {reading.problem || "The panel wasn't clear enough to read reliably."}
+                {"\n\n"}
+                Rather than guess at numbers going into your diary, MOTION would rather ask again.
+              </Text>
+
+              <View style={s.tipsCard}>
+                <View style={s.tipsHead}>
+                  <Info size={13} color={T.gold} />
+                  <Text style={s.tipsTitle}>What usually helps</Text>
+                </View>
+                <Text style={s.tipsBody}>
+                  Fill the frame with the panel — the serving line at the top and the numbers
+                  under it.
+                  {"\n\n"}
+                  Let the camera focus before you shoot; small print goes soft first.
+                  {"\n\n"}
+                  Flatten a curved packet, and angle away from bright light rather than under it.
+                </Text>
+              </View>
+
+              <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 18 }}>
+                <View style={s.confirmBtn}>
+                  <Text style={s.confirmBtnText}>Take another photo</Text>
+                </View>
+              </Tap>
+
+              <Tap onPress={() => { H.tick(); setStage("result"); }} style={{ marginTop: 10 }}>
+                <View style={s.ghostBtn}>
+                  <Text style={s.ghostText}>Use the database figures instead</Text>
+                </View>
+              </Tap>
+            </>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
+
+  /* ---------- the amount, and the log ---------- */
   const rung = food.amounts[idx] ?? food.amounts[0];
   const countable = !!rung?.unit;
   const gold = !!rung?.exact;
+  const hasAnyExact = food.amounts.some((a) => a.exact);
   const grams = (rung?.grams ?? 0) * count;
   const label = countable && count > 1 ? rungLabel(rung, count) : rung?.label ?? "";
   const n = nutritionFor(food, grams);
 
-  /* ---------- THE WRITE ---------- */
   const logIt = async () => {
     if (saving) return;
     if (!userId) { setSaveErr("You're signed out — sign in and try again."); return; }
@@ -226,10 +491,9 @@ export default function BarcodeResult({
         protein: n.p,
         carbs: n.c,
         fat: n.f,
-        /* marked as a LABEL reading rather than an estimate — worth keeping
-           separate, since these are the only numbers in the app that came off
-           a manufacturer's packaging */
-        source: "barcode",
+        /* whether these came off a photographed label or the database —
+           worth keeping apart, since one is the user's own packet */
+        source: fromLabel ? "label" : "barcode",
       }],
     });
 
@@ -243,11 +507,11 @@ export default function BarcodeResult({
 
     refreshStreak();
     H.success();
-    setDone(true);
+    setStage("done");
   };
 
   /* ---------- logged ---------- */
-  if (done) {
+  if (stage === "done") {
     return (
       <View style={s.doneWrap}>
         <View style={s.doneCircle}>
@@ -282,25 +546,50 @@ export default function BarcodeResult({
           <View style={{ width: 22 }} />
         </View>
 
-        {/* EXACT, not estimated — the distinction matters enough to say */}
+        {/* where these numbers came from — three different provenances, and
+            the user deserves to know which */}
         <View style={s.exactRow}>
           <Icon name="barcode" size={15} mode="loop" />
-          <Text style={s.exactText}>EXACT · FROM THE LABEL</Text>
+          <Text style={[s.exactText, !hasAnyExact && !fromLabel && { color: T.sub }]}>
+            {fromLabel
+              ? "READ FROM YOUR OWN LABEL"
+              : hasAnyExact
+                ? "EXACT · FROM THE LABEL"
+                : "FROM THE LABEL · AMOUNT ESTIMATED"}
+          </Text>
         </View>
 
         <Text style={s.productName}>{food.name}</Text>
         {code ? <Text style={s.codeLine}>Barcode {code}</Text> : null}
 
-        {/* the amount, in words, WITH its anchor. GOLD when it's the pack's own
-            stated serving rather than our conversion — a different kind of
-            claim, and the one worth picking. */}
-        <Tap onPress={() => { H.tap(); setEditing(true); }} style={{ marginTop: 18 }}>
+        {/* no stated serving AND no label photo — offer the photo again,
+            since it's the thing that would fix this */}
+        {!hasAnyExact && !fromLabel && (
+          <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 16 }}>
+            <View style={s.checkCard}>
+              <View style={s.checkHead}>
+                <Info size={14} color={T.gold} />
+                <Text style={s.checkTitle}>Snap the label for exact numbers</Text>
+              </View>
+              <Text style={s.checkBody}>
+                The nutrition here came off this product's label, but the database didn't record
+                what it calls one serving — so the amounts below are MOTION's estimates.
+                {"\n\n"}
+                Photographing the panel takes a second and gets the manufacturer's own figures.
+              </Text>
+            </View>
+          </Tap>
+        )}
+
+        <Tap onPress={() => { H.tap(); setEditing(true); }} style={{ marginTop: 14 }}>
           <View style={[s.amountRow, gold && s.amountRowGold]}>
             <View style={{ flex: 1, minWidth: 0 }}>
               {gold ? (
                 <View style={s.exactTag}>
                   <BadgeCheck size={11} color={T.gold} />
-                  <Text style={s.exactTagText}>EXACTLY AS THE PACK STATES IT</Text>
+                  <Text style={s.exactTagText}>
+                    {fromLabel ? "READ FROM YOUR LABEL" : "EXACTLY AS THE PACK STATES IT"}
+                  </Text>
                 </View>
               ) : (
                 <Text style={s.micro}>How much</Text>
@@ -322,8 +611,6 @@ export default function BarcodeResult({
           </View>
         </Tap>
 
-        {/* THE COUNTER for whatever rung is selected. A pack reading "2 tsp"
-            needs teaspoons counted, not a tablespoon approximation. */}
         {countable && (
           <View style={[s.countRow, gold && s.countRowGold]}>
             <Pressable
@@ -358,7 +645,6 @@ export default function BarcodeResult({
         <Bar label="Carbs" grams={n.c} cal={n.cal} colorKey="rice" delay={120} />
         <Bar label="Fat" grams={n.f} cal={n.cal} colorKey="oil" delay={240} />
 
-        {/* the total */}
         <View style={{ marginTop: 8, marginBottom: 14 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={16}>
             <View style={{ padding: 16 }}>
@@ -371,6 +657,12 @@ export default function BarcodeResult({
               <Text style={s.per100}>
                 {food.per100} cal per 100 g · {food.p}g protein · {food.c}g carbs · {food.f}g fat
               </Text>
+              {!hasAnyExact && !fromLabel && (
+                <Text style={s.per100Note}>
+                  These per-100 g figures are the label's own. Only the portion size below is
+                  estimated.
+                </Text>
+              )}
             </View>
           </TravelBorder>
         </View>
@@ -395,8 +687,6 @@ export default function BarcodeResult({
         </Tap>
       </ScrollView>
 
-      {/* change the amount — THE FOOD'S OWN LADDER goes in, so every option
-          arrives with its anchor, its counter, and the gold rung on top */}
       {editing && (
         <AmountSheet
           visible
@@ -412,9 +702,6 @@ export default function BarcodeResult({
           amounts={food.amounts}
           onClose={() => setEditing(false)}
           onChange={(r) => {
-            /* map the chosen grams back onto the nearest rung and work out how
-               many of it that was, so this screen's counter agrees with what
-               the sheet just showed */
             const nearest = food.amounts.reduce(
               (best, a, i) =>
                 Math.abs(a.grams - r.grams) < Math.abs(food.amounts[best].grams - r.grams) ? i : best,
@@ -436,23 +723,71 @@ const styles = (T: any) =>
     screen: { flex: 1, backgroundColor: T.bg },
     micro: { fontSize: 10, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
 
-    centre: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16, backgroundColor: T.bg },
+    centre: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16, backgroundColor: T.bg, paddingHorizontal: 40 },
     centreText: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed },
-    centreCode: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, letterSpacing: 1 },
+    centreCode: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 17 },
 
     head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
+
+    /* confirm */
+    confirmTitle: { fontSize: 21, color: T.text, fontFamily: FONTS.heading, marginTop: 6 },
+    confirmSub: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, marginTop: 8, lineHeight: 18.5 },
+
+    readHead: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
+    readHeadText: { fontSize: 9, letterSpacing: 1, color: T.gold, fontFamily: FONTS.headingMed },
+    readServingLabel: { fontSize: 10, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
+    readServing: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginTop: 3, marginBottom: 12 },
+    readCalRow: { flexDirection: "row", alignItems: "baseline", gap: 8 },
+    readCalNum: { fontSize: 40, color: T.gold, fontFamily: FONTS.heading },
+    readCalUnit: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
+    readMacros: { flexDirection: "row", gap: 8, marginTop: 16 },
+    readMacro: { flex: 1, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 12, paddingVertical: 11, alignItems: "center" },
+    readMacroNum: { fontSize: 16, color: T.text, fontFamily: FONTS.heading },
+    readMacroKey: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
+
+    confirmBtn: { backgroundColor: T.gold, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
+    confirmBtnText: { fontSize: 14.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    retryBtn: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 14, paddingVertical: 14,
+    },
+    retryText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
+    ghostBtn: { alignItems: "center", paddingVertical: 12 },
+    ghostText: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body },
+
+    failIcon: {
+      width: 58, height: 58, borderRadius: 19, alignSelf: "center",
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: `${T.gold}55`,
+      alignItems: "center", justifyContent: "center", marginTop: 20, marginBottom: 14,
+    },
+    tipsCard: {
+      marginTop: 18, backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 14, padding: 15,
+    },
+    tipsHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 8 },
+    tipsTitle: { fontSize: 12.5, color: T.gold, fontFamily: FONTS.headingMed },
+    tipsBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
 
     exactRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
     exactText: { fontSize: 10, letterSpacing: 1.2, color: T.green, fontFamily: FONTS.body },
     productName: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, lineHeight: 28 },
     codeLine: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 4, letterSpacing: 0.5 },
 
+    checkCard: {
+      backgroundColor: "rgba(251,191,36,0.07)",
+      borderWidth: 1, borderColor: `${T.gold}55`,
+      borderRadius: 15, padding: 15,
+    },
+    checkHead: { flexDirection: "row", alignItems: "center", gap: 7, marginBottom: 8 },
+    checkTitle: { flex: 1, fontSize: 13, color: T.gold, fontFamily: FONTS.headingMed },
+    checkBody: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17.5 },
+
     amountRow: {
       flexDirection: "row", alignItems: "center", gap: 10,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
       borderRadius: 16, padding: 16,
     },
-    /* GOLD — the pack's own number rather than our conversion of it */
     amountRowGold: {
       borderColor: `${T.gold}66`,
       backgroundColor: "rgba(251,191,36,0.07)",
@@ -461,8 +796,6 @@ const styles = (T: any) =>
     exactTagText: { fontSize: 8.5, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
 
     amountLabel: { fontSize: 16, color: T.text, fontFamily: FONTS.headingMed, marginTop: 4 },
-    /* the anchor line — wraps freely, because a taller row that explains
-       itself beats a short one that doesn't */
     amountHint: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, marginTop: 4, lineHeight: 15.5 },
     amountCal: { fontSize: 17, color: T.green, fontFamily: FONTS.heading },
     amountCalUnit: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
@@ -495,6 +828,7 @@ const styles = (T: any) =>
     totalCal: { fontSize: 26, color: T.text, fontFamily: FONTS.heading },
     totalUnit: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
     per100: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 8, lineHeight: 15 },
+    per100Note: { fontSize: 10.5, color: T.gold, fontFamily: FONTS.body, marginTop: 8, lineHeight: 15 },
 
     errRow: {
       flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 12,
@@ -511,7 +845,6 @@ const styles = (T: any) =>
     },
     rescanText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
 
-    /* not found */
     missWrap: { alignItems: "center", paddingTop: 30, gap: 12 },
     missIcon: {
       width: 62, height: 62, borderRadius: 20,
@@ -528,7 +861,6 @@ const styles = (T: any) =>
     },
     missGhostText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
 
-    /* logged */
     doneWrap: {
       flex: 1, backgroundColor: T.bg,
       alignItems: "center", justifyContent: "center", gap: 12, padding: 24,

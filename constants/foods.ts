@@ -18,6 +18,10 @@
 // ball") for everything that comes off the API; the entries below carry their
 // own hints for the same reason.
 //
+// EVERY MEASURE THE FOOD KNOWS GETS SHOWN, AND SCALED. Three different people
+// read the same row: one thinks in cups, one in millilitres, one in grams.
+// Dropping any of them makes someone do arithmetic the app could have done.
+//
 // WORDING: North American English, since that's the launch market — "cup" and
 // "tub" for yogurt, not the British "pot".
 
@@ -66,9 +70,7 @@ export type FoodDef = {
   gramsPerUnit?: number;
   /* the ml behind ONE unit, so a counter can show volume alongside weight.
      Only set for things that POUR — a palm of chicken has no meaningful ml,
-     and inventing one would be worse than omitting it.
-     Labels use ml or grams with no consistency (an egg-white carton says
-     "⅓ cup, 100g"), so the user needs whichever their pack happens to state. */
+     and inventing one would be worse than omitting it. */
   mlPerUnit?: number;
 };
 
@@ -88,7 +90,7 @@ export const FOOD_DB: FoodDef[] = [
   {
     /* The three sizes on North American shelves: the little 4-pack cups
        (~100g), the single-serve cup (~150–170g), and the big tub you scoop
-       from (650g–1.5kg). "Cup" and "tub" are what people actually say here. */
+       from (650g–1.5kg). */
     name: "Greek yogurt", sub: "plain, non-fat", key: "yogurt", per100: 59, p: 10, c: 3.6, f: 0.4,
     defaultIndex: 1,
     countUnit: "small cup", countUnitPlural: "small cups", gramsPerUnit: 100, mlPerUnit: 97,
@@ -300,15 +302,113 @@ export function rungLabel(a: Amount, n: number) {
   return `${n} ${n === 1 ? a.unit : a.unitPlural || a.unit}`;
 }
 
-/** "44 cal · 45 ml, about 49 g" — the detail line under a counter.
-    ml goes in whenever the rung has it, because a pack states ml or grams
-    with no consistency and the user needs to match whichever theirs uses. */
+/** "320 cal · ½ cup · 120 ml, about 120 g" — the detail line under a counter.
+
+    EVERY MEASURE THE RUNG KNOWS, SCALED. Three people read this same line —
+    one thinks in cups, one in millilitres, one in grams — and the counter's
+    heading only says the unit ("2 servings"), which throws away the cup the
+    label printed.
+
+    AND IT MULTIPLIES. Two servings of "¼ cup" is a half cup, and working that
+    out is exactly the arithmetic the app exists to spare someone standing in
+    their kitchen holding a measuring cup. */
 export function rungDetail(a: Amount, n: number, cal: number) {
   const grams = Math.round(a.grams * n);
   const ml = a.ml != null ? Math.round(a.ml * n) : null;
-  return ml != null
-    ? `${cal} cal · ${ml} ml, about ${grams} g`
-    : `${cal} cal · about ${grams} g`;
+
+  const measure = ml != null
+    ? `${ml} ml, about ${grams} g`
+    : `about ${grams} g`;
+
+  const scaled = scaledMeasure(a.label, n);
+
+  return `${cal} cal · ${scaled ? `${scaled} · ` : ""}${measure}`;
+}
+
+/** "1/4 cup" × 2 → "½ cup". "2 tbsp" × 3 → "6 tbsp". "1 scoop" × 2 → "2 scoops".
+
+    Reads whatever measure the label named, multiplies it, and writes the
+    result in the SAME unit — so someone holding a measuring cup can act on it
+    directly rather than converting from millilitres.
+
+    Returns null when the label named nothing measurable, or when the result
+    isn't a tidy amount. "0.83 cups" would be worse than saying nothing, and
+    the ml and grams beside it already cover that case. */
+function scaledMeasure(label: string, n: number): string | null {
+  const l = label.toLowerCase();
+
+  const UNITS: [RegExp, string, string][] = [
+    [/\btbsp\b|tablespoons?/, "tbsp", "tbsp"],
+    [/\btsp\b|teaspoons?/, "tsp", "tsp"],
+    [/\bcups?\b/, "cup", "cups"],
+    [/\bscoops?\b/, "scoop", "scoops"],
+    [/\bslices?\b/, "slice", "slices"],
+  ];
+
+  const hit = UNITS.find(([re]) => re.test(l));
+  if (!hit) return null;
+
+  const [, single, plural] = hit;
+  const total = countInLabel(l) * n;
+  if (!isFinite(total) || total <= 0) return null;
+
+  const text = fractionOf(total);
+  if (!text) return null;
+
+  /* "1 cup" not "1 cups"; "½ cup" not "½ cups" — anything at or below one
+     takes the singular */
+  return `${text} ${total <= 1 ? single : plural}`;
+}
+
+/** the number in front of a measure inside a label — "1/4 cup" → 0.25 */
+function countInLabel(text: string): number {
+  const FRACTIONS: Record<string, number> = {
+    "¼": 0.25, "½": 0.5, "⅓": 1 / 3, "⅔": 2 / 3, "¾": 0.75, "⅛": 0.125,
+  };
+
+  /* mixed numbers first — "1 1/2 tbsp" is one and a half, and matching the
+     bare fraction would silently drop the leading whole */
+  const mixed = text.match(/(\d+)\s+(\d+)\s*\/\s*(\d+)/);
+  if (mixed) return parseFloat(mixed[1]) + parseFloat(mixed[2]) / parseFloat(mixed[3]);
+
+  const mixedSym = text.match(/(\d+)\s*([¼½⅓⅔¾⅛])/);
+  if (mixedSym) return parseFloat(mixedSym[1]) + (FRACTIONS[mixedSym[2]] ?? 0);
+
+  const frac = text.match(/(\d+)\s*\/\s*(\d+)/);
+  if (frac) return parseFloat(frac[1]) / parseFloat(frac[2]);
+
+  const sym = text.match(/[¼½⅓⅔¾⅛]/);
+  if (sym) return FRACTIONS[sym[0]] ?? 1;
+
+  if (/\bquarter\b/.test(text)) return 0.25;
+  if (/\bthird\b/.test(text)) return 1 / 3;
+  if (/\bhalf\b/.test(text)) return 0.5;
+
+  const whole = text.match(/(\d+(?:\.\d+)?)/);
+  return whole ? parseFloat(whole[1]) : 1;
+}
+
+/** 0.5 → "½", 1.5 → "1½", 2 → "2". NULL when it isn't a familiar amount —
+    a measuring cup has marks at halves and quarters, so "0.83 cups" is noise
+    where "180 ml" beside it is actionable. */
+function fractionOf(n: number): string | null {
+  const whole = Math.floor(n + 1e-9);
+  const rest = n - whole;
+
+  if (rest < 0.02) return String(whole);
+
+  const SYMBOLS: [number, string][] = [
+    [0.125, "⅛"], [0.25, "¼"], [1 / 3, "⅓"],
+    [0.5, "½"], [2 / 3, "⅔"], [0.75, "¾"],
+  ];
+
+  for (const [value, symbol] of SYMBOLS) {
+    if (Math.abs(rest - value) < 0.02) {
+      return whole > 0 ? `${whole}${symbol}` : symbol;
+    }
+  }
+
+  return null;
 }
 
 /** the last-resort ladder, for a food nothing is known about.
