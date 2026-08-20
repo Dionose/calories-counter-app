@@ -1,5 +1,5 @@
 // components/MealResult.tsx
-// What a meal photo produced, and how to fix it.
+// What a meal photo produced, and how to improve it.
 //
 // THIS SCREEN'S WHOLE JOB IS HONEST UNCERTAINTY. A nutrition panel gives
 // printed numbers; a plate of food gives none. The model identified what it
@@ -7,7 +7,7 @@
 // ±25%, and nothing in this file changes that.
 //
 // So instead of hiding the estimate behind confident-looking numbers, the
-// screen does three things:
+// screen does four things:
 //
 //   1. SAYS IT'S AN ESTIMATE, plainly, in the header. Not buried in a
 //      disclaimer nobody reads.
@@ -18,14 +18,24 @@
 //   3. MAKES EVERY ITEM CORRECTABLE. Tap it, change the amount, or remove it
 //      entirely — because separate items exist precisely so a wrong one can be
 //      fixed without rejecting the whole plate.
+//   4. LETS THEM DESCRIBE THE DISH OUT LOUD. This is the big one. A photo
+//      shows the surface; it can't see that the rice was fried in groundnut
+//      oil or that there's butter under the toast. The person who cooked it
+//      can say all of that in one sentence, and it moves the numbers further
+//      than any single correction would. See mealFix.ts.
+//
+// A HAND CORRECTION OUTRANKS A SPOKEN ONE. Once someone has set an amount
+// themselves, voice never overwrites it: they typed a number, and a model
+// re-reading a sentence is not grounds to change it back.
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, Plus, Sparkles, X } from "lucide-react-native";
+import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, Mic, Plus, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
-import { Animated, Easing, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import { colorFor } from "../constants/foodColors";
 import { Amount } from "../constants/foods";
 import * as H from "../constants/haptics";
+import { fixMealWithVoice } from "../constants/mealFix";
 import { MealItem, mealTotals } from "../constants/mealPhoto";
 import { saveMeal, setMealPhoto } from "../constants/meals";
 import { uploadMealPhoto } from "../constants/photos";
@@ -34,6 +44,7 @@ import AmountSheet from "./AmountSheet";
 import FoodPicker, { PickedFood } from "./FoodPicker";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
+import VoiceCapture from "./VoiceCapture";
 
 /* how the model's own confidence reads to a person.
 
@@ -44,6 +55,22 @@ const SHAKY = {
   label: "HARD TO JUDGE",
   note: "Hidden volume — worth a look if you know better than the photo does.",
 };
+
+/* a row is an item plus the bookkeeping this screen needs.
+
+   `manual` is what protects a hand-made correction from being undone by a
+   spoken one. `justChanged` drives the badge that shows what the voice
+   actually did — without it a correction that worked looks like nothing
+   happened. `uid` keeps those flags attached to the right row when items are
+   added or removed and the indexes all shift. */
+type Row = MealItem & {
+  uid: number;
+  manual?: boolean;
+  justChanged?: boolean;
+};
+
+let nextUid = 1;
+const toRow = (item: MealItem, manual = false): Row => ({ ...item, uid: nextUid++, manual });
 
 export default function MealResult({
   meal, photoUri, items: initialItems, summary, onExit, onRetake,
@@ -58,9 +85,15 @@ export default function MealResult({
   const { T, userId, refreshStreak } = useApp();
   const s = styles(T);
 
-  const [items, setItems] = useState<MealItem[]>(initialItems);
+  const [items, setItems] = useState<Row[]>(() => initialItems.map((i) => toRow(i)));
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+
+  /* describing the dish out loud */
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [fixing, setFixing] = useState(false);
+  const [fixNote, setFixNote] = useState<string | null>(null);
+  const [fixProblem, setFixProblem] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -90,7 +123,7 @@ export default function MealResult({
      anchor to — but it's still relative to what the model saw, which is
      honest, rather than "a normal serving", which would be the abstract
      phrasing the whole amount system exists to remove. */
-  const ladderFor = (item: MealItem): Amount[] => {
+  const ladderFor = (item: Row): Amount[] => {
     const g = item.grams || 100;
     return [
       { label: "Half of that", hint: `about ${Math.round(g / 2)} g`, grams: Math.round(g / 2) },
@@ -115,8 +148,11 @@ export default function MealResult({
           protein: Math.round(it.protein * factor),
           carbs: Math.round(it.carbs * factor),
           fat: Math.round(it.fat * factor),
-          /* a corrected item is no longer a guess */
+          /* a corrected item is no longer a guess, and no longer something a
+             spoken description is allowed to overwrite */
           sure: "high",
+          manual: true,
+          justChanged: false,
         };
       })
     );
@@ -132,18 +168,85 @@ export default function MealResult({
     H.success();
     setItems((list) => [
       ...list,
-      {
-        name: f.name,
-        amountLabel: f.amountLabel,
-        grams: f.grams,
-        calories: f.cal,
-        protein: f.p,
-        carbs: f.c,
-        fat: f.f,
-        /* the user chose this one themselves — nothing estimated about it */
-        sure: "high",
-      },
+      toRow(
+        {
+          name: f.name,
+          amountLabel: f.amountLabel,
+          grams: f.grams,
+          calories: f.cal,
+          protein: f.p,
+          carbs: f.c,
+          fat: f.f,
+          /* the user chose this one themselves — nothing estimated about it */
+          sure: "high",
+        },
+        true
+      ),
     ]);
+  };
+
+  /* ---------- what they said about the dish ----------
+     The transcript goes to mealFix.ts, which returns CHANGES rather than a new
+     plate — see the note at the top of that file about why re-reading the
+     whole meal would undo work that was already right, and why an item they
+     simply didn't mention is never removed. */
+  const onTranscript = async (text: string) => {
+    setVoiceOpen(false);
+    setFixNote(null);
+    setFixProblem(null);
+    setFixing(true);
+
+    /* the model is given the plate as it stands now, so its indexes line up
+       with what's on screen */
+    const snapshot = items.map((r) => r as MealItem);
+    const fix = await fixMealWithVoice(snapshot, text);
+
+    setFixing(false);
+
+    if (!fix.understood) {
+      H.warn();
+      setFixProblem(fix.problem || "MOTION wasn't sure what to change — try again?");
+      return;
+    }
+
+    let skipped = 0;
+
+    setItems((list) => {
+      /* clear the previous round's badges, so what lights up is only what
+         just changed */
+      let next: Row[] = list.map((r) => ({ ...r, justChanged: false }));
+
+      fix.edits.forEach(({ index, item }) => {
+        const row = next[index];
+        if (!row) return;
+        /* HAND CORRECTIONS WIN — see the note at the top of this file */
+        if (row.manual) { skipped++; return; }
+        next[index] = { ...row, ...item, justChanged: true };
+      });
+
+      /* removals go last-first, so earlier indexes stay valid while we work */
+      [...fix.removes]
+        .sort((a, b) => b - a)
+        .forEach((index) => {
+          const row = next[index];
+          if (!row) return;
+          if (row.manual) { skipped++; return; }
+          next = next.filter((_, n) => n !== index);
+        });
+
+      fix.adds.forEach((item) => {
+        next.push({ ...toRow(item), justChanged: true });
+      });
+
+      return next;
+    });
+
+    H.success();
+    setFixNote(
+      skipped > 0
+        ? `${fix.note || "Updated."} Your own corrections were left as they are.`
+        : fix.note || "Updated."
+    );
   };
 
   /* ---------- the write ---------- */
@@ -165,10 +268,10 @@ export default function MealResult({
         protein: i.protein,
         carbs: i.carbs,
         fat: i.fat,
-        /* an item the user corrected is no longer the AI's guess — worth
-           keeping apart, so we can later measure how often the estimate
-           needed fixing and by how much */
-        source: i.sure === "high" ? "user" : "ai",
+        /* an item the user corrected — by hand OR by describing it — is no
+           longer the AI's guess. Worth keeping apart, so we can later measure
+           how often the estimate needed fixing and by how much. */
+        source: i.manual || i.justChanged || i.sure === "high" ? "user" : "ai",
       })),
     });
 
@@ -285,6 +388,56 @@ export default function MealResult({
           </TravelBorder>
         </View>
 
+        {/* TELL IT ABOUT THE DISH. Sits directly under the number it improves,
+            and above the item list, because describing the meal is the single
+            most useful thing someone can do here — far more than tapping
+            through amounts. A photo can't see oil, butter, stock or what a
+            dish actually is. */}
+        <Tap
+          onPress={() => { if (!fixing) { H.tap(); setVoiceOpen(true); } }}
+          style={{ marginTop: 14 }}
+        >
+          <View style={[s.voiceRow, fixing && { opacity: 0.6 }]}>
+            <View style={s.voiceIcon}>
+              {fixing ? (
+                <ActivityIndicator size="small" color={T.green} />
+              ) : (
+                <Mic size={19} color={T.green} />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={s.voiceTitle}>
+                {fixing ? "Listening to what you said…" : "Describe this dish out loud"}
+              </Text>
+              <Text style={s.voiceSub}>
+                {fixing
+                  ? "Only what you mentioned will change"
+                  : "What it is, how it was cooked — or what MOTION got wrong"}
+              </Text>
+            </View>
+            <ChevronRight size={17} color={T.micro} />
+          </View>
+        </Tap>
+
+        {/* what the description did, or why it didn't */}
+        {fixNote ? (
+          <View style={s.fixNoteRow}>
+            <Check size={14} color={T.green} />
+            <Text style={s.fixNoteText}>{fixNote}</Text>
+          </View>
+        ) : null}
+
+        {fixProblem ? (
+          <View style={s.fixProblemRow}>
+            <AlertTriangle size={14} color={T.gold} />
+            <Text style={s.fixProblemText}>
+              {fixProblem}
+              {"\n"}
+              Nothing on your plate was changed.
+            </Text>
+          </View>
+        ) : null}
+
         {/* WHY THE ITEMS ARE SEPARATE, said once. A user who understands this
             will correct the one wrong item instead of retaking the photo. */}
         <View style={s.explainRow}>
@@ -304,8 +457,8 @@ export default function MealResult({
             const col = colorFor(guessColorKey(item.name));
 
             return (
-              <Tap key={`${item.name}-${i}`} onPress={() => { H.tap(); setEditing(i); }}>
-                <View style={[s.item, shaky && s.itemShaky]}>
+              <Tap key={item.uid} onPress={() => { H.tap(); setEditing(i); }}>
+                <View style={[s.item, shaky && s.itemShaky, item.justChanged && s.itemChanged]}>
                   {/* a thin colour bar, so the list reads as food rather than
                       a spreadsheet */}
                   <LinearGradient
@@ -316,7 +469,15 @@ export default function MealResult({
                   />
 
                   <View style={{ flex: 1, minWidth: 0, paddingLeft: 12 }}>
-                    {shaky ? (
+                    {/* WHAT THE DESCRIPTION JUST DID. Without this, a
+                        correction that worked perfectly looks like nothing
+                        happened. */}
+                    {item.justChanged ? (
+                      <View style={s.changedTag}>
+                        <Mic size={9} color={T.green} />
+                        <Text style={s.changedTagText}>UPDATED FROM WHAT YOU SAID</Text>
+                      </View>
+                    ) : shaky ? (
                       <View style={s.shakyTag}>
                         <AlertTriangle size={9} color={T.gold} />
                         <Text style={s.shakyTagText}>{SHAKY.label}</Text>
@@ -328,7 +489,7 @@ export default function MealResult({
                       {item.amountLabel} · about {item.grams} g
                     </Text>
 
-                    {shaky ? <Text style={s.shakyNote}>{SHAKY.note}</Text> : null}
+                    {shaky && !item.justChanged ? <Text style={s.shakyNote}>{SHAKY.note}</Text> : null}
                   </View>
 
                   <View style={{ alignItems: "flex-end" }}>
@@ -416,6 +577,15 @@ export default function MealResult({
         onClose={() => setAdding(false)}
         onPick={addPicked}
       />
+
+      {/* the same listening screen as Describe a meal — same on-device
+          transcription, same transcript toggle, same wording about mishearing */}
+      <VoiceCapture
+        visible={voiceOpen}
+        meal={meal}
+        onClose={() => setVoiceOpen(false)}
+        onTranscript={onTranscript}
+      />
     </View>
   );
 }
@@ -467,6 +637,33 @@ const styles = (T: any) =>
     macroNum: { fontSize: 16, color: T.text, fontFamily: FONTS.heading },
     macroKey: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
 
+    voiceRow: {
+      flexDirection: "row", alignItems: "center", gap: 12,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 16, paddingVertical: 14, paddingHorizontal: 14,
+    },
+    voiceIcon: {
+      width: 40, height: 40, borderRadius: 13,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.greenBorder,
+      alignItems: "center", justifyContent: "center",
+    },
+    voiceTitle: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed },
+    voiceSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2, lineHeight: 16 },
+
+    fixNoteRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 10,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 12, padding: 12,
+    },
+    fixNoteText: { flex: 1, fontSize: 12, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
+
+    fixProblemRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 10,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
+      borderColor: `${T.gold}55`, borderRadius: 12, padding: 12,
+    },
+    fixProblemText: { flex: 1, fontSize: 12, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
+
     explainRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 16, paddingHorizontal: 2 },
     explainText: { flex: 1, fontSize: 11.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 16.5 },
 
@@ -477,10 +674,14 @@ const styles = (T: any) =>
       overflow: "hidden",
     },
     itemShaky: { borderColor: `${T.gold}44` },
+    itemChanged: { borderColor: T.greenBorder, backgroundColor: T.greenBg },
     itemStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 },
 
     shakyTag: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
     shakyTagText: { fontSize: 8, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
+
+    changedTag: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
+    changedTagText: { fontSize: 8, letterSpacing: 0.8, color: T.green, fontFamily: FONTS.headingMed },
 
     itemName: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
     itemAmount: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 3 },
