@@ -10,8 +10,22 @@
 // packs differently from salad. The honest accuracy ceiling is somewhere
 // around ±25%, and no prompt fixes that.
 //
-// SO THE JOB HERE IS NOT PRECISION — it's being useful and honest at the same
-// time. Three principles fall out of that:
+// WHAT A PROMPT CAN FIX IS STEADINESS. The same plate photographed three
+// times used to come back 60, 85, then 140 — not because the model couldn't
+// tell what the vegetables were, but because nothing told it HOW to judge
+// size. It was guessing portions in the abstract, and an abstract guess lands
+// somewhere different every time.
+//
+// So the size section below is the heart of this file: find something in the
+// frame whose real size is known, work out the vessel's capacity from it,
+// judge how full it is, and convert. A quarter-full takeaway container is
+// something to reason toward. "Some roasted vegetables" is not.
+//
+// That matters more than accuracy. A steady error cancels out over weeks of
+// logging; a jumpy one never settles, and a user watching the same meal
+// score 60 one day and 140 the next stops believing any of the numbers.
+//
+// The other three principles:
 //
 //   1. SEPARATE ITEMS, not one blob. "Chicken, rice, broccoli" as three
 //      entries beats "chicken dinner, 620 cal" — because when the estimate is
@@ -106,53 +120,108 @@ HOW TO SPLIT THE PLATE:
 3. Five items at most. Beyond that the list stops being correctable and starts
    being a chore.
 
+HOW BIG IS IT — WORK THIS OUT BEFORE ANYTHING ELSE:
+
+4. Never guess a portion in the abstract. Measure it against something in the
+   photograph whose real size you know. Do it in this order, every time.
+
+5. FIND THE SCALE. Look for anything with a standard size and use it to judge
+   how big everything else is:
+     - a dinner plate is about 26-28 cm across
+     - a side plate is about 20 cm
+     - a takeaway or lunch container is usually 15-20 cm long
+     - a fork or spoon is about 19 cm; a teaspoon about 12 cm
+     - an adult palm is about 8-9 cm wide; a thumb about 5 cm long
+     - a mug is about 8 cm across and holds around 300 ml
+     - a standard drinking glass holds about 250 ml
+     - a slice of sandwich bread is about 11 cm square
+   If a hand is holding the container, use the hand — it is the most reliable
+   scale in the picture.
+
+6. IDENTIFY THE VESSEL AND ITS CAPACITY. A shallow takeaway container holds
+   roughly 500-750 ml. A dinner plate holds about 600-900 ml heaped. A cereal
+   bowl is about 400-500 ml, a large mixing or salad bowl 1.5-3 litres. This
+   is the step that matters most: the SAME food filling a takeaway container
+   and filling a large bowl differ by five times or more, and a photo taken
+   from above makes them look identical.
+
+7. JUDGE HOW FULL IT IS, as a fraction. A quarter full, half full, level with
+   the rim, heaped above it. Say this to yourself before estimating weight.
+
+8. ESTIMATE DEPTH HONESTLY. A photo from directly above hides height. Unless
+   the food is visibly piled up, assume a modest depth — food spread across a
+   container is usually 2-4 cm deep, not filled to the top.
+
+9. CONVERT VOLUME TO WEIGHT using roughly how heavy the food is for its size:
+     - leaves, salad, popcorn: about 0.3 g per ml
+     - chopped or roasted vegetables: about 0.6 g per ml
+     - cooked rice, pasta, grains: about 0.8 g per ml
+     - stews, curries, soups: about 1.0 g per ml
+     - meat, fish, dense foods: about 1.05 g per ml
+
+10. SANITY-CHECK AGAINST REAL PORTIONS. A restaurant chicken breast is
+    150-200 g. A home portion of cooked rice is 150-250 g. A slice of bread is
+    40-50 g. A portion of vegetables as a side is 80-150 g. If your number
+    lands far outside the normal range for that food, you have probably
+    misjudged the vessel — go back to step 5.
+
+11. IF THERE IS NOTHING TO SCALE AGAINST — no hand, no cutlery, no plate rim,
+    just food filling the frame — assume an ordinary single portion rather
+    than an extreme one, and set "sure" to "low" for those items. Do not
+    invent a large portion from a close-up.
+
+12. BE CONSISTENT. Two photos of the same meal should produce close to the
+    same answer. When you're torn between two estimates, take the middle one
+    rather than the more dramatic one.
+
 HOW TO DESCRIBE AMOUNTS:
 
-4. "amountLabel" must be something a person can PICTURE, anchored to a hand or
-   a common object. Good: "a palm-sized piece", "a cup", "half a cup",
-   "a small handful", "two slices", "a tablespoon", "a medium apple".
-   Bad: "a serving", "a portion", "some", "a normal amount" — those are
-   abstract words that give no guidance at all.
+13. "amountLabel" must be something a person can PICTURE, anchored to a hand
+    or a common object. Good: "a palm-sized piece", "a cup", "half a cup",
+    "a small handful", "two slices", "a tablespoon", "a medium apple".
+    Bad: "a serving", "a portion", "some", "a normal amount" — those are
+    abstract words that give no guidance at all.
 
-5. "grams" is your estimate of the weight of that item as shown. Be realistic:
-   a restaurant chicken breast is 150-200 g, a home portion of cooked rice is
-   150-250 g, a slice of bread is 40-50 g.
+14. Where a container is visible, the label may refer to it: "about a quarter
+    of the container", "half the bowl". That's the most honest description of
+    what you actually judged.
 
 HOW TO NUMBER IT:
 
-6. ROUND EVERYTHING. Calories to the nearest 10 for anything over 100, nearest
-   5 below that. Macros to the nearest gram. Reporting "412 calories" implies a
-   measurement nobody took — say 410.
+15. ROUND EVERYTHING. Calories to the nearest 10 for anything over 100,
+    nearest 5 below that. Macros to the nearest gram. Reporting "412 calories"
+    implies a measurement nobody took — say 410.
 
-7. Calories must be consistent with the macros: protein and carbs are about
-   4 calories a gram, fat about 9. If they don't roughly add up, fix them.
+16. Calories must be consistent with the macros: protein and carbs are about
+    4 calories a gram, fat about 9. If they don't roughly add up, fix them.
 
 BEING HONEST ABOUT WHAT YOU CAN'T SEE:
 
-8. "sure" is per item, and it should genuinely vary. HIGH for something
-   clearly visible whose size is easy to judge — a whole apple, two visible
-   eggs, a countable number of slices. MEDIUM for a normal plated portion.
-   LOW for anything where you're guessing at hidden volume: how much oil the
-   vegetables were cooked in, how much rice is under the sauce, how much
-   dressing is on the salad.
+17. "sure" is per item, and it should genuinely vary. HIGH for something
+    clearly visible whose size is easy to judge — a whole apple, two visible
+    eggs, a countable number of slices. MEDIUM for a normal plated portion
+    where you had a scale reference. LOW for anything where you're guessing at
+    hidden volume: how much oil the vegetables were cooked in, how much rice
+    is under the sauce, how much dressing is on the salad, or any item where
+    step 11 applied.
 
-9. Do NOT invent items you cannot see. If the chicken looks like it was fried,
-   say so in its name — but don't add a separate "cooking oil" entry you have
-   no way to measure.
+18. Do NOT invent items you cannot see. If the chicken looks like it was
+    fried, say so in its name — but don't add a separate "cooking oil" entry
+    you have no way to measure.
 
-10. If the photo isn't food, is too dark or blurry to judge, or shows a packet
+19. If the photo isn't food, is too dark or blurry to judge, or shows a packet
     rather than a meal, set "confident" to false, leave "items" empty, and put
     ONE short sentence in "problem" addressed to the person — for example
     "That looks like a packaged product — the barcode scanner will be more
     accurate" or "Too dark to make out what's on the plate".
 
-11. "summary" is a few plain words for the whole plate — "Chicken with rice and
-    broccoli". Not a sentence, not a description of the photograph.
+20. "summary" is a few plain words for the whole plate — "Chicken with rice
+    and broccoli". Not a sentence, not a description of the photograph.
 
 You are ESTIMATING, and the person will be told that. A sensible estimate they
 can correct is far more useful than a precise-looking number that's wrong —
-so round honestly, mark your uncertainty, and never pretend to know a volume
-you cannot see.`;
+so measure against what you can see, round honestly, mark your uncertainty,
+and never pretend to know a volume you cannot see.`;
 
 /** Estimate a meal from a photo.
 
@@ -174,11 +243,11 @@ export async function readMealPhoto(base64: string, onProgress?: Progress): Prom
       },
     ],
     generationConfig: {
-      /* LOW BUT NOT ZERO. Unlike a nutrition panel there isn't one right
-         answer here — a little flexibility helps the model settle on a
-         sensible reading rather than fixating. Still low, because this is
-         estimation and not invention. */
-      temperature: 0.2,
+      /* AS LOW AS ESTIMATION ALLOWS. Unlike a nutrition panel there isn't one
+         right answer here, but the same plate photographed twice should not
+         come back 60 and then 140 — and it did, at 0.2. Lower is steadier,
+         and steadiness is what makes a week of logs comparable. */
+      temperature: 0.1,
       /* generous: five items with seven fields each adds up, and a truncated
          response is unparseable */
       maxOutputTokens: 2048,

@@ -1,27 +1,30 @@
 // components/VoiceCapture.tsx
 // Describing a meal out loud.
 //
-// THE TRANSCRIPT IS OFF BY DEFAULT, and that's the main design decision here.
+// THE TRANSCRIPT IS ON BY DEFAULT.
 //
-// Dictation makes mistakes — "large green lentils" comes out as "lodge green
-// lentils" often enough — and a person watching those errors appear assumes
-// the app misheard them and gives up, when the model would have understood it
-// perfectly well. Hiding it by default protects people from a problem they
-// don't have.
+// It used to be off, on the theory that watching dictation stumble makes
+// people think the app is failing. That theory lost to a real user: someone
+// describing a meal kept looking for the words, found nothing, and couldn't
+// tell whether the phone was hearing him at all. Talking to a screen that
+// shows no sign of listening feels like shouting into a void, and that
+// uncertainty costs more than the occasional misheard word.
 //
-// But it's a TOGGLE, not a ban. Some people want to see it, and it's genuinely
-// useful for anyone checking how well their accent is handled. When it's on,
-// a note sits above it saying the errors don't matter — because they don't.
+// What makes it safe to show is the note above it: MOTION reads through
+// mishearings the way a person would, so the words being imperfect doesn't
+// matter. Say that plainly and the transcript stops being alarming and starts
+// being proof it's working.
+//
+// Still a TOGGLE, for anyone who'd rather not see it.
 //
 // ON-DEVICE, AND FREE. iOS transcribes locally at no cost, forever. Sending
 // audio to Gemini would work too but charges per second of speech for every
-// user for the life of the app — and the transcription is the part a phone
+// user for the life of the app — and transcription is the part a phone
 // already does well.
 //
-// THE MIC IS THE ANIMATED ONE. This is the moment the app asks someone to
-// speak, and a frozen line drawing gives no sign anything is alive. A Lottie
-// can't be tinted at runtime, so the colour has to come from the FILE: the
-// dark mic on the green button, the solid green one on dark surfaces.
+// THE MIC IS THE STUDIO ONE, everywhere in the app. A Lottie can't be tinted
+// at runtime, so on the green button it needs the dark file and on dark
+// surfaces the green file — same drawing, two exports.
 //
 // ⚠️ THE NATIVE MODULE VERSION MATTERS. expo-speech-recognition renumbered its
 // releases at v56 to track Expo SDK versions; before that it used its own
@@ -69,8 +72,8 @@ export default function VoiceCapture({
   const [error, setError] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
 
-  /* OFF by default — see the file header. On, it shows live. */
-  const [showWords, setShowWords] = useState(false);
+  /* ON by default — see the file header */
+  const [showWords, setShowWords] = useState(true);
   const [live, setLive] = useState("");
 
   /* the words so far. Kept in a ref as well as state because the ref is what
@@ -250,9 +253,8 @@ export default function VoiceCapture({
           </Pressable>
         </View>
 
-        {/* THE TOGGLE. Off by default, because watching dictation stumble makes
-            people think the app is failing when it isn't. On for anyone who
-            wants to see it — and for checking how a particular accent fares. */}
+        {/* THE TOGGLE. On by default now — someone talking needs to see they're
+            being heard. Off for anyone who'd rather not watch. */}
         <View style={s.toggleRow}>
           <Type size={14} color={showWords ? T.green : T.micro} />
           <Text style={[s.toggleLabel, showWords && { color: T.text }]}>
@@ -332,13 +334,14 @@ export default function VoiceCapture({
           )}
         </View>
 
-        {/* THE LIVE TRANSCRIPT, when it's switched on.
+        {/* THE LIVE TRANSCRIPT.
 
-            The note above it is the important part. Dictation gets words wrong
-            — especially with an accent, especially with food names — and
-            someone reading their own mangled words assumes the app has failed.
-            It hasn't: the model reads through those errors the way a person
-            would, and saying so is what makes this safe to show at all. */}
+            The note above it is what makes this safe to show. Dictation gets
+            words wrong — especially with an accent, especially with food names
+            — and someone reading their own mangled words could assume the app
+            has failed. It hasn't: the model reads through those errors the way
+            a person would, and saying so turns the transcript from a worry
+            into proof that it's listening. */}
         {showWords && (
           <View style={s.transcriptWrap}>
             <View style={s.transcriptNote}>
@@ -367,7 +370,7 @@ export default function VoiceCapture({
           </View>
         )}
 
-        {/* THE MIC. The DARK animation, because it sits on a solid green
+        {/* THE MIC. The DARK studio mic, because it sits on a solid green
             button — a green mic on a green circle disappears. It loops while
             idle, which is the invitation to tap; while listening the button
             becomes a stop square, since a mic still animating there would say

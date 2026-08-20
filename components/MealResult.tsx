@@ -6,32 +6,32 @@
 // could see and guessed at volumes it can't — the honest accuracy is around
 // ±25%, and nothing in this file changes that.
 //
-// So instead of hiding the estimate behind confident-looking numbers, the
-// screen does four things:
+// So instead of hiding the estimate behind confident-looking numbers:
 //
-//   1. SAYS IT'S AN ESTIMATE, plainly, in the header. Not buried in a
-//      disclaimer nobody reads.
-//   2. MARKS THE SHAKY ITEMS. The model reports its own confidence per item,
-//      and a splash of oil genuinely is less knowable than a whole apple.
-//      Pointing at the uncertain ones tells the user where their attention is
-//      worth spending.
-//   3. MAKES EVERY ITEM CORRECTABLE. Tap it, change the amount, or remove it
-//      entirely — because separate items exist precisely so a wrong one can be
-//      fixed without rejecting the whole plate.
-//   4. LETS THEM DESCRIBE THE DISH OUT LOUD. This is the big one. A photo
-//      shows the surface; it can't see that the rice was fried in groundnut
-//      oil or that there's butter under the toast. The person who cooked it
-//      can say all of that in one sentence, and it moves the numbers further
-//      than any single correction would. See mealFix.ts.
+//   1. IT SAYS IT'S AN ESTIMATE, plainly, at the top.
+//   2. IT MARKS THE SHAKY ITEMS — a splash of oil genuinely is less knowable
+//      than a whole apple, and pointing at the uncertain ones tells the user
+//      where their attention is worth spending.
+//   3. EVERY ITEM IS CORRECTABLE. Tap it, change the amount, remove it.
+//   4. THEY CAN DESCRIBE THE DISH OUT LOUD. A photo shows the surface; it
+//      can't see the oil the rice was fried in. See mealFix.ts.
+//
+// SET ASIDE, NOT DELETED. When a description replaces the plate, the items
+// the photo guessed and the person didn't mention are NOT thrown away — they
+// drop into a section below, with their calories shown but NOT counted.
+//
+// That's deliberate. The photo saw something. Maybe it was wrong, or maybe
+// they forgot to mention it — only they know. Deleting it silently would be
+// the app deciding; leaving it in the total would count food nobody ate.
+// Showing it, uncounted, next to a question is the only honest option.
+//
+// AND NOTHING NAGS. Log the meal without touching a set-aside item and it
+// simply isn't logged. Someone who ignored the question has answered it.
 //
 // A HAND CORRECTION OUTRANKS A SPOKEN ONE. Once someone has set an amount
-// themselves, voice never overwrites it: they typed a number, and a model
-// re-reading a sentence is not grounds to change it back.
-//
-// THE MIC ON THAT ROW IS THE ANIMATED ONE. A Lottie can't be tinted at
-// runtime, so the colour comes from the file rather than from a prop.
+// themselves, voice never overwrites it and never sets it aside.
 import { LinearGradient } from "expo-linear-gradient";
-import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, Mic, Plus, Sparkles, X } from "lucide-react-native";
+import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, EyeOff, Mic, Plus, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
@@ -62,15 +62,18 @@ const SHAKY = {
 
 /* a row is an item plus the bookkeeping this screen needs.
 
-   `manual` is what protects a hand-made correction from being undone by a
-   spoken one. `justChanged` drives the badge that shows what the voice
-   actually did — without it a correction that worked looks like nothing
-   happened. `uid` keeps those flags attached to the right row when items are
-   added or removed and the indexes all shift. */
+   `manual`     — the user set this themselves. Voice never touches it.
+   `justChanged`— lit up by the last spoken description, so a correction that
+                  worked doesn't look like nothing happened.
+   `setAside`   — the photo saw it, the description didn't mention it. Shown
+                  but NOT counted, pending their answer.
+   `uid`        — everything is keyed by this rather than by position, because
+                  adding and setting aside shuffles the indexes underneath. */
 type Row = MealItem & {
   uid: number;
   manual?: boolean;
   justChanged?: boolean;
+  setAside?: boolean;
 };
 
 let nextUid = 1;
@@ -90,6 +93,7 @@ export default function MealResult({
   const s = styles(T);
 
   const [items, setItems] = useState<Row[]>(() => initialItems.map((i) => toRow(i)));
+  /* keyed by uid, not position — see the note on Row */
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -103,7 +107,13 @@ export default function MealResult({
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  const totals = mealTotals(items);
+  /* WHAT COUNTS. Set-aside items are on screen but out of every number on it —
+     the total, the macros, and what gets logged. */
+  const counted = items.filter((r) => !r.setAside);
+  const aside = items.filter((r) => r.setAside);
+  const totals = mealTotals(counted);
+
+  const editingRow = editing != null ? items.find((r) => r.uid === editing) : null;
 
   /* the count animating up, so the number arrives rather than appearing */
   const count = useRef(new Animated.Value(0)).current;
@@ -137,10 +147,10 @@ export default function MealResult({
     ];
   };
 
-  const applyEdit = (i: number, grams: number, label: string) => {
+  const applyEdit = (uid: number, grams: number, label: string) => {
     setItems((list) =>
-      list.map((it, n) => {
-        if (n !== i) return it;
+      list.map((it) => {
+        if (it.uid !== uid) return it;
         /* scale the macros with the weight — the per-gram figures were the
            model's, and changing how much doesn't change what it is */
         const factor = grams / (it.grams || 1);
@@ -153,7 +163,7 @@ export default function MealResult({
           carbs: Math.round(it.carbs * factor),
           fat: Math.round(it.fat * factor),
           /* a corrected item is no longer a guess, and no longer something a
-             spoken description is allowed to overwrite */
+             spoken description is allowed to overwrite or set aside */
           sure: "high",
           manual: true,
           justChanged: false,
@@ -162,9 +172,9 @@ export default function MealResult({
     );
   };
 
-  const removeItem = (i: number) => {
+  const removeItem = (uid: number) => {
     H.warn();
-    setItems((list) => list.filter((_, n) => n !== i));
+    setItems((list) => list.filter((r) => r.uid !== uid));
   };
 
   const addPicked = (f: PickedFood) => {
@@ -189,20 +199,38 @@ export default function MealResult({
     ]);
   };
 
+  /* ---------- the set-aside answers ---------- */
+
+  /* "it WAS there" — back into the total, and marked as theirs so a later
+     description can't set it aside again */
+  const restoreAside = (uid: number) => {
+    H.success();
+    setItems((list) =>
+      list.map((r) =>
+        r.uid === uid ? { ...r, setAside: false, manual: true, justChanged: true } : r
+      )
+    );
+  };
+
+  /* "it wasn't" — gone for good. It was never in the total, so nothing
+     changes numerically; this just clears it off the screen. */
+  const dropAside = (uid: number) => {
+    H.tick();
+    setItems((list) => list.filter((r) => r.uid !== uid));
+  };
+
   /* ---------- what they said about the dish ----------
-     The transcript goes to mealFix.ts, which returns CHANGES rather than a new
-     plate — see the note at the top of that file about why re-reading the
-     whole meal would undo work that was already right, and why an item they
-     simply didn't mention is never removed. */
+     mealFix returns CHANGES against the COUNTED items, so the indexes it
+     answers with line up with what's actually on the plate. Set-aside rows
+     are invisible to it — they've already been ruled out once. */
   const onTranscript = async (text: string) => {
     setVoiceOpen(false);
     setFixNote(null);
     setFixProblem(null);
     setFixing(true);
 
-    /* the model is given the plate as it stands now, so its indexes line up
-       with what's on screen */
-    const snapshot = items.map((r) => r as MealItem);
+    const active = items.filter((r) => !r.setAside);
+    const snapshot = active.map((r) => r as MealItem);
     const fix = await fixMealWithVoice(snapshot, text);
 
     setFixing(false);
@@ -213,30 +241,47 @@ export default function MealResult({
       return;
     }
 
+    /* the model answered in positions; translate to uids before touching
+       anything, because the list is about to change shape */
+    const editByUid = new Map<number, MealItem>();
+    fix.edits.forEach(({ index, item }) => {
+      const row = active[index];
+      if (row) editByUid.set(row.uid, item);
+    });
+
+    const asideUids = new Set<number>();
+    fix.removes.forEach((index) => {
+      const row = active[index];
+      if (row) asideUids.add(row.uid);
+    });
+
     let skipped = 0;
+    let setAsideCount = 0;
 
     setItems((list) => {
-      /* clear the previous round's badges, so what lights up is only what
-         just changed */
-      let next: Row[] = list.map((r) => ({ ...r, justChanged: false }));
+      const next: Row[] = list.map((r) => {
+        /* clear the previous round's badges, so what lights up is only what
+           just changed */
+        const base: Row = { ...r, justChanged: false };
 
-      fix.edits.forEach(({ index, item }) => {
-        const row = next[index];
-        if (!row) return;
+        if (base.setAside) return base;
+
         /* HAND CORRECTIONS WIN — see the note at the top of this file */
-        if (row.manual) { skipped++; return; }
-        next[index] = { ...row, ...item, justChanged: true };
-      });
+        if (base.manual) {
+          if (editByUid.has(base.uid) || asideUids.has(base.uid)) skipped++;
+          return base;
+        }
 
-      /* removals go last-first, so earlier indexes stay valid while we work */
-      [...fix.removes]
-        .sort((a, b) => b - a)
-        .forEach((index) => {
-          const row = next[index];
-          if (!row) return;
-          if (row.manual) { skipped++; return; }
-          next = next.filter((_, n) => n !== index);
-        });
+        const edit = editByUid.get(base.uid);
+        if (edit) return { ...base, ...edit, justChanged: true };
+
+        if (asideUids.has(base.uid)) {
+          setAsideCount++;
+          return { ...base, setAside: true, justChanged: false };
+        }
+
+        return base;
+      });
 
       fix.adds.forEach((item) => {
         next.push({ ...toRow(item), justChanged: true });
@@ -246,16 +291,20 @@ export default function MealResult({
     });
 
     H.success();
-    setFixNote(
-      skipped > 0
-        ? `${fix.note || "Updated."} Your own corrections were left as they are.`
-        : fix.note || "Updated."
-    );
+
+    const parts: string[] = [];
+    if (fix.note) parts.push(fix.note);
+    if (setAsideCount > 0 && !fix.note) {
+      parts.push("Updated to what you described.");
+    }
+    if (skipped > 0) parts.push("Your own corrections were left as they are.");
+
+    setFixNote(parts.length ? parts.join(" ") : "Updated.");
   };
 
   /* ---------- the write ---------- */
   const logIt = async () => {
-    if (saving || !items.length) return;
+    if (saving || !counted.length) return;
     if (!userId) { setSaveErr("You're signed out — sign in and try again."); return; }
 
     setSaveErr(null);
@@ -264,7 +313,9 @@ export default function MealResult({
     const { mealId, error } = await saveMeal(userId, {
       mealType: meal.toLowerCase() as any,
       source: "photo",
-      items: items.map((i) => ({
+      /* SET-ASIDE ITEMS DON'T GO. They were never counted, and ignoring the
+         question is a valid way of answering it. */
+      items: counted.map((i) => ({
         foodName: i.name,
         amountLabel: i.amountLabel,
         grams: i.grams,
@@ -322,7 +373,7 @@ export default function MealResult({
         </View>
         <Text style={s.doneTitle}>Added to {meal}</Text>
         <Text style={s.doneSub}>
-          {items.length} {items.length === 1 ? "item" : "items"} · {totals.cal} cal
+          {counted.length} {counted.length === 1 ? "item" : "items"} · {totals.cal} cal
         </Text>
 
         <Tap onPress={onRetake} style={{ marginTop: 18, width: "100%", maxWidth: 260 }}>
@@ -340,7 +391,7 @@ export default function MealResult({
     );
   }
 
-  const anyShaky = items.some((i) => i.sure === "low");
+  const anyShaky = counted.some((i) => i.sure === "low");
 
   return (
     <View style={{ flex: 1 }}>
@@ -370,7 +421,7 @@ export default function MealResult({
           </View>
         ) : null}
 
-        {/* the total */}
+        {/* the total — counted items only */}
         <View style={{ marginTop: 16 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 18 }}>
@@ -393,13 +444,9 @@ export default function MealResult({
         </View>
 
         {/* TELL IT ABOUT THE DISH. Sits directly under the number it improves,
-            and above the item list, because describing the meal is the single
-            most useful thing someone can do here — far more than tapping
-            through amounts. A photo can't see oil, butter, stock or what a
-            dish actually is.
-
-            The mic LOOPS rather than sitting still: this row is an invitation
-            to speak, and a frozen icon reads as a label. */}
+            because describing the meal is the single most useful thing someone
+            can do here — a photo can't see oil, butter, stock, or what a dish
+            actually is. */}
         <Tap
           onPress={() => { if (!fixing) { H.tap(); setVoiceOpen(true); } }}
           style={{ marginTop: 14 }}
@@ -418,7 +465,7 @@ export default function MealResult({
               </Text>
               <Text style={s.voiceSub}>
                 {fixing
-                  ? "Only what you mentioned will change"
+                  ? "Working out what to change"
                   : "What it is, how it was cooked — or what MOTION got wrong"}
               </Text>
             </View>
@@ -455,16 +502,16 @@ export default function MealResult({
         </View>
 
         <Text style={[s.micro, { marginTop: 18, marginBottom: 10 }]}>
-          {items.length} {items.length === 1 ? "item" : "items"}
+          {counted.length} {counted.length === 1 ? "item" : "items"}
         </Text>
 
         <View style={{ gap: 9 }}>
-          {items.map((item, i) => {
+          {counted.map((item) => {
             const shaky = item.sure === "low";
             const col = colorFor(guessColorKey(item.name));
 
             return (
-              <Tap key={item.uid} onPress={() => { H.tap(); setEditing(i); }}>
+              <Tap key={item.uid} onPress={() => { H.tap(); setEditing(item.uid); }}>
                 <View style={[s.item, shaky && s.itemShaky, item.justChanged && s.itemChanged]}>
                   {/* a thin colour bar, so the list reads as food rather than
                       a spreadsheet */}
@@ -479,12 +526,12 @@ export default function MealResult({
                     {/* WHAT THE DESCRIPTION JUST DID. Without this, a
                         correction that worked perfectly looks like nothing
                         happened. Lucide here rather than the animation — at
-                        9px a Lottie is unreadable and costs a frame budget
-                        for nothing. */}
+                        9px a Lottie is unreadable and costs frames for
+                        nothing. */}
                     {item.justChanged ? (
                       <View style={s.changedTag}>
                         <Mic size={9} color={T.green} />
-                        <Text style={s.changedTagText}>UPDATED FROM WHAT YOU SAID</Text>
+                        <Text style={s.changedTagText}>FROM WHAT YOU SAID</Text>
                       </View>
                     ) : shaky ? (
                       <View style={s.shakyTag}>
@@ -513,6 +560,63 @@ export default function MealResult({
           })}
         </View>
 
+        {/* ---------- WHAT THE PHOTO SAW AND YOU DIDN'T MENTION ----------
+            Not counted, not deleted. The photo saw something; maybe it was
+            wrong, maybe they forgot. Only they know, so it sits here with its
+            calories visible and excluded until they say. */}
+        {aside.length > 0 && (
+          <View style={s.asideWrap}>
+            <View style={s.asideHead}>
+              <EyeOff size={13} color={T.gold} />
+              <Text style={s.asideTitle}>Not counted</Text>
+            </View>
+
+            <Text style={s.asideIntro}>
+              MOTION thought {aside.length === 1 ? "this was" : "these were"} in the photo, but you
+              didn't mention {aside.length === 1 ? "it" : "them"} — so {aside.length === 1 ? "it isn't" : "they aren't"} in
+              your total. Was {aside.length === 1 ? "it" : "any of it"} really there?
+            </Text>
+
+            {aside.map((item) => (
+              <View key={item.uid} style={s.asideCard}>
+                <View style={s.asideRow}>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.asideName} numberOfLines={2}>{item.name}</Text>
+                    <Text style={s.asideAmount}>
+                      {item.amountLabel} · about {item.grams} g
+                    </Text>
+                  </View>
+                  <View style={{ alignItems: "flex-end" }}>
+                    <Text style={s.asideCal}>{item.calories}</Text>
+                    <Text style={s.asideCalUnit}>cal · not counted</Text>
+                  </View>
+                </View>
+
+                <View style={s.asideBtns}>
+                  <Tap onPress={() => restoreAside(item.uid)} style={{ flex: 1 }}>
+                    <View style={s.asideKeep}>
+                      <Plus size={13} color={T.ink} />
+                      <Text style={s.asideKeepText}>It was there</Text>
+                    </View>
+                  </Tap>
+
+                  <Tap onPress={() => dropAside(item.uid)} style={{ flex: 1 }}>
+                    <View style={s.asideDrop}>
+                      <X size={13} color={T.sub} />
+                      <Text style={s.asideDropText}>It wasn't</Text>
+                    </View>
+                  </Tap>
+                </View>
+              </View>
+            ))}
+
+            <Text style={s.asideFoot}>
+              Leave {aside.length === 1 ? "it" : "them"} alone and {aside.length === 1 ? "it won't" : "they won't"} be
+              logged.
+            </Text>
+          </View>
+        )}
+
         {/* MISSING SOMETHING. The model lists what it can see, and a photo
             taken from above misses the glass of juice beside the plate. */}
         <Tap onPress={() => { H.tap(); setAdding(true); }} style={{ marginTop: 12 }}>
@@ -538,7 +642,7 @@ export default function MealResult({
         ) : null}
 
         <Tap onPress={logIt} style={{ marginTop: 18 }}>
-          <View style={[s.logBtn, (saving || !items.length) && { opacity: 0.55 }]}>
+          <View style={[s.logBtn, (saving || !counted.length) && { opacity: 0.55 }]}>
             <Text style={s.logBtnText}>
               {saving ? "Logging…" : `Log to ${meal} · ${totals.cal} cal`}
             </Text>
@@ -554,26 +658,26 @@ export default function MealResult({
       </ScrollView>
 
       {/* correcting one item */}
-      {editing != null && items[editing] && (
+      {editingRow && (
         <AmountSheet
           visible
-          name={items[editing].name}
-          currentGrams={items[editing].grams}
-          currentLabel={items[editing].amountLabel}
+          name={editingRow.name}
+          currentGrams={editingRow.grams}
+          currentLabel={editingRow.amountLabel}
           perGram={{
-            cal: items[editing].calories / (items[editing].grams || 1),
-            p: items[editing].protein / (items[editing].grams || 1),
-            c: items[editing].carbs / (items[editing].grams || 1),
-            f: items[editing].fat / (items[editing].grams || 1),
+            cal: editingRow.calories / (editingRow.grams || 1),
+            p: editingRow.protein / (editingRow.grams || 1),
+            c: editingRow.carbs / (editingRow.grams || 1),
+            f: editingRow.fat / (editingRow.grams || 1),
           }}
-          amounts={ladderFor(items[editing])}
+          amounts={ladderFor(editingRow)}
           onClose={() => setEditing(null)}
           onChange={(r) => {
-            applyEdit(editing, r.grams, r.amountLabel);
+            applyEdit(editingRow.uid, r.grams, r.amountLabel);
             setEditing(null);
           }}
           onRemove={() => {
-            removeItem(editing);
+            removeItem(editingRow.uid);
             setEditing(null);
           }}
         />
@@ -611,7 +715,7 @@ function guessColorKey(name: string): string {
   if (/chicken|turkey|beef|pork|steak|lamb|bacon/.test(n)) return "chicken";
   if (/salmon|tuna|fish|prawn|shrimp/.test(n)) return "fish";
   if (/bread|toast|bagel/.test(n)) return "bread";
-  if (/banana/.test(n)) return "banana";
+  if (/banana|plantain/.test(n)) return "banana";
   if (/nut|almond|cashew|peanut/.test(n)) return "nuts";
   if (/oil|butter|dressing|sauce/.test(n)) return "oil";
   if (/coffee/.test(n)) return "coffee";
@@ -698,6 +802,34 @@ const styles = (T: any) =>
 
     itemCal: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
     itemCalUnit: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
+
+    /* set aside — visible, uncounted, undecided */
+    asideWrap: { marginTop: 18 },
+    asideHead: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
+    asideTitle: { fontSize: 10, letterSpacing: 1.2, color: T.gold, fontFamily: FONTS.body, textTransform: "uppercase" },
+    asideIntro: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 17, marginBottom: 10 },
+    asideCard: {
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}44`,
+      borderRadius: 15, padding: 13, marginBottom: 9,
+    },
+    asideRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+    asideName: { fontSize: 14.5, color: T.sub, fontFamily: FONTS.headingMed },
+    asideAmount: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
+    asideCal: { fontSize: 16, color: T.micro, fontFamily: FONTS.heading },
+    asideCalUnit: { fontSize: 8.5, color: T.micro, fontFamily: FONTS.body },
+    asideBtns: { flexDirection: "row", gap: 8, marginTop: 12 },
+    asideKeep: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+      backgroundColor: T.green, borderRadius: 11, paddingVertical: 10,
+    },
+    asideKeepText: { fontSize: 12.5, color: T.ink, fontFamily: FONTS.headingMed },
+    asideDrop: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
+      borderRadius: 11, paddingVertical: 10,
+    },
+    asideDropText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.headingMed },
+    asideFoot: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 15 },
 
     addRow: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,

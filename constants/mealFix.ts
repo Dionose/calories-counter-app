@@ -1,5 +1,5 @@
 // constants/mealFix.ts
-// Talking to a photo estimate — describing the dish, or fixing what's wrong.
+// Talking to a photo estimate — describing the whole dish, or fixing one item.
 //
 // THE PERSON WHO ATE IT KNOWS THINGS THE PHOTO CAN'T SHOW. A camera sees the
 // surface: it can't tell mashed spinach from scrambled egg, can't see what the
@@ -7,27 +7,32 @@
 // say all of that in a sentence, and it moves the numbers more than correcting
 // a single item ever would.
 //
-// So this handles BOTH:
-//   DESCRIBING  — "it's jollof rice, fried in groundnut oil, with chicken"
-//                 may legitimately update several items at once, because the
-//                 description speaks to all of them.
-//   CORRECTING  — "the green one is spinach, not eggs" changes exactly one.
+// TWO DIFFERENT THINGS CAN BE SAID, and telling them apart is the whole job:
 //
-// IT RETURNS INSTRUCTIONS, NOT A NEW PLATE. The model is given the current
-// items and asked what to CHANGE. Handing back a whole fresh plate would
-// re-guess the items that were already right: correct the spinach and the
-// beans come back different, which reads as the app being unreliable even
-// though the correction worked.
+//   A FULL DESCRIPTION — "this is broccoli, cauliflower and carrots, all
+//   roasted." They have just told you what the dish IS. Their list BECOMES the
+//   plate: anything the photo guessed that they didn't name is removed.
 //
-// SILENCE IS NOT DENIAL. Someone describing jollof rice won't list every
-// ingredient — they may never mention the carrots the photo clearly shows.
-// Unmentioned items are LEFT ALONE, never removed. Only an explicit "there's
-// no X" removes anything.
+//   A SINGLE CORRECTION — "the green one is spinach, not eggs." They pointed
+//   at one item. Everything else stays exactly as it was.
+//
+// GETTING THIS WRONG IS WORSE THAN NO FEATURE AT ALL. It used to treat every
+// description as a correction, so a full description ADDED to the photo's
+// guess instead of replacing it: a plate the model read as plantain and beans,
+// described by the cook as beef, spinach, beans and olive oil, ended up
+// carrying the plantain AND all four — double-counted calories, and a plate
+// containing food nobody ate. Found on a real meal, and it's the reason the
+// replace/correct split exists.
+//
+// WHAT WAS REMOVED IS ALWAYS SAID OUT LOUD. When a description replaces the
+// plate, the note names what went — "plantain removed, you didn't mention it".
+// That hands the judgement back: maybe there WAS plantain and they forgot, and
+// they can add it back. Silently deleting three items would be the app
+// deciding for them.
 //
 // WHEN IT CAN'T TELL, IT DOES NOTHING. A sentence that could mean two items
 // comes back as understood:false and the plate is untouched. A silent wrong
-// change to a plate someone already checked is worse than being asked to say
-// it again.
+// change to a plate someone already checked is worse than being asked again.
 //
 // Reuses the same speech path as mealVoice.ts: the phone transcribes
 // on-device for free, and only the text is sent.
@@ -47,12 +52,14 @@ const ATTEMPTS = 2;
 export type MealFix = {
   /** replace the item at this index with this one */
   edits: { index: number; item: MealItem }[];
-  /** drop these indexes — only ever from an explicit denial */
+  /** drop these indexes */
   removes: number[];
   /** append these */
   adds: MealItem[];
   /** false means the plate must be left exactly as it was */
   understood: boolean;
+  /** true when they described the whole dish rather than fixing one item */
+  fullDescription: boolean;
   /** one short line describing what changed, shown to the user */
   note: string | null;
   /** why nothing happened, when understood is false */
@@ -67,6 +74,7 @@ Return ONLY a JSON object. No markdown, no code fences, no explanation.
 
 {
   "understood": boolean,
+  "fullDescription": boolean,
   "note": string or null,
   "problem": string or null,
   "edits": [
@@ -97,99 +105,103 @@ Return ONLY a JSON object. No markdown, no code fences, no explanation.
   ]
 }
 
-WHAT THEY MIGHT BE DOING:
+FIRST, DECIDE WHICH OF TWO THINGS THEY DID. This decision changes everything
+else, so make it before anything else.
 
-1. The list below was estimated from a PHOTOGRAPH, which only shows the
-   surface. They may be doing either of these, or both at once:
+A) A FULL DESCRIPTION — they told you what the dish IS, or listed what's in it.
+   "This is broccoli, cauliflower and carrots, all roasted."
+   "It's jollof rice with chicken, fried in groundnut oil."
+   "There's beef, spinach, beans and olive oil in it."
+   Set "fullDescription": true.
 
-   DESCRIBING THE DISH — telling you what it actually is and how it was made.
-   "It's jollof rice, fried in groundnut oil, with chicken." This is the most
-   valuable thing they can give you: cooking method, oil, butter, cream,
-   stock, and what a dish actually is are all invisible in a photo and change
-   the numbers a great deal.
+B) A SINGLE CORRECTION — they pointed at one thing and fixed it.
+   "The green one is mashed spinach, not eggs."
+   "There's no butter on that toast."
+   "The rice was more like two cups."
+   Set "fullDescription": false.
 
-   CORRECTING A MISTAKE — "the green one is mashed spinach, not eggs."
+The tell is whether they are naming THE DISH or its contents as a whole (A), or
+referring to ONE item on a list they can see (B).
 
-2. A DESCRIPTION MAY UPDATE SEVERAL ITEMS AT ONCE. If they say the whole dish
-   was fried in oil, every item that was fried is affected. If they name the
-   dish and the list is a rough version of it, improve each item the
-   description genuinely speaks to.
+IF IT IS A FULL DESCRIPTION (A):
 
-WHAT YOU MUST NOT TOUCH:
+1. WHAT THEY SAID IS NOW THE PLATE. They were there and you were not. Their
+   list replaces the guess entirely.
 
-3. ANY ITEM THE DESCRIPTION DOESN'T SPEAK TO IS LEFT OUT of your answer
-   entirely. Re-guessing items that were already right is the single worst
-   thing you can do here.
+2. Every item in the current list that their description does NOT account for
+   goes in "removes". This is the most important rule in this file. If the list
+   says plantain and beans, and they say beef, spinach, beans and olive oil,
+   then plantain is REMOVED — not kept alongside. Keeping it would count food
+   nobody ate.
 
-4. NOT MENTIONING SOMETHING IS NOT DENYING IT. People describing a dish list
-   the main things and skip the rest — someone describing jollof rice may
-   never mention the carrots in it, even though the photo clearly shows them.
-   An item they simply didn't talk about STAYS EXACTLY AS IT IS. Never remove
-   something just because it went unmentioned.
+3. Items they named that already exist in the list should be EDITED to match
+   what they said, not added again. Beans stay beans; adjust the numbers if
+   their description changes them.
 
-5. Only put an index in "removes" when they EXPLICITLY say it isn't there:
-   "there's no butter on that toast", "that's not chicken, there's no meat in
-   it at all".
+4. Items they named that aren't in the list go in "adds".
 
-6. "index" refers to the numbered list below. Use those exact numbers.
+5. In "note", say plainly what you removed and why, addressed to them. For
+   example: "Updated to what you described. Removed plantain — you didn't
+   mention it." Under twenty words. If nothing was removed, just say what
+   changed.
 
-WHICH ACTION TO USE:
+IF IT IS A SINGLE CORRECTION (B):
 
-7. EDIT when an item is actually a different food, a different amount, or was
-   cooked differently than assumed. Change the name if the food changed, and
-   recalculate calories and macros to match.
+6. TOUCH ONLY WHAT THEY MENTIONED. Every other item is left out of your answer
+   entirely — no edit, no remove.
 
-8. ADD when they mention something the photo missed — "there was also a glass
-   of orange juice", "there's butter under that".
+7. NOT MENTIONING SOMETHING IS NOT DENYING IT here. Only remove an item if they
+   explicitly say it isn't there.
 
-9. REMOVE only under rule 5.
+8. In "note", say what you changed, under twelve words.
 
-THE NUMBERS:
+BOTH CASES:
+
+9. "index" refers to the numbered list below. Use those exact numbers.
 
 10. When a food CHANGES, its calories and macros must change with it. Spinach
-    is not egg. Work them out fresh for the new food at the weight given.
+    is not egg. Work them out fresh for the new food at a sensible weight.
 
 11. Cooking method changes fat and calories, not identity. Rice fried in oil
     carries meaningfully more than boiled rice — reflect that in the numbers
     and say so in the name ("Jollof rice, fried").
 
-12. Keep the existing weight unless they said otherwise — most of the time
-    they're telling you WHAT it was, not how much.
+12. Oil, butter and dressing they mention are real calories and usually the
+    biggest thing a photo misses. Add them as their own item where that makes
+    sense.
 
-13. ROUND. Calories to the nearest 10 above 100, nearest 5 below. Macros to
+13. Keep an existing weight unless they said otherwise — usually they're
+    telling you WHAT it was, not how much.
+
+14. ROUND. Calories to the nearest 10 above 100, nearest 5 below. Macros to
     whole grams. Calories must match the macros: protein and carbs about 4 a
     gram, fat about 9.
 
-14. "amountLabel" must stay PICTURABLE — "a cup", "a palm-sized piece", "two
+15. "amountLabel" must stay PICTURABLE — "a cup", "a palm-sized piece", "two
     slices". Never "a serving" or "a portion".
 
-15. "sure" for something they told you themselves is "high" when they gave an
+16. "sure" for something they told you themselves is "high" when they gave an
     amount too, "medium" when they named the food but not the amount.
 
 THE TRANSCRIPT IS MESSY:
 
-16. This came from speech recognition. Expect false starts, filler words and
+17. This came from speech recognition. Expect false starts, filler words and
     misheard words, and read through them the way a person would. "Spin itch"
     is spinach. "Jelly rice" is jollof rice.
 
-17. The speaker never sees the transcript, so refusing over a garbled word
+18. The speaker never sees the transcript, so refusing over a garbled word
     helps nobody — if their intent is clear, act on it.
 
 WHEN YOU GENUINELY CAN'T TELL:
 
-18. If you cannot work out which item they mean, or what they want changed,
-    set "understood" to false, leave edits, removes and adds EMPTY, and put
-    one short sentence in "problem" addressed to them — for example "MOTION
-    wasn't sure which item you meant — try naming it, like 'the green one is
-    spinach'".
+19. If you cannot work out what they mean, set "understood" to false, leave
+    edits, removes and adds EMPTY, and put one short sentence in "problem"
+    addressed to them.
 
-19. Do the same if there's nothing about food in what they said at all.
+20. Do the same if there's nothing about food in what they said at all.
 
-20. NEVER guess between two possible items. Leaving the plate untouched and
-    asking again is always better than changing the wrong thing.
-
-21. "note" is one short line saying what you changed, addressed to them:
-    "Updated the rice for frying in oil." Keep it under twelve words.`;
+21. NEVER guess between two possible items. Leaving the plate untouched and
+    asking again is always better than changing the wrong thing.`;
 
 /** Apply a spoken description or correction to a plate.
 
@@ -258,7 +270,7 @@ export async function fixMealWithVoice(
         });
 
         if (res.ok) {
-          const parsed = await parseResponse(res, items.length);
+          const parsed = await parseResponse(res, items);
           if (parsed) {
             console.log(`FIX: ${model} answered in ${((Date.now() - started) / 1000).toFixed(1)}s`);
             return parsed;
@@ -292,7 +304,9 @@ export async function fixMealWithVoice(
   return fail("Couldn't reach the reader. Check your connection and try again.");
 }
 
-async function parseResponse(res: Response, itemCount: number): Promise<MealFix | null> {
+async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix | null> {
+  const itemCount = items.length;
+
   try {
     const json = await res.json();
     const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -331,15 +345,47 @@ async function parseResponse(res: Response, itemCount: number): Promise<MealFix 
           .filter(Boolean) as { index: number; item: MealItem }[])
       : [];
 
-    const removes = Array.isArray(parsed.removes)
+    const adds = Array.isArray(parsed.adds)
+      ? (parsed.adds.map(toItem).filter(Boolean) as MealItem[]).slice(0, 8)
+      : [];
+
+    let removes = Array.isArray(parsed.removes)
       ? (parsed.removes.filter(validIndex).map((v: any) => Math.round(Number(v))) as number[])
       : [];
 
-    const adds = Array.isArray(parsed.adds)
-      ? (parsed.adds.map(toItem).filter(Boolean) as MealItem[]).slice(0, 5)
-      : [];
+    const fullDescription = parsed.fullDescription === true;
+
+    /* ---------- THE SAFETY NET ----------
+       On a full description, everything they didn't account for should have
+       been listed in "removes". Models forget this: they add the four things
+       said and leave the phantom item sitting there, which is exactly the
+       double-counting bug this file exists to prevent.
+
+       So on a full description, anything neither EDITED nor explicitly kept is
+       removed here, whether or not the model remembered to say so. */
+    if (fullDescription) {
+      const edited = new Set(edits.map((e) => e.index));
+      const all = Array.from({ length: itemCount }, (_, i) => i);
+      removes = all.filter((i) => !edited.has(i));
+    }
 
     const changedSomething = edits.length > 0 || removes.length > 0 || adds.length > 0;
+
+    /* a full description that removes everything and adds nothing would leave
+       an empty plate — that's a misread, not an answer */
+    const wouldEmpty = fullDescription && !adds.length && !edits.length;
+
+    if (wouldEmpty) {
+      return {
+        edits: [],
+        removes: [],
+        adds: [],
+        understood: false,
+        fullDescription: false,
+        note: null,
+        problem: "MOTION couldn't work out the foods from that — try naming them one by one.",
+      };
+    }
 
     /* THE MODEL SAYING "understood" ISN'T ENOUGH. If it claims to have
        understood but returns no changes, nothing would happen and the user
@@ -350,12 +396,13 @@ async function parseResponse(res: Response, itemCount: number): Promise<MealFix 
       removes,
       adds,
       understood: parsed.understood !== false && changedSomething,
+      fullDescription,
       note: str(parsed.note),
       problem:
         str(parsed.problem) ||
         (changedSomething
           ? null
-          : "MOTION didn't find anything to change from that — try describing the dish, like \"it's jollof rice fried in oil\"."),
+          : "MOTION didn't find anything to change from that — try describing the dish, like \"it's roasted broccoli, cauliflower and carrots\"."),
     };
   } catch {
     return null;
@@ -382,7 +429,15 @@ function toItem(raw: any): MealItem | null {
 }
 
 function fail(problem: string): MealFix {
-  return { edits: [], removes: [], adds: [], understood: false, note: null, problem };
+  return {
+    edits: [],
+    removes: [],
+    adds: [],
+    understood: false,
+    fullDescription: false,
+    note: null,
+    problem,
+  };
 }
 
 /* NULL MUST STAY NULL — Number(null) is 0, and a zero that should have been
