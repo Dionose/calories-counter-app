@@ -6,12 +6,23 @@
 //   1. FOUND — the product name, and nothing else. No calories yet, because
 //      showing numbers first invites the user to accept them before we've
 //      offered the better route.
-//   2. LABEL — snap the nutrition panel, or skip. The panel is read by
-//      Gemini and gives the manufacturer's exact figures.
-//   3. RESULT — the amount ladder and the log button.
+//   2. LABEL — snap the nutrition panel, or skip.
+//   3. CONFIRM — what was read, checked before it's believed.
+//   4. RESULT — the amount ladder and the log button.
 //
-// AND WHEN THE SCAN FINDS NOTHING, that's no longer a dead end. AddFoodFlow
-// takes two photos and saves the food against this barcode.
+// SOME PANELS NEED TWO PHOTOS, and only some. A tall thin tin of tuna wraps
+// its panel round the curve; Dion tried repeatedly and the protein line was
+// always out of frame, so the reading came back with a dash where the protein
+// should be. A flat cereal box never has this problem.
+//
+// So the second photo is OFFERED, not required — only when the reading came
+// back partial, and the two are MERGED rather than replaced. A straight
+// retake would throw away whatever the first photo got right, and on a curved
+// tin the second angle usually loses the lines the first one found.
+//
+// A fixed two-photo flow would have taxed everyone for a problem most labels
+// don't have — and worse, a second prompt after a good photo reads as "MOTION
+// didn't get it", which teaches people to distrust a step that worked.
 //
 // ⚠️ CONFIRMING A LABEL SAVES IT — EVEN FOR A PRODUCT THE DATABASE KNEW.
 // Open Food Facts is volunteer-entered: it often has a product's per-100g
@@ -20,16 +31,8 @@
 // thrown away the moment the meal was logged, so the same carton got
 // photographed again next week and the week after.
 //
-// A user's own label reading BEATS the database permanently, not just for one
-// meal. So confirming it writes a custom food against this barcode, and the
-// lookup at the top of this file finds it first from then on. Same rule as
-// AddFoodFlow, which had the same bug and was fixed first: photographing is
-// building your library, logging is saying you ate it, and the two are
-// separate acts.
-//
 // NOTHING READ FROM A PHOTO IS APPLIED SILENTLY. A misread panel is WORSE than
-// no panel: the user trusts it because it came from their own label. So the
-// figures are shown for confirmation first.
+// no panel: the user trusts it because it came from their own label.
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import { LinearGradient } from "expo-linear-gradient";
@@ -43,7 +46,10 @@ import { colorFor } from "../constants/foodColors";
 import { Amount, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { saveMeal } from "../constants/meals";
-import { LabelReading, per100From, readNutritionLabel } from "../constants/nutritionLabel";
+import {
+  isPartial, LabelReading, listGaps, mergeReadings, missingFields,
+  per100From, readNutritionLabel,
+} from "../constants/nutritionLabel";
 import { FONTS } from "../constants/theme";
 import AddFoodFlow from "./AddFoodFlow";
 import AmountSheet from "./AmountSheet";
@@ -53,7 +59,9 @@ import LabelCamera from "./LabelCamera";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
-type Stage = "looking" | "found" | "reading" | "confirm" | "result" | "done" | "missing" | "adding";
+type Stage =
+  | "looking" | "found" | "reading" | "confirm" | "result" | "done"
+  | "missing" | "adding" | "topup";
 
 /* ---------- a loading state ---------- */
 function Busy({ title, sub }: { title: string; sub?: string | null }) {
@@ -136,6 +144,8 @@ export default function BarcodeResult({
   /* this food came from the user's own saved list, matched on the barcode */
   const [fromSaved, setFromSaved] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  /* did the reading on screen come from two photos merged? */
+  const [merged, setMerged] = useState(false);
 
   const [idx, setIdx] = useState(0);
   const [count, setCount] = useState(1);
@@ -192,6 +202,23 @@ export default function BarcodeResult({
     return () => { cancelled = true; };
   }, [code, userId]);
 
+  /** shrink a photo before sending.
+
+      SMALL, DELIBERATELY. Packaging text is high-contrast print, which
+      survives compression far better than a photo of food — and the upload is
+      a real share of a wait the user sits through watching a spinner. The
+      progression was 1400px/0.9 (≈600 KB, 20–40 s), then 1000px/0.65, now
+      800px/0.55 at ≈100 KB and about two seconds.
+
+      IF READINGS START COMING BACK UNCONFIDENT on genuinely clear photos,
+      raise these first. */
+  const prep = async (uri: string): Promise<string> => {
+    const ctx = ImageManipulator.manipulate(uri).resize({ width: 800 });
+    const image = await ctx.renderAsync();
+    const out = await image.saveAsync({ compress: 0.55, format: SaveFormat.JPEG });
+    return FileSystem.readAsStringAsync(out.uri, { encoding: "base64" });
+  };
+
   /* ---------- READING THE PANEL ----------
      The image work and the API call are in SEPARATE try blocks on purpose.
      They were together once, and a throw anywhere in the chain replaced a
@@ -204,19 +231,7 @@ export default function BarcodeResult({
     let b64: string;
 
     try {
-      /* SMALL, DELIBERATELY. Packaging text is high-contrast print, which
-         survives compression far better than a photo of food — and the upload
-         is a real share of a wait the user sits through watching a spinner.
-         The progression was 1400px/0.9 (≈600 KB, 20–40 s), then 1000px/0.65,
-         now 800px/0.55 at ≈100 KB and about two seconds.
-
-         IF READINGS START COMING BACK UNCONFIDENT on genuinely clear photos,
-         raise these first. */
-      const ctx = ImageManipulator.manipulate(uri).resize({ width: 800 });
-      const image = await ctx.renderAsync();
-      const out = await image.saveAsync({ compress: 0.55, format: SaveFormat.JPEG });
-      b64 = await FileSystem.readAsStringAsync(out.uri, { encoding: "base64" });
-
+      b64 = await prep(uri);
       console.log("LABEL: sending ≈", Math.round(b64.length * 0.75 / 1024), "KB");
     } catch (e: any) {
       console.log("LABEL: image prep failed →", e?.message || e);
@@ -226,6 +241,7 @@ export default function BarcodeResult({
         servingsPerContainer: null, confident: false,
         problem: "Couldn't process that photo on this phone. Try taking it again.",
       });
+      setMerged(false);
       setStage("confirm");
       return;
     }
@@ -234,8 +250,42 @@ export default function BarcodeResult({
 
     setProgress(null);
     setReading(r);
+    setMerged(false);
     setStage("confirm");
     if (r.confident) H.success(); else H.warn();
+  };
+
+  /* ---------- THE SECOND PHOTO ----------
+     Fills the gaps in what's already been read. MERGED, never replaced: on a
+     curved tin the second angle usually loses the lines the first one found,
+     so preferring the newer reading would trade one missing figure for
+     another. See mergeReadings in nutritionLabel.ts. */
+  const readTopUp = async (uri: string) => {
+    if (!reading) return;
+
+    setProgress(null);
+    setStage("reading");
+
+    let b64: string;
+
+    try {
+      b64 = await prep(uri);
+    } catch {
+      /* keep what we already had — a failed second photo shouldn't cost them
+         the first one */
+      setStage("confirm");
+      H.warn();
+      return;
+    }
+
+    const second = await readNutritionLabel(b64, setProgress);
+    const combined = mergeReadings(reading, second);
+
+    setProgress(null);
+    setReading(combined);
+    setMerged(true);
+    setStage("confirm");
+    if (combined.confident) H.success(); else H.warn();
   };
 
   /** build the food from the LABEL'S numbers — pure, no saving */
@@ -283,15 +333,13 @@ export default function BarcodeResult({
   };
 
   /** ---------- ACCEPT THE READING — AND KEEP IT ----------
-      This is the fix. The reading is applied to the food on screen AND written
-      against this barcode, so scanning this product again brings back the
-      user's own figures rather than the database's vague ones.
+      The reading is applied to the food on screen AND written against this
+      barcode, so scanning this product again brings back the user's own
+      figures rather than the database's vague ones.
 
       A failed save does NOT block them. Unlike AddFoodFlow — where a failure
       means losing two photos and the whole food — here there's a perfectly
-      good reading already on screen and a meal waiting to be logged. Losing
-      "we'll remember this" is a smaller loss than blocking the log, so it
-      warns and carries on. */
+      good reading already on screen and a meal waiting to be logged. */
   const acceptReading = async () => {
     if (!food || !reading || keeping) return;
 
@@ -443,10 +491,34 @@ export default function BarcodeResult({
     );
   }
 
+  /* ---------- THE SECOND PHOTO ---------- */
+  if (stage === "topup") {
+    const gaps = reading ? missingFields(reading) : [];
+    return (
+      <LabelCamera
+        visible
+        mode="panel"
+        /* the camera's caption names what's still needed, so they know what to
+           aim at rather than photographing the same face again */
+        productName={
+          gaps.length
+            ? `Now the part with ${listGaps(gaps)}`
+            : "The rest of the label"
+        }
+        onClose={() => setStage("confirm")}
+        onCapture={readTopUp}
+        onSkip={() => { H.tick(); setStage("confirm"); }}
+      />
+    );
+  }
+
   /* ---------- CONFIRM WHAT WE READ ---------- */
   if (stage === "confirm" && reading) {
     const per100 = per100From(reading);
     const usable = reading.confident && !!per100;
+    /* readable, but with holes — the curved-tin case */
+    const partial = isPartial(reading) && !!per100;
+    const gaps = missingFields(reading);
 
     return (
       <View style={s.screen}>
@@ -459,13 +531,23 @@ export default function BarcodeResult({
             <View style={{ width: 22 }} />
           </View>
 
-          {usable ? (
+          {usable || partial ? (
             <>
-              <Text style={s.confirmTitle}>Does this match your packet?</Text>
-              <Text style={s.confirmSub}>
-                MOTION read these off your photo. Have a quick look before it goes in your diary —
-                a misread number is worse than none, because it looks like it came from the label.
+              <Text style={s.confirmTitle}>
+                {partial ? "Some of the panel is missing" : "Does this match your packet?"}
               </Text>
+              <Text style={s.confirmSub}>
+                {partial
+                  ? "MOTION read what it could see. Curved tins and wrapped labels often don't fit in one photo — one more shot of the rest and it'll have the whole panel."
+                  : "MOTION read these off your photo. Have a quick look before it goes in your diary — a misread number is worse than none, because it looks like it came from the label."}
+              </Text>
+
+              {merged && (
+                <View style={s.mergedRow}>
+                  <Check size={12} color={T.green} />
+                  <Text style={s.mergedText}>Both photos combined into one reading</Text>
+                </View>
+              )}
 
               <View style={{ marginTop: 20 }}>
                 <TravelBorder color={T.gold} cardBg={T.card} borderColor={T.border} radius={18}>
@@ -483,7 +565,7 @@ export default function BarcodeResult({
                     ) : null}
 
                     <View style={s.readCalRow}>
-                      <Text style={s.readCalNum}>{reading.calories}</Text>
+                      <Text style={s.readCalNum}>{reading.calories ?? "—"}</Text>
                       <Text style={s.readCalUnit}>calories per serving</Text>
                     </View>
 
@@ -493,31 +575,82 @@ export default function BarcodeResult({
                         ["Carbs", reading.carbs],
                         ["Fat", reading.fat],
                       ].map(([k, v]: any) => (
-                        <View key={k} style={s.readMacro}>
-                          <Text style={s.readMacroNum}>{v != null ? `${v}g` : "—"}</Text>
+                        <View
+                          key={k}
+                          style={[s.readMacro, v == null && s.readMacroGap]}
+                        >
+                          <Text style={[s.readMacroNum, v == null && { color: T.micro }]}>
+                            {v != null ? `${v}g` : "—"}
+                          </Text>
                           <Text style={s.readMacroKey}>{k}</Text>
                         </View>
                       ))}
                     </View>
+
+                    {/* A DASH IS NOT A ZERO, and this says so. Left unexplained
+                        it reads as "this food has no protein", which on tuna
+                        is plainly false — and it becomes a real zero the
+                        moment it's logged. */}
+                    {gaps.length > 0 && (
+                      <Text style={s.gapNote}>
+                        A dash means MOTION couldn't see that line — not that the food has none of
+                        it.
+                      </Text>
+                    )}
                   </View>
                 </TravelBorder>
               </View>
 
-              {/* THE SAVE, and it says so. The database's serving size is often
-                  vague or missing — this reading is better, and it should
-                  outlive this one meal. */}
-              <Tap onPress={acceptReading} style={{ marginTop: 18 }}>
-                <View style={[s.confirmBtn, keeping && { opacity: 0.6 }]}>
-                  <Text style={s.confirmBtnText}>
-                    {keeping ? "Saving…" : "Yes, that's my label — save it"}
+              {/* ---------- THE SECOND PHOTO, OFFERED ----------
+                  Only when the reading came back with holes. A flat box never
+                  sees this card, which is the whole point — asking everyone
+                  for a second photo would read as "MOTION didn't get it". */}
+              {partial && (
+                <Tap onPress={() => { H.tap(); setStage("topup"); }} style={{ marginTop: 16 }}>
+                  <View style={s.topUpCard}>
+                    <View style={s.topUpIcon}>
+                      <Camera size={18} color={T.gold} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.topUpTitle}>Snap the rest of the label</Text>
+                      <Text style={s.topUpBody}>
+                        Turn the packet to the part showing {listGaps(gaps)} and take one more
+                        photo. MOTION keeps what it already read and fills in the gaps.
+                      </Text>
+                    </View>
+                  </View>
+                </Tap>
+              )}
+
+              <Tap onPress={acceptReading} style={{ marginTop: partial ? 12 : 18 }}>
+                <View style={[
+                  s.confirmBtn,
+                  keeping && { opacity: 0.6 },
+                  /* a partial reading's accept button is quieter — the second
+                     photo is the recommended path, not this one */
+                  partial && s.confirmBtnQuiet,
+                ]}>
+                  <Text style={[s.confirmBtnText, partial && s.confirmBtnQuietText]}>
+                    {keeping
+                      ? "Saving…"
+                      : partial
+                        ? "Use it as it is"
+                        : "Yes, that's my label — save it"}
                   </Text>
                 </View>
               </Tap>
 
-              <Text style={s.keepNote}>
-                MOTION keeps these figures against this barcode. Scan this product again and your
-                own reading comes back — no photo, and no vague database serving size.
-              </Text>
+              {partial ? (
+                <Text style={s.partialWarn}>
+                  Anything MOTION couldn't read gets counted as zero. On {listGaps(gaps)} that's
+                  almost certainly wrong, so it's worth the extra photo.
+                </Text>
+              ) : (
+                <Text style={s.keepNote}>
+                  MOTION keeps these figures against this barcode. Scan this product again and your
+                  own reading comes back — no photo, and no vague database serving size.
+                </Text>
+              )}
 
               <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 12 }}>
                 <View style={s.retryBtn}>
@@ -526,7 +659,18 @@ export default function BarcodeResult({
                 </View>
               </Tap>
 
-              <Tap onPress={() => { H.tick(); setStage("result"); }} style={{ marginTop: 10 }}>
+              {/* THE MANUAL ESCAPE HATCH. MOTION can be confidently wrong — it
+                  reports a full panel while a line is plainly misread — and
+                  without this there'd be no way to add the missing part. */}
+              {!partial && (
+                <Tap onPress={() => { H.tap(); setStage("topup"); }} style={{ marginTop: 4 }}>
+                  <Text style={s.moreLabelLink}>
+                    Part of the label didn't fit in the photo? Add another shot
+                  </Text>
+                </Tap>
+              )}
+
+              <Tap onPress={() => { H.tick(); setStage("result"); }} style={{ marginTop: 6 }}>
                 <View style={s.ghostBtn}>
                   <Text style={s.ghostText}>Use the database figures instead</Text>
                 </View>
@@ -557,6 +701,9 @@ export default function BarcodeResult({
                   Let the camera focus before you shoot; small print goes soft first.
                   {"\n\n"}
                   Flatten a curved packet, and angle away from bright light rather than under it.
+                  {"\n\n"}
+                  If it's a tin or a bottle and the panel wraps round the curve, photograph what
+                  you can — MOTION will ask for the rest.
                 </Text>
               </View>
 
@@ -869,6 +1016,9 @@ const styles = (T: any) =>
     confirmTitle: { fontSize: 21, color: T.text, fontFamily: FONTS.heading, marginTop: 6 },
     confirmSub: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, marginTop: 8, lineHeight: 18.5 },
 
+    mergedRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
+    mergedText: { fontSize: 11, color: T.green, fontFamily: FONTS.body },
+
     readHead: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
     readHeadText: { fontSize: 9, letterSpacing: 1, color: T.gold, fontFamily: FONTS.headingMed },
     readServingLabel: { fontSize: 10, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
@@ -878,15 +1028,47 @@ const styles = (T: any) =>
     readCalUnit: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
     readMacros: { flexDirection: "row", gap: 8, marginTop: 16 },
     readMacro: { flex: 1, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 12, paddingVertical: 11, alignItems: "center" },
+    /* a gap looks different from a value — a dash in a normal-looking tile
+       reads as a number nobody bothered to fill in */
+    readMacroGap: { borderStyle: "dashed", borderColor: `${T.gold}55`, backgroundColor: "transparent" },
     readMacroNum: { fontSize: 16, color: T.text, fontFamily: FONTS.heading },
     readMacroKey: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 3 },
+    gapNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 12, lineHeight: 15.5 },
+
+    topUpCard: {
+      flexDirection: "row", alignItems: "flex-start", gap: 13,
+      backgroundColor: "rgba(251,191,36,0.10)",
+      borderWidth: 1, borderColor: `${T.gold}77`,
+      borderRadius: 16, padding: 15,
+    },
+    topUpIcon: {
+      width: 40, height: 40, borderRadius: 13,
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}44`,
+      alignItems: "center", justifyContent: "center",
+    },
+    topUpTitle: { fontSize: 14.5, color: T.gold, fontFamily: FONTS.headingMed },
+    topUpBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 4, lineHeight: 17.5 },
 
     confirmBtn: { backgroundColor: T.gold, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
     confirmBtnText: { fontSize: 14.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    /* the "use it anyway" version — deliberately not the loudest thing on a
+       screen that's recommending one more photo */
+    confirmBtnQuiet: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border },
+    confirmBtnQuietText: { color: T.sub },
+
     keepNote: {
       fontSize: 10.5, color: T.micro, fontFamily: FONTS.body,
       textAlign: "center", marginTop: 10, lineHeight: 16, paddingHorizontal: 6,
     },
+    partialWarn: {
+      fontSize: 11, color: T.gold, fontFamily: FONTS.body,
+      textAlign: "center", marginTop: 10, lineHeight: 16.5, paddingHorizontal: 6,
+    },
+    moreLabelLink: {
+      fontSize: 11.5, color: T.gold, fontFamily: FONTS.body,
+      textAlign: "center", paddingVertical: 10, lineHeight: 16,
+    },
+
     retryBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,

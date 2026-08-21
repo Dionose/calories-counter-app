@@ -183,31 +183,51 @@ export default function Stats() {
 
   const connected = activity.length > 0;
 
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      if (!userId) { setLoaded(true); return; }
+  /* still on screen? Guards the state writes below, since a fetch can land
+     after the user has moved on. */
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
-      (async () => {
-        const from = new Date();
-        from.setDate(from.getDate() - 400);
+  /** everything this tab draws, in one pass.
 
-        const [{ totals }, count, { entries }] = await Promise.all([
-          loadDayTotals(userId, iso(from), todayLocal()),
-          loggedDayCount(userId),
-          loadWeighIns(userId),
-        ]);
-        if (cancelled) return;
+      PULLED OUT OF THE FOCUS EFFECT DELIBERATELY. It used to live entirely
+      inside useFocusEffect with weighTick as a dependency — which looks like
+      it would re-run on a new weigh-in, and doesn't: a focus effect fires when
+      the screen GAINS focus, and Stats already has it. So saving a weight
+      changed nothing on screen until the user left the tab and came back,
+      which read as the app taking thirty seconds to catch up. The save was
+      always instant; the screen simply wasn't listening. */
+  const loadAll = useCallback(async () => {
+    if (!userId) { setLoaded(true); return; }
 
-        setDayTotals(totals);
-        setDaysLogged(count);
-        setWeighIns(entries);
-        setLoaded(true);
-      })();
+    const from = new Date();
+    from.setDate(from.getDate() - 400);
 
-      return () => { cancelled = true; };
-    }, [userId, weighTick])
-  );
+    const [{ totals }, count, { entries }] = await Promise.all([
+      loadDayTotals(userId, iso(from), todayLocal()),
+      loggedDayCount(userId),
+      loadWeighIns(userId),
+    ]);
+
+    if (!alive.current) return;
+
+    setDayTotals(totals);
+    setDaysLogged(count);
+    setWeighIns(entries);
+    setLoaded(true);
+  }, [userId]);
+
+  /* THE ONE THAT MAKES A WEIGH-IN APPEAR IMMEDIATELY. weighTick is bumped the
+     moment the sheet reports a successful save, and this runs whether or not
+     the screen is being re-entered. */
+  useEffect(() => { loadAll(); }, [loadAll, weighTick]);
+
+  /* and on returning to the tab, so a meal logged over in Camera shows up
+     without a restart */
+  useFocusEffect(useCallback(() => { loadAll(); }, [loadAll]));
 
   /* ---------- READING THE PHONE ----------
      A FULL YEAR of history, not just since signup. The phone has been counting

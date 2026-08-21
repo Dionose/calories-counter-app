@@ -18,6 +18,13 @@
 // the user trusts it because it came from their own label. So everything read
 // here is handed back for confirmation before it touches a log.
 //
+// SOME PANELS DON'T FIT IN ONE PHOTO. A tall thin tin of tuna wraps its panel
+// round the curve, and no single angle catches all of it — Dion tried
+// repeatedly and the protein line was always out of frame. So a reading can be
+// PARTIAL, and two partial readings can be merged into one whole: see
+// isPartial() and mergeReadings() below. The second photo is only ever asked
+// for when the first came back incomplete; a flat cereal box never sees it.
+//
 // SPEED IS A FEATURE HERE. The user is standing in a kitchen holding a packet,
 // watching a spinner. Thirty seconds of that and they'll skip the step next
 // time and take the estimate instead — which defeats the whole point of
@@ -114,9 +121,12 @@ RULES:
    off at the bottom" or "This looks like the ingredients list rather than the
    nutrition panel". Leave the numbers null rather than guessing.
 
-7. If you can read most of the panel but one figure is unclear, return what
-   you can read and leave the unclear one null. Partial is useful; invented is
-   not.
+7. If you can read most of the panel but one figure is unclear or out of
+   frame, return what you CAN read and leave the unclear one null. Partial is
+   useful — a curved tin or a wrapped label often can't be caught in one
+   photo, and the missing lines can be asked for separately. NEVER put a zero
+   where you simply couldn't see the number: a zero is a claim that the food
+   contains none of it, and on something like tuna that is plainly false.
 
 8. Keep "problem" to one short sentence. Long explanations get cut off before
    the JSON closes, and a truncated object is worse than a terse one.
@@ -310,8 +320,98 @@ function str(v: any): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+/* ============================================================
+   PARTIAL READINGS — when one photo can't hold the whole panel
+   ============================================================ */
+
+/** which lines are missing, in words a person would use.
+
+    Only the ones worth going back for. servingsPerContainer is nice to have
+    and nobody should retake a photo for it. */
+export function missingFields(r: LabelReading): string[] {
+  const gaps: string[] = [];
+  if (r.calories == null) gaps.push("calories");
+  if (r.protein == null) gaps.push("protein");
+  if (r.carbs == null) gaps.push("carbs");
+  if (r.fat == null) gaps.push("fat");
+  if (r.servingGrams == null && r.servingMl == null) gaps.push("the serving size");
+  return gaps;
+}
+
+/** worth offering a second photo?
+
+    A reading that got SOMETHING but not everything. Not a total failure —
+    that's a retake, not a top-up — and not a complete reading either. This is
+    the curved-tin case: calories and carbs on the front of the curve, protein
+    disappearing round the side. */
+export function isPartial(r: LabelReading): boolean {
+  const gaps = missingFields(r);
+  if (!gaps.length) return false;
+  /* something has to have been read, or there's nothing to merge INTO */
+  return r.calories != null || r.protein != null || r.carbs != null || r.fat != null;
+}
+
+/** "protein and fat" — for telling the user what's still needed */
+export function listGaps(gaps: string[]): string {
+  if (gaps.length === 0) return "";
+  if (gaps.length === 1) return gaps[0];
+  if (gaps.length === 2) return `${gaps[0]} and ${gaps[1]}`;
+  return `${gaps.slice(0, -1).join(", ")} and ${gaps[gaps.length - 1]}`;
+}
+
+/** Combine two photos of the same panel into one reading.
+
+    FIRST WINS ON EVERY FIELD IT HAS. The second photo is filling gaps, not
+    correcting — if both shots caught the calories, they're the same number
+    off the same packet, and preferring the second would mean a blurrier
+    angle could overwrite a clear one.
+
+    Merging rather than replacing is the whole point: a straight retake would
+    throw away whatever the first photo got right, and on a curved tin the
+    second angle usually LOSES the lines the first one found. */
+export function mergeReadings(first: LabelReading, second: LabelReading): LabelReading {
+  const pick = <T,>(a: T | null, b: T | null): T | null => (a != null ? a : b);
+
+  const merged: LabelReading = {
+    servingText: pick(first.servingText, second.servingText),
+    servingGrams: pick(first.servingGrams, second.servingGrams),
+    servingMl: pick(first.servingMl, second.servingMl),
+    calories: pick(first.calories, second.calories),
+    protein: pick(first.protein, second.protein),
+    carbs: pick(first.carbs, second.carbs),
+    fat: pick(first.fat, second.fat),
+    servingsPerContainer: pick(first.servingsPerContainer, second.servingsPerContainer),
+    confident: false,
+    problem: null,
+  };
+
+  /* confidence is judged on the MERGED result, not inherited. Two shots that
+     were each unconfident alone can add up to a complete panel — and that's
+     the whole reason this exists. */
+  const gaps = missingFields(merged);
+  merged.confident = merged.calories != null && gaps.length === 0;
+
+  if (!merged.confident) {
+    merged.problem = gaps.length
+      ? `Still missing ${listGaps(gaps)} from the label.`
+      : "The two photos didn't add up to a full panel.";
+  }
+
+  return merged;
+}
+
 /** the per-100g figures a FoodDef needs, worked back from a per-serving
-    reading. Panels state per serving; our whole system stores per 100 g. */
+    reading. Panels state per serving; our whole system stores per 100 g.
+
+    ⚠️ A MISSING MACRO BECOMES ZERO HERE, and that's a real loss of honesty —
+    the confirmation screen shows a dash for protein it couldn't read, and
+    then this turns that dash into "0 g protein" the moment it's logged. Tuna
+    at zero protein is plainly false, and the user has no way to know.
+
+    It's kept because the alternative — refusing to convert at all — would
+    throw away a perfectly good calorie figure over a missing fat line. But
+    callers should offer the second photo BEFORE reaching this point, which is
+    what isPartial() is for. */
 export function per100From(r: LabelReading): {
   per100: number; p: number; c: number; f: number;
 } | null {
