@@ -1,17 +1,18 @@
 // app/(tabs)/calendar.tsx
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect } from "expo-router";
-import { ChevronLeft, ChevronRight, Lock, Mic, Sparkles, X } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, ChevronsRight, Lock, Mic, Sparkles, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Icon, { IconMode, IconName } from "../../components/Icon";
+import MealSheet from "../../components/MealSheet";
 import PageHeader from "../../components/PageHeader";
 import StreakReel from "../../components/StreakReel";
 import StreakWarnCard from "../../components/StreakWarnCard";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
-import { loadDay, loadDayTotals } from "../../constants/meals";
+import { loadDay, loadDayTotals, Meal } from "../../constants/meals";
 import { signedUrls } from "../../constants/photos";
 import { FONTS, TIERS, ULT_COLORS } from "../../constants/theme";
 
@@ -202,7 +203,7 @@ function Wheel({
 export default function Calendar() {
   /* devMode comes from AppState, so this screen and Profile's tier chips can
      never disagree — they're reading the same switch */
-  const { T, freeLocked, openPaywall, plan, profile, userId, devMode } = useApp();
+  const { T, freeLocked, openPaywall, plan, profile, userId, devMode, refreshStreak } = useApp();
 
   const [year, setYear] = useState(TODAY_Y);
   const [month, setMonth] = useState(TODAY_M);
@@ -221,12 +222,15 @@ export default function Calendar() {
   const [loaded, setLoaded] = useState(false);
 
   /* one day's meals, fetched when a tile is tapped */
-  const [dayMeals, setDayMeals] = useState<any[]>([]);
+  const [dayMeals, setDayMeals] = useState<Meal[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
   /* storage path → temporary signed URL. The bucket is private, so a stored
      path isn't displayable on its own; each view mints a fresh URL that
      expires. Keeping them in a map means the <Image> just looks one up. */
   const [photoUrls, setPhotoUrls] = useState<Record<string, string>>({});
+
+  /* the meal being looked at, opened by tapping its card */
+  const [openMeal, setOpenMeal] = useState<Meal | null>(null);
 
   const s = styles(T);
 
@@ -235,35 +239,38 @@ export default function Calendar() {
      RUN leading up to it, which can start in a previous month. Fetching only
      the visible month would make a streak crossing the 1st look like it
      restarted. 400 days covers any run and is one query. */
+  const loadHistory = useCallback(async () => {
+    if (!userId) { setLoaded(true); return; }
+
+    const from = new Date();
+    from.setDate(from.getDate() - 400);
+    const { totals } = await loadDayTotals(
+      userId,
+      dbKey(from.getFullYear(), from.getMonth(), from.getDate()),
+      dbKey(TODAY_Y, TODAY_M, TODAY_D)
+    );
+
+    /* translate the database's YYYY-MM-DD into the grid's own key */
+    const set = new Set<string>();
+    Object.keys(totals).forEach((iso) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      set.add(key(y, m - 1, d));
+    });
+
+    setRealLogged(set);
+    setRealTotals(totals);
+    setLoaded(true);
+  }, [userId]);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      if (!userId) { setLoaded(true); return; }
-
       (async () => {
-        const from = new Date();
-        from.setDate(from.getDate() - 400);
-        const { totals } = await loadDayTotals(
-          userId,
-          dbKey(from.getFullYear(), from.getMonth(), from.getDate()),
-          dbKey(TODAY_Y, TODAY_M, TODAY_D)
-        );
+        await loadHistory();
         if (cancelled) return;
-
-        /* translate the database's YYYY-MM-DD into the grid's own key */
-        const set = new Set<string>();
-        Object.keys(totals).forEach((iso) => {
-          const [y, m, d] = iso.split("-").map(Number);
-          set.add(key(y, m - 1, d));
-        });
-
-        setRealLogged(set);
-        setRealTotals(totals);
-        setLoaded(true);
       })();
-
       return () => { cancelled = true; };
-    }, [userId])
+    }, [loadHistory])
   );
 
   /* leaving dev mode while a demo day is open would show that day's recap
@@ -285,11 +292,9 @@ export default function Calendar() {
   const fadeDate = new Date(signup.getFullYear(), signup.getMonth(), signup.getDate() + FREE_WINDOW_DAYS);
   const daysLeft = Math.max(0, Math.ceil((fadeDate.getTime() - TODAY.getTime()) / 86400000));
 
-  /* open a day — the demo answers instantly, real data takes a query */
-  const openDay = async (d: number) => {
-    setDay(d);
-    setPhotoUrls({});
-    if (devMode) { setDayMeals([]); return; }
+  /** fetch one day's meals. Split out so a delete can re-run it without
+      re-opening the day. */
+  const loadDayMeals = useCallback(async (d: number) => {
     if (!userId) return;
 
     setDayLoading(true);
@@ -306,12 +311,30 @@ export default function Calendar() {
        immediately; pictures fill in a beat later.
        One batched call rather than one per meal — three sequential requests
        would produce a visible stagger as each image popped in. */
-    const paths = sorted.map((m: any) => m.photoUrl).filter(Boolean) as string[];
+    const paths = sorted.map((m) => m.photoUrl).filter(Boolean) as string[];
     if (paths.length) {
       const map = await signedUrls(paths);
       setPhotoUrls(map);
     }
+  }, [userId, year, month]);
+
+  /* open a day — the demo answers instantly, real data takes a query */
+  const openDay = async (d: number) => {
+    setDay(d);
+    setPhotoUrls({});
+    if (devMode) { setDayMeals([]); return; }
+    await loadDayMeals(d);
   };
+
+  /** after a meal is deleted: the day's list, the month grid and the streak
+      all have to catch up. The streak especially — deleting the only meal on
+      a day can break a run, and a flame still burning on Home afterwards
+      would be a lie. */
+  const afterDelete = useCallback(async () => {
+    if (day != null) await loadDayMeals(day);
+    await loadHistory();
+    refreshStreak();
+  }, [day, loadDayMeals, loadHistory, refreshStreak]);
 
   const prevMonth = () => {
     setDay(null);
@@ -443,26 +466,30 @@ export default function Calendar() {
     const flame = FLAME_FOR_TIER[t.name] || "flameSpark";
     const goal = plan.calories;
 
-    /* the demo shows its scripted plate; a real day shows what was logged */
+    /* the demo shows its scripted plate; a real day shows what was logged.
+       `meal` carries the real record through, so tapping a card can open it —
+       the demo rows have none, which is why they aren't tappable. */
     const rows = devMode
       ? DEMO_MEALS.map((m) => ({
           label: m.name, icon: m.icon, time: m.time, title: m.title,
           cal: m.cal, voice: m.voice, photo: null as string | null,
+          meal: null as Meal | null,
         }))
       : dayMeals.map((m) => {
-          const cal = m.items.reduce((a: number, it: any) => a + (it.calories || 0), 0);
+          const cal = m.items.reduce((a, it) => a + (it.calories || 0), 0);
           return {
             label: SLOT_LABEL[m.mealType] || "Meal",
             icon: SLOT_ICON[m.mealType] || ("snacks" as IconName),
             time: "",
             /* the meal's name IS its foods — there's no separate title, and
                inventing one would mean guessing at what the plate was */
-            title: m.items.map((it: any) => it.foodName).join(", ") || "Logged meal",
+            title: m.items.map((it) => it.foodName).join(", ") || "Logged meal",
             cal,
             voice: m.source === "voice",
             /* the signed URL if it's arrived; null while it's still being
                minted, or forever if this meal was logged without a photo */
             photo: m.photoUrl ? photoUrls[m.photoUrl] || null : null,
+            meal: m,
           };
         });
 
@@ -499,8 +526,9 @@ export default function Calendar() {
 
           {rows.map((m, i) => {
             const pct = total > 0 ? Math.round((m.cal / total) * 100) : 0;
-            return (
-              <View key={i} style={s.mealCard}>
+
+            const card = (
+              <View style={s.mealCard}>
                 {/* THE PHOTO. A meal logged without one is a normal state, not
                     a failure — the placeholder says so plainly rather than
                     leaving an empty frame that reads as broken. */}
@@ -548,8 +576,30 @@ export default function Calendar() {
                   <View style={s.pctTrack}>
                     <View style={[s.pctFill, { width: `${pct}%` }]} />
                   </View>
+
+                  {/* SAY IT OPENS. The card looked identical before and did
+                      nothing when tapped — a card that's silently tappable is
+                      a card nobody taps. */}
+                  {m.meal && (
+                    <View style={s.openRow}>
+                      <Text style={s.openText}>
+                        Tap for every item, the macros, and to delete it
+                      </Text>
+                      <ChevronsRight size={13} color={T.green} />
+                    </View>
+                  )}
                 </View>
               </View>
+            );
+
+            /* the demo rows have no real meal behind them, so they stay
+               untappable rather than opening an empty sheet */
+            return m.meal ? (
+              <Tap key={m.meal.id || i} onPress={() => setOpenMeal(m.meal)}>
+                {card}
+              </Tap>
+            ) : (
+              <View key={i}>{card}</View>
             );
           })}
 
@@ -575,6 +625,15 @@ export default function Calendar() {
             </View>
           </TravelBorder>
         </ScrollView>
+
+        {/* one meal, opened — same sheet Home uses */}
+        <MealSheet
+          visible={!!openMeal}
+          meal={openMeal}
+          goalCalories={goal}
+          onClose={() => setOpenMeal(null)}
+          onDeleted={afterDelete}
+        />
       </View>
     );
   }
@@ -827,6 +886,13 @@ const styles = (T: any) =>
     pctText: { fontSize: 11, color: T.sub, fontFamily: FONTS.body },
     pctTrack: { marginTop: 8, height: 6, borderRadius: 99, backgroundColor: T.track, overflow: "hidden" },
     pctFill: { height: "100%", backgroundColor: T.green, borderRadius: 99 },
+
+    openRow: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+      marginTop: 12, paddingTop: 11,
+      borderTopWidth: 1, borderTopColor: T.border,
+    },
+    openText: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
 
     totalRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
     totalBig: { fontSize: 34, color: T.text, fontFamily: FONTS.heading },

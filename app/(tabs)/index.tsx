@@ -1,20 +1,21 @@
 // app/(tabs)/index.tsx
 import { LinearGradient } from "expo-linear-gradient";
 import { useFocusEffect, useRouter } from "expo-router";
-import { ChevronLeft, ChevronRight, HelpCircle, X } from "lucide-react-native";
+import { ChevronLeft, ChevronRight, HelpCircle, Plus, X } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Animated, Dimensions, Easing, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import BlurLock from "../../components/BlurLock";
 import ExpectedWeightSheet from "../../components/ExpectedWeightSheet";
 import GradientText from "../../components/GradientText";
 import Icon, { IconName } from "../../components/Icon";
+import MealSheet from "../../components/MealSheet";
 import PageHeader from "../../components/PageHeader";
 import SeasonCrown from "../../components/SeasonCrown";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
-import { loadDay, todayLocal } from "../../constants/meals";
-import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
+import { loadDay, Meal, todayLocal } from "../../constants/meals";
+import { FONTS, tierForStreak, TIERS, ULT_COLORS } from "../../constants/theme";
 import { expectedKgToday, fromKg, loadWeighIns, toKg } from "../../constants/weight";
 
 const SCREEN_H = Dimensions.get("window").height;
@@ -130,7 +131,7 @@ export default function Home() {
   /* No dev controls on this screen. The Pro flip used to live down in the
      corner AND in Profile's dev panel — two buttons doing the same job is one
      more than needed, and the duplicate is the one that goes stale. */
-  const { T, freeLocked, plan, profile, streakDays, tabResetKey, userId } = useApp();
+  const { T, freeLocked, plan, profile, streakDays, tabResetKey, userId, refreshStreak } = useApp();
   const [scope, setScope] = useState<Scope>("General");
 
   const [heroOpen, setHeroOpen] = useState(false);
@@ -143,10 +144,17 @@ export default function Home() {
   const board = useRef(new Animated.Value(0)).current;
 
   /* ---------- TODAY'S REAL MEALS ----------
-     Per-slot totals, summed from what's actually in the database. */
-  const [todayCals, setTodayCals] = useState<Record<string, number>>({});
+     The whole meal records are kept now, not just per-slot totals — because a
+     meal row that can be OPENED needs the meal behind it, and re-fetching on
+     tap would put a spinner in front of something the screen already had. */
+  const [todayMeals, setTodayMeals] = useState<Meal[]>([]);
   const [todayMacros, setTodayMacros] = useState({ p: 0, c: 0, f: 0 });
   const [mealsLoaded, setMealsLoaded] = useState(false);
+
+  /* the meal being looked at, and — when a slot holds more than one — the
+     list to choose from first */
+  const [openMeal, setOpenMeal] = useState<Meal | null>(null);
+  const [picking, setPicking] = useState<{ slot: string; meals: Meal[] } | null>(null);
 
   /* ---------- WEIGH-INS ----------
      Read only. Home no longer records a weight — see the note on the chip. */
@@ -155,39 +163,39 @@ export default function Home() {
   const [lastOn, setLastOn] = useState<string | null>(null);
   const [weighCount, setWeighCount] = useState(0);
 
+  /** today's meals, as one call. Split out of the focus effect so a delete can
+      re-run it without the user leaving and coming back. */
+  const loadToday = useCallback(async () => {
+    if (!userId) { setMealsLoaded(true); return; }
+
+    const { meals } = await loadDay(userId, todayLocal());
+
+    let p = 0, c = 0, f = 0;
+    meals.forEach((m) => {
+      m.items.forEach((it) => {
+        p += it.protein || 0;
+        c += it.carbs || 0;
+        f += it.fat || 0;
+      });
+    });
+
+    setTodayMeals(meals);
+    setTodayMacros({ p, c, f });
+    setMealsLoaded(true);
+  }, [userId]);
+
   /* useFocusEffect rather than useEffect: coming BACK from the camera after
      logging has to show the new number. A mount-only effect wouldn't re-run,
      and the user would see their old total until they restarted the app. */
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      if (!userId) { setMealsLoaded(true); return; }
-
       (async () => {
-        const { meals } = await loadDay(userId, todayLocal());
+        await loadToday();
         if (cancelled) return;
-
-        const cals: Record<string, number> = {};
-        let p = 0, c = 0, f = 0;
-
-        meals.forEach((m) => {
-          const slot = m.mealType || "snacks";
-          const mealCal = m.items.reduce((a, it) => a + (it.calories || 0), 0);
-          cals[slot] = (cals[slot] || 0) + mealCal;
-          m.items.forEach((it) => {
-            p += it.protein || 0;
-            c += it.carbs || 0;
-            f += it.fat || 0;
-          });
-        });
-
-        setTodayCals(cals);
-        setTodayMacros({ p, c, f });
-        setMealsLoaded(true);
       })();
-
       return () => { cancelled = true; };
-    }, [userId])
+    }, [loadToday])
   );
 
   /* Refetched on focus, which is what picks up a weigh-in saved over in Stats
@@ -216,6 +224,15 @@ export default function Home() {
     }, [userId])
   );
 
+  /** after a meal is deleted from the sheet: today's numbers and the streak
+      both have to catch up. The streak especially — deleting the only meal of
+      the day can end a run, and a flame still burning afterwards would be a
+      lie. */
+  const afterDelete = useCallback(async () => {
+    await loadToday();
+    refreshStreak();
+  }, [loadToday, refreshStreak]);
+
   // guards against rapid repeat taps
   const scopeLock = useRef(false);
   const sheetBusy = useRef(false);
@@ -229,6 +246,8 @@ export default function Home() {
     setBoardBody(false);
     setHowOpen(false);
     setExpectedOpen(false);
+    setOpenMeal(null);
+    setPicking(null);
   }, [tabResetKey]);
 
   const tier = tierForStreak(streakDays);
@@ -238,8 +257,18 @@ export default function Home() {
   const flameColor = freeLocked ? T.green : isUlt ? T.orange : tier.color;
   const flameAnim = FLAME_FOR_TIER[tier.name] || "flameSpark";
 
-  /* the slots, each carrying whatever today's database says it holds */
-  const meals = MEAL_SLOTS.map((m) => ({ ...m, cal: todayCals[m.key] || 0 }));
+  /* the slots, each carrying the meals actually logged into it. A slot can
+     hold SEVERAL meals — two separate snacks, or a lunch logged twice — which
+     is exactly the case the sheet exists to let people fix. */
+  const meals = MEAL_SLOTS.map((m) => {
+    const mine = todayMeals.filter((t) => (t.mealType || "snacks") === m.key);
+    const cal = mine.reduce(
+      (sum, t) => sum + t.items.reduce((a, it) => a + (it.calories || 0), 0),
+      0
+    );
+    return { ...m, cal, meals: mine };
+  });
+
   const eaten = meals.reduce((sum, m) => sum + m.cal, 0);
   const nothingLogged = mealsLoaded && eaten === 0;
 
@@ -341,14 +370,8 @@ export default function Home() {
   const losing = profile.targetWeight < profile.startWeight;
 
   /* ---------- THE WEIGHT CHIP ----------
-     READ-ONLY, and always the plan's expected weight. It used to show your
-     real weight once you'd logged one, which meant the chip quietly changed
-     what it was measuring depending on your history — and tapping it opened a
-     weigh-in, so the same number could be entered here and in Stats.
-
-     Now there's one place to read (here) and one place to write (Stats), and
-     this chip only ever answers one question: where does the plan say I
-     should be today? */
+     READ-ONLY, and always the plan's expected weight. One place to read
+     (here) and one place to write (Stats). */
   const startKg = toKg(profile.startWeight || 0, unit as "kg" | "lbs");
   const targetKg = toKg(profile.targetWeight || 0, unit as "kg" | "lbs");
   const paceKg = profile.paceRate || 0.5;
@@ -380,6 +403,15 @@ export default function Home() {
      so food logged from the Snacks row landed in Dinner. */
   const toCamera = (mealName?: string) =>
     router.push(mealName ? `/(tabs)/camera?meal=${mealName}` : "/(tabs)/camera");
+
+  /** open what's in a slot. One meal opens straight away; several ask which,
+      because a slot holding two lunches is exactly the mistake this is for
+      and silently opening the first would hide the duplicate. */
+  const openSlot = (slot: { name: string; meals: Meal[] }) => {
+    if (!slot.meals.length) return;
+    if (slot.meals.length === 1) { setOpenMeal(slot.meals[0]); return; }
+    setPicking({ slot: slot.name, meals: slot.meals });
+  };
 
   /* the nudge reads the real day. An empty day gets its own line — "1,850
      calories left" is technically true on a blank day but says nothing about
@@ -559,35 +591,63 @@ export default function Home() {
         {meals.map((m) => {
           const isNext = nextMeal?.name === m.name;
           const isLight = lightMeal?.name === m.name;
+          const logged = m.cal > 0;
+
+          /* A LOGGED ROW OPENS; AN EMPTY ONE LOGS. Tapping a logged meal used
+             to reopen the camera — which is right for adding, wrong for
+             checking, and offered no way at all to fix a mistake. Now the row
+             opens what's in it, and a small + still adds more to the same
+             meal. */
           return (
-            <Tap key={m.name} onPress={() => toCamera(m.name)} style={{ marginBottom: 10 }}>
-              <View style={[
-                s.meal,
-                isNext && { borderColor: T.greenBorder, backgroundColor: T.greenBg },
-                isLight && { borderColor: T.goldBorder },
-              ]}>
-                <View style={s.mealIcon}>
-                  <Icon name={m.icon} size={24} mode="loop" />
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <View style={s.mealTitleRow}>
-                    <Text style={s.mealName}>{m.name}</Text>
-                    {isNext && <View style={s.nextTag}><Text style={s.nextTagText}>NEXT</Text></View>}
+            <View key={m.name} style={{ marginBottom: 10 }}>
+              <Tap onPress={() => (logged ? openSlot(m) : toCamera(m.name))}>
+                <View style={[
+                  s.meal,
+                  isNext && { borderColor: T.greenBorder, backgroundColor: T.greenBg },
+                  isLight && { borderColor: T.goldBorder },
+                ]}>
+                  <View style={s.mealIcon}>
+                    <Icon name={m.icon} size={24} mode="loop" />
                   </View>
-                  {isLight && <Text style={s.lightNote}>Looks light — add anything you missed?</Text>}
-                </View>
 
-                {m.cal > 0 ? (
-                  <Text style={[s.mealCal, isLight && { color: T.gold }]}>{m.cal} cal</Text>
-                ) : (
-                  <View style={s.addWrap}>
-                    <View style={s.addBtn}><Text style={{ color: T.green, fontSize: 15 }}>+</Text></View>
-                    <Text style={s.addText}>Add {m.name.toLowerCase()}</Text>
+                  <View style={{ flex: 1 }}>
+                    <View style={s.mealTitleRow}>
+                      <Text style={s.mealName}>{m.name}</Text>
+                      {isNext && <View style={s.nextTag}><Text style={s.nextTagText}>NEXT</Text></View>}
+                      {m.meals.length > 1 && (
+                        <View style={s.countTag}>
+                          <Text style={s.countTagText}>{m.meals.length} logged</Text>
+                        </View>
+                      )}
+                    </View>
+                    {isLight && <Text style={s.lightNote}>Looks light — add anything you missed?</Text>}
+                    {logged && !isLight && (
+                      <Text style={s.openNote}>Tap to see what's in it</Text>
+                    )}
                   </View>
-                )}
-              </View>
-            </Tap>
+
+                  {logged ? (
+                    <>
+                      <Text style={[s.mealCal, isLight && { color: T.gold }]}>{m.cal} cal</Text>
+                      {/* adding MORE to a meal that's already logged — the
+                          camera route the whole row used to be */}
+                      <Pressable
+                        onPress={() => toCamera(m.name)}
+                        hitSlop={10}
+                        style={s.addMore}
+                      >
+                        <Plus size={15} color={T.green} />
+                      </Pressable>
+                    </>
+                  ) : (
+                    <View style={s.addWrap}>
+                      <View style={s.addBtn}><Text style={{ color: T.green, fontSize: 15 }}>+</Text></View>
+                      <Text style={s.addText}>Add {m.name.toLowerCase()}</Text>
+                    </View>
+                  )}
+                </View>
+              </Tap>
+            </View>
           );
         })}
 
@@ -656,10 +716,7 @@ export default function Home() {
             </View>
           </Tap>
 
-          {/* THE WEIGHT CHIP — opens an explainer, never a weigh-in. Tapping it
-              used to open a text field, which put weight entry in two places
-              and left the user unsure which number the app was actually
-              using. */}
+          {/* THE WEIGHT CHIP — opens an explainer, never a weigh-in. */}
           <View style={{ flex: 1 }}>
             <BlurLock label="Your weight" locked={freeLocked} radius={14} compact>
               <Tap onPress={() => setExpectedOpen(true)}>
@@ -680,6 +737,70 @@ export default function Home() {
           </View>
         </View>
       </ScrollView>
+
+      {/* ---------- ONE MEAL, OPENED ----------
+          The same sheet the calendar uses. This is where a double-logged lunch
+          gets fixed — thirty seconds after it happened, without the user
+          needing to know a calendar exists. */}
+      <MealSheet
+        visible={!!openMeal}
+        meal={openMeal}
+        goalCalories={goal}
+        onClose={() => setOpenMeal(null)}
+        onDeleted={afterDelete}
+      />
+
+      {/* WHICH ONE. Only appears when a slot holds more than one meal — which
+          is itself the signal that something may have been logged twice. */}
+      <Modal visible={!!picking} transparent animationType="fade" onRequestClose={() => setPicking(null)}>
+        <View style={{ flex: 1 }}>
+          <Pressable style={s.backdrop} onPress={() => setPicking(null)} />
+          <View style={s.pickCentre} pointerEvents="box-none">
+            <View style={s.pickCard}>
+              <View style={s.pickHead}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.pickLabel}>{picking?.slot}</Text>
+                  <Text style={s.pickTitle}>
+                    {picking?.meals.length} meals logged
+                  </Text>
+                </View>
+                <Pressable onPress={() => setPicking(null)} hitSlop={12} style={s.pickClose}>
+                  <X size={17} color={T.sub} />
+                </Pressable>
+              </View>
+
+              <Text style={s.pickBody}>
+                Which one would you like to look at? If one of these was logged by mistake, you can
+                delete it from inside.
+              </Text>
+
+              {picking?.meals.map((m, i) => {
+                const cal = m.items.reduce((a, it) => a + (it.calories || 0), 0);
+                return (
+                  <Tap
+                    key={m.id || i}
+                    onPress={() => { const meal = m; setPicking(null); setTimeout(() => setOpenMeal(meal), 180); }}
+                    style={{ marginTop: 9 }}
+                  >
+                    <View style={s.pickRow}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={s.pickRowName} numberOfLines={1}>
+                          {m.items.map((it) => it.foodName).join(", ") || "Logged meal"}
+                        </Text>
+                        <Text style={s.pickRowSub}>
+                          {m.items.length} {m.items.length === 1 ? "item" : "items"}
+                        </Text>
+                      </View>
+                      <Text style={s.pickRowCal}>{cal} cal</Text>
+                      <ChevronRight size={16} color={T.micro} />
+                    </View>
+                  </Tap>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* THE EXPLAINER — reads only. Its button hands off to the weight screen
           in Stats, which is the single place a real weight is recorded. */}
@@ -1016,12 +1137,20 @@ const styles = (T: any) =>
       backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
       alignItems: "center", justifyContent: "center",
     },
-    mealTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+    mealTitleRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
     mealName: { fontSize: 14, color: T.text, fontFamily: FONTS.headingMed },
     nextTag: { backgroundColor: T.green, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
     nextTagText: { fontSize: 8.5, color: T.ink, fontFamily: FONTS.heading, letterSpacing: 0.6 },
+    countTag: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2 },
+    countTagText: { fontSize: 8.5, color: T.sub, fontFamily: FONTS.body },
     lightNote: { fontSize: 11, color: T.gold, fontFamily: FONTS.body, marginTop: 4 },
+    openNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 4 },
     mealCal: { fontSize: 13, color: T.green, fontFamily: FONTS.headingMed },
+    addMore: {
+      width: 30, height: 30, borderRadius: 10, marginLeft: 8,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      alignItems: "center", justifyContent: "center",
+    },
     addWrap: { flexDirection: "row", alignItems: "center", gap: 6 },
     addBtn: { width: 20, height: 20, borderRadius: 7, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center" },
     addText: { color: T.sub, fontSize: 12, fontFamily: FONTS.body },
@@ -1070,6 +1199,27 @@ const styles = (T: any) =>
     sheetClose: { width: 34, height: 34, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
     sheetScopeRow: { alignItems: "center", paddingBottom: 8 },
     sheetSub: { fontSize: 11, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginBottom: 8 },
+
+    /* which meal in this slot */
+    pickCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 18 },
+    pickCard: {
+      width: "100%", maxWidth: 360,
+      backgroundColor: T.bg, borderWidth: 1, borderColor: T.border,
+      borderRadius: 20, padding: 18,
+    },
+    pickHead: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 8 },
+    pickLabel: { fontSize: 9.5, letterSpacing: 1.2, color: T.micro, fontFamily: FONTS.body, textTransform: "uppercase" },
+    pickTitle: { fontSize: 17, color: T.text, fontFamily: FONTS.heading, marginTop: 3 },
+    pickClose: { width: 32, height: 32, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
+    pickBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, lineHeight: 18 },
+    pickRow: {
+      flexDirection: "row", alignItems: "center", gap: 10,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 13, padding: 13,
+    },
+    pickRowName: { fontSize: 13.5, color: T.text, fontFamily: FONTS.headingMed },
+    pickRowSub: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
+    pickRowCal: { fontSize: 13, color: T.green, fontFamily: FONTS.headingMed },
 
     howFooter: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 14, borderTopWidth: 1, borderTopColor: T.border },
     howRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 13 },
