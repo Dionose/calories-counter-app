@@ -12,11 +12,17 @@
 //
 // WHICH MAKES RANK AND POSITION DIFFERENT NUMBERS. #2 isn't the second row if
 // ninety-eight people share first — so "jump to me" uses POSITION, and only
-// the rank is ever shown. Conflating them lands the jump on the wrong page.
+// the rank is ever shown.
+//
+// EVERY ROW PRINTS ITS OWN RANK, and every row in a tie says how many share
+// it. An earlier version printed the number once per group and left the rest
+// blank, which looked tidier and answered the wrong question: someone
+// forty-ninth in a tied group scrolls to their own name to find out where they
+// stand, and a blank margin tells them nothing. The number belongs to each
+// person, not to the group.
 //
 // AND THE PERCENTILE STILL COUNTS PEOPLE. "#2 · top 51%" reads oddly for a
 // second and is two true things: second-best score, half the board above you.
-// Making them agree would mean inventing one of them.
 //
 // FIFTY AT A TIME, because a board can hold every user and someone at position
 // 4,318 should still be able to scroll to themselves.
@@ -24,12 +30,9 @@
 // THE CROWN COLUMN — one box, same for every row. SeasonCrown's reveal renders
 // in a box 2.1× its size with the crown centred; the still version is exactly
 // its size. Four attempts to COMPENSATE for that difference each moved the
-// crown without aligning it, so nothing compensates any more: every crown gets
-// a box the full 2.1× size, and the row is tall enough to hold it.
+// crown without aligning it, so nothing compensates any more.
 //
-// THE STAR BURST CAPS AT 20, in SeasonCrown rather than here. The number in
-// the middle keeps climbing past it, because the number is the data and the
-// stars are the ceremony.
+// THE STAR BURST CAPS AT 20, in SeasonCrown rather than here.
 import { ChevronLeft, ChevronRight, Crosshair, HelpCircle, X } from "lucide-react-native";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -353,17 +356,11 @@ export default function LeaderboardSheet({
 
                   <View style={s.howDivider} />
 
-                  {/* ---------- THE TIES SECTION, REWRITTEN ----------
-                      The old version described competition ranking and was
-                      accurate about behaviour nobody wanted: fifty people at
-                      first meant the next score was #51. Now rank counts
-                      SCORES, and this says so plainly — including the odd
-                      moment where the rank and the percentage disagree, which
-                      would otherwise look like a bug. */}
                   <Text style={s.howSmallTitle}>Ties, and how ranks are counted</Text>
                   <Text style={s.howText}>
                     Your rank counts SCORES above you, not people. If fifty players are tied on
-                    400 points they're all 1st — and the next score down is 2nd, not 51st.
+                    400 points they're all 1st — every one of them — and the next score down is
+                    2nd, not 51st.
                   </Text>
 
                   <Text style={[s.howText, { marginTop: 10 }]}>
@@ -470,16 +467,8 @@ export default function LeaderboardSheet({
                       ref={list}
                       data={rows}
                       keyExtractor={(r) => r.userId}
-                      renderItem={({ item, index }) => (
-                        <Row
-                          r={item}
-                          isTotal={isTotal}
-                          T={T}
-                          playKey={crownPlay}
-                          /* only the FIRST of a tied group prints its rank —
-                             see the note in Row */
-                          showRank={index === 0 || rows[index - 1].rank !== item.rank}
-                        />
+                      renderItem={({ item }) => (
+                        <Row r={item} isTotal={isTotal} T={T} playKey={crownPlay} />
                       )}
                       style={{ flex: 1 }}
                       contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8 }}
@@ -525,21 +514,22 @@ export default function LeaderboardSheet({
 
 /** one row.
 
-    THE RANK PRINTS ONCE PER GROUP. Five people tied at first showing "1 1 1 1
-    1" down the margin reads as a rendering fault; printing it against the
-    first of them and leaving the rest blank reads as a group, which is what it
-    is. The tie is named in words on the row instead.
+    EVERY ROW CARRIES ITS OWN RANK AND ITS OWN TIE COUNT. An earlier version
+    printed the rank once per group and left the rest blank — tidier margin,
+    wrong answer: someone forty-ninth in a tied group scrolls to their name to
+    find out where they stand, and a blank tells them nothing. Same for the tie
+    count: you should be able to see "1 · 50 tied here" against YOUR name
+    without scrolling up to find the top of the group.
 
     THE NAME GLOWS IN THAT PERSON'S OWN TIER, not their rank's — someone can
     sit high on points and still be Red-hot because they skipped yesterday. */
 function Row({
-  r, isTotal, T, playKey, showRank,
+  r, isTotal, T, playKey,
 }: {
   r: BoardRow;
   isTotal: boolean;
   T: any;
   playKey?: number;
-  showRank: boolean;
 }) {
   const s = styles(T);
   const t = TIERS[Math.min(5, Math.max(1, r.tier)) as 1 | 2 | 3 | 4 | 5];
@@ -547,14 +537,9 @@ function Row({
 
   return (
     <View style={[s.row, r.me && s.rowMe]}>
-      {showRank ? (
-        <Text style={[s.rank, r.rank <= 3 && { color: T.gold }]}>
-          {r.rank.toLocaleString()}
-        </Text>
-      ) : (
-        /* the blank keeps the column aligned without repeating the number */
-        <View style={s.rankBlank} />
-      )}
+      <Text style={[s.rank, r.rank <= 3 && { color: T.gold }]}>
+        {r.rank.toLocaleString()}
+      </Text>
 
       {isTotal && r.seasons != null && (
         <View style={s.crownBox}>
@@ -577,8 +562,7 @@ function Row({
           <Text style={[s.name, { color: t.color }]} numberOfLines={1}>@{r.handle}</Text>
         )}
 
-        {/* said once, against the top of the group */}
-        {r.tied && showRank && (
+        {r.tied && (
           <Text style={s.tiedNote}>{r.tiedCount} players tied here</Text>
         )}
       </View>
@@ -652,7 +636,6 @@ const styles = (T: any) =>
     },
     rowMe: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder },
     rank: { minWidth: 34, fontSize: 13, color: T.sub, fontFamily: FONTS.heading, textAlign: "center" },
-    rankBlank: { minWidth: 34 },
 
     crownBox: {
       width: CROWN_BOX, height: CROWN_BOX,

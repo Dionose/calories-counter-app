@@ -15,6 +15,10 @@
 // people, so five players tied on 400 are all 1st and the next score is 2nd.
 // Which means the first three ROWS here are often all rank 1, and that's
 // correct rather than broken.
+//
+// EVERY ROW PRINTS ITS OWN RANK AND TIE COUNT. An earlier version showed the
+// number once per group and blanked the rest — tidier, and it answered the
+// wrong question. Your rank belongs to you, not to the group you're in.
 import { ChevronRight } from "lucide-react-native";
 import React, { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -133,16 +137,8 @@ export default function LeaderboardCard({
               : "Nothing logged yet this season. Log a meal and you're on the board."}
           </Text>
         ) : (
-          rows.map((r, i) => (
-            <Row
-              key={r.userId}
-              r={r}
-              isTotal={scope === "total"}
-              T={T}
-              /* the rank prints once per tied group — five 1s down the margin
-                 reads as a fault rather than a group */
-              showRank={i === 0 || rows[i - 1].rank !== r.rank}
-            />
+          rows.map((r) => (
+            <Row key={r.userId} r={r} isTotal={scope === "total"} T={T} />
           ))
         )}
 
@@ -163,12 +159,11 @@ export default function LeaderboardCard({
     high on points and still be Red-hot because they skipped yesterday — the
     colour is about their streak, the number is about their season. */
 function Row({
-  r, isTotal, T, showRank,
+  r, isTotal, T,
 }: {
   r: BoardRow;
   isTotal: boolean;
   T: any;
-  showRank: boolean;
 }) {
   const s = styles(T);
   const t = TIERS[Math.min(5, Math.max(1, r.tier)) as 1 | 2 | 3 | 4 | 5];
@@ -176,11 +171,7 @@ function Row({
 
   return (
     <View style={[s.row, r.me && s.rowMe]}>
-      {showRank ? (
-        <Text style={s.rank}>{r.rank}</Text>
-      ) : (
-        <View style={s.rankBlank} />
-      )}
+      <Text style={s.rank}>{r.rank}</Text>
 
       {isTotal && r.seasons != null && (
         <SeasonCrown color={t.color} count={r.seasons} size={30} />
@@ -193,10 +184,7 @@ function Row({
           <Text style={[s.name, { color: t.color }]} numberOfLines={1}>@{r.handle}</Text>
         )}
 
-        {/* said once, against the top of the group */}
-        {r.tied && showRank && (
-          <Text style={s.tiedNote}>{r.tiedCount} tied</Text>
-        )}
+        {r.tied && <Text style={s.tiedNote}>{r.tiedCount} tied</Text>}
       </View>
 
       {r.me && <View style={s.youChip}><Text style={s.youChipText}>YOU</Text></View>}
@@ -226,7 +214,6 @@ const styles = (T: any) =>
     },
     rowMe: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder },
     rank: { width: 24, fontSize: 14, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
-    rankBlank: { width: 24 },
     name: { fontSize: 13, fontFamily: FONTS.headingMed },
     tiedNote: { fontSize: 9, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
     youChip: { backgroundColor: T.greenBg, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 2 },
