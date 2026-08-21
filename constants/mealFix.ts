@@ -13,33 +13,28 @@
 //
 //   A SINGLE CORRECTION — "the green one is spinach, not eggs." One item.
 //
-//   A RECIPE — "curry stew, I made it with tomatoes, onions and oil." The stew
-//   is ONE thing on the plate made of things that each carry calories. It
-//   comes back as one item carrying its INGREDIENTS, and the item is worth
-//   what they add up to.
-//
-// THE RECIPE CASE IS WHERE THE REAL ACCURACY LIVES. Cooking oil is invisible
-// in a photograph and enormous in calories — a dish estimated at 300 might
-// genuinely be 550 once the oil is counted.
+//   A RECIPE — "curry stew, I made it with tomatoes, onions and oil." One item
+//   carrying its INGREDIENTS, worth what they add up to.
 //
 // ⚠️ THE FAILURE THIS PROMPT IS BUILT AROUND: told "white rice and Nigerian
 // tomato stew, I made the stew with tomatoes, onions and oil", the model
 // returned ONE item called "Tomato and onion curry stew with oil" and no
 // ingredients at all. It heard every ingredient and spent them on a longer
-// NAME. Three separate tests, same result — so the rules below say
-// explicitly that ingredient words may not appear in a dish's name, and that
-// naming a cooked dish plus its contents ALWAYS produces parts. A name is not
-// a breakdown: it counts nothing.
+// NAME. Three separate tests, same result. A name counts nothing.
+//
+// THE FIXED VALUES GO FIRST, before the JSON shape and every other rule. They
+// used to sit in the middle and got followed four times in five — the fifth
+// run priced a chicken breast at 385 calories instead of 290. Instructions
+// buried in a long prompt compete with everything around them.
 //
 // AND THEY DESCRIBED THE POT, NOT THE PLATE. Someone lists what went into a
-// pot that fed four, then eats a bowl. Ingredients are scaled to the portion.
+// pot that fed four, then eats a bowl.
 //
 // GETTING THE REPLACE/CORRECT SPLIT WRONG IS WORSE THAN NO FEATURE AT ALL. It
 // used to treat every description as a correction, so a description ADDED to
 // the photo's guess — a plate read as plantain and beans, described as beef,
 // spinach, beans and olive oil, kept the plantain AND added all four.
-//
-// WHEN IT CAN'T TELL, IT DOES NOTHING.
+import { WEIGHT_REFERENCE } from "./foodWeights";
 import { MealItem } from "./mealPhoto";
 import { MealPart } from "./meals";
 
@@ -70,7 +65,11 @@ export type MealFix = {
 
 export type Progress = (message: string) => void;
 
-const PROMPT = `You are improving an ESTIMATE of a meal, using what the person who ate it just said out loud.
+/* THE TABLE IS THE FIRST THING IN THE PROMPT. Everything else follows it. */
+const PROMPT = `${WEIGHT_REFERENCE}
+
+Now: you are improving an ESTIMATE of a meal, using what the person who ate it
+just said out loud.
 
 Return ONLY a JSON object. No markdown, no code fences, no explanation.
 
@@ -107,10 +106,7 @@ Return ONLY a JSON object. No markdown, no code fences, no explanation.
   "adds": [ same shape as an edit, without "index" ]
 }
 
-═══ THE MOST IMPORTANT RULE IN THIS PROMPT ═══
-
-IF THEY TELL YOU WHAT WENT INTO A COOKED DISH, THOSE THINGS GO IN "parts".
-NEVER INTO THE NAME.
+WHAT WENT INTO A DISH GOES IN "parts", NEVER INTO THE NAME.
 
 Given "white rice and Nigerian tomato stew — I made the stew with tomatoes,
 onions, pepper and oil":
@@ -126,23 +122,14 @@ onions, pepper and oil":
       "name": "Nigerian tomato stew",
       "amountLabel": "a bowl",
       "parts": [
-        { "name": "Tomatoes", "amountLabel": "about half a cup", ... },
-        { "name": "Onions", "amountLabel": "about a quarter cup", ... },
-        { "name": "Pepper", "amountLabel": "a spoonful", ... },
+        { "name": "Tomatoes", ... },
+        { "name": "Onions", ... },
+        { "name": "Pepper", ... },
         { "name": "Vegetable oil", "amountLabel": "two tablespoons", ... }
       ]
     }
 
-A NAME IS NOT A BREAKDOWN. "Stew with oil" counts no oil — it's just a longer
-label on the same guess. The whole reason they told you is so the oil gets
-counted, and only "parts" does that.
-
-THE DISH'S NAME IS WHAT THEY CALLED IT: "Nigerian tomato stew", "Curry stew",
-"Jollof rice". Do NOT append ingredients to it. If your name contains "with",
-"and" followed by an ingredient, or lists contents, you have made this mistake
-— move those words into "parts".
-
-═══════════════════════════════════════════
+A NAME IS NOT A BREAKDOWN. "Stew with oil" counts no oil. Only "parts" counts.
 
 FIRST, DECIDE WHICH OF TWO THINGS THEY DID:
 
@@ -178,45 +165,39 @@ IF IT IS A SINGLE CORRECTION (B):
 
 8. In "note", say what you changed, under twelve words.
 
-USING "parts" — WHEN AND HOW:
+USING "parts":
 
 9. A dish takes "parts" when it is cooked as ONE thing but MADE of several: a
-   stew, a soup, a sauce, a curry, a smoothie, a casserole, a marinade. If
-   they name what went into one, return one item with its ingredients.
+   stew, soup, sauce, curry, smoothie, casserole, marinade.
 
-10. THE DISH IS ONE ROW. The person eats a stew, not a bowl of separate
-    tomatoes. Never split the ingredients into top-level items.
+10. THE DISH IS ONE ROW. Never split the ingredients into top-level items.
 
-11. THE ITEM'S CALORIES AND MACROS MUST EQUAL THE SUM OF ITS PARTS. They are
-    recomputed from the parts anyway, so anything else is simply wrong.
+11. THE ITEM'S CALORIES AND MACROS MUST EQUAL THE SUM OF ITS PARTS.
 
-12. TWO OR MORE INGREDIENTS, or none. One ingredient is not a breakdown.
+12. TWO OR MORE INGREDIENTS, or none.
 
-13. THEY DESCRIBED THE POT, NOT THE PLATE. People list what they cooked with —
-    a pot that fed four — but they ate one portion. Scale EVERY ingredient
-    down to what's in front of them. Cooked with 100 ml of oil and eating
-    about a quarter of it? That's 25 ml in this bowl, not 100.
+13. THEY DESCRIBED THE POT, NOT THE PLATE. Scale EVERY ingredient down to the
+    portion in front of them. Cooked with 100 ml of oil and eating about a
+    quarter of it? That's 25 ml in this bowl, not 100.
 
-14. Say the portion in the item's amountLabel — "a bowl", "about a cup" — and
-    each part's amountLabel is that ingredient's share.
+14. OIL, BUTTER AND CREAM ARE THE POINT — invisible in a photo, huge in
+    calories. Use the fixed values above.
 
-15. OIL, BUTTER AND CREAM ARE THE POINT. Invisible in a photo, huge in
-    calories. A tablespoon of oil is about 120 calories. Count them properly.
+15. SPICES AND SEASONINGS STILL EARN A LINE even at a few calories.
 
-16. SPICES AND SEASONINGS STILL EARN A LINE even at a few calories — curry
-    powder, pepper, salt, stock cubes. The person mentioned them and expects
-    to see them; a breakdown missing what they said reads as not having
-    listened. Small numbers are fine.
-
-17. Rice served ALONGSIDE a stew is its own item. Only what went INTO the pot
+16. Rice served ALONGSIDE a stew is its own item. Only what went INTO the pot
     is a part of the stew.
 
-18. Don't invent ingredients. If they say "curry stew" and nothing else, it's
-    a plain item with no parts.
+17. Don't invent ingredients they didn't mention.
 
 BOTH CASES:
 
-19. "index" refers to the numbered list below. Use those exact numbers.
+18. "index" refers to the numbered list below. Use those exact numbers.
+
+19. A COUNT of something in the table — "two chicken breasts", "three eggs",
+    "two tablespoons of oil" — is a LOOKUP, not an estimate. Multiply the
+    table's numbers by the count and stop there. A SERVING named in the table
+    — "a plate of pasta", "a bowl of rice" — is also a lookup.
 
 20. When a food CHANGES, its calories and macros must change with it.
 
@@ -228,27 +209,32 @@ BOTH CASES:
     whole grams. Calories must match the macros: protein and carbs about 4 a
     gram, fat about 9.
 
-24. "amountLabel" must stay PICTURABLE — "a cup", "two tablespoons", "a
-    palm-sized piece". Never "a serving" or "a portion".
+24. CHECK YOURSELF AGAINST WHAT'S NORMAL. Two grilled chicken breasts are
+    around 580 calories, never 385 and never 900. A plate of pasta with cream
+    sauce is 600-900. If a number lands outside the ordinary range, you have
+    mis-weighed it — go back to the table.
 
-25. "sure" is "high" when they gave an amount too, "medium" when they named
-    the food but not the amount.
+25. "amountLabel" must stay PICTURABLE — "two breasts", "a bowl", "two
+    tablespoons". Never "a serving" or "a portion".
+
+26. "sure": HIGH when the table covered it, MEDIUM when they named the food
+    but not the amount, LOW when guessing at a volume.
 
 THE TRANSCRIPT IS MESSY:
 
-26. This came from speech recognition. Read through false starts, filler and
+27. This came from speech recognition. Read through false starts, filler and
     misheard words the way a person would. "Spin itch" is spinach. "Jelly
     rice" is jollof rice. "Corey stew" is curry stew.
 
-27. The speaker never sees the transcript, so refusing over a garbled word
+28. The speaker never sees the transcript, so refusing over a garbled word
     helps nobody.
 
 WHEN YOU GENUINELY CAN'T TELL:
 
-28. Set "understood" to false, leave edits, removes and adds EMPTY, and put
+29. Set "understood" to false, leave edits, removes and adds EMPTY, and put
     one short sentence in "problem" addressed to them.
 
-29. NEVER guess between two possible items.`;
+30. NEVER guess between two possible items.`;
 
 /** Apply a spoken description, correction or recipe to a plate.
 
@@ -284,7 +270,9 @@ export async function fixMealWithVoice(
       },
     ],
     generationConfig: {
-      temperature: 0.2,
+      /* AS LOW AS INTERPRETATION ALLOWS — the mishearing work survives at 0.1,
+         the weight-guessing doesn't. Same reasoning as mealVoice.ts. */
+      temperature: 0.1,
       /* a recipe with eight ingredients inside an item is a lot of JSON, and a
          truncated response is unparseable */
       maxOutputTokens: 3072,
@@ -442,10 +430,8 @@ function toItem(raw: any): FixItem | null {
   const parts = toParts(raw?.parts);
 
   if (parts) {
-    /* CLEAN THE NAME. Even with the rule stated three ways, the model still
-       sometimes writes "Tomato stew with oil" AND supplies the parts. Once the
-       ingredients are listed below it, the trailing "with…" is noise — and it
-       reads as though the oil is counted twice. */
+    /* CLEAN THE NAME. Even with the rule stated twice, the model sometimes
+       writes "Tomato stew with oil" AND supplies the parts. */
     name = stripIngredientTail(name);
 
     /* THE DISH IS WORTH WHAT WENT INTO IT. Recomputed rather than trusted:
@@ -489,11 +475,9 @@ function toItem(raw: any): FixItem | null {
 /** "Nigerian tomato stew with oil and onions" → "Nigerian tomato stew".
 
     ONLY applied to a dish that already has its ingredients listed — for a
-    plain item "with oil" may be the only record that oil exists, and cutting
-    it would lose real information. */
+    plain item "with oil" may be the only record that oil exists at all. */
 function stripIngredientTail(name: string): string {
   const cut = name.replace(/\s*[,(]?\s*\bwith\b[^,()]*\)?\s*$/i, "").trim();
-  /* never strip a name down to nothing, or to something meaninglessly short */
   return cut.length >= 3 ? cut : name;
 }
 
@@ -509,8 +493,7 @@ function toParts(raw: any): MealPart[] | undefined {
       const name = str(p?.name);
       const calories = num(p?.calories);
       /* a spice at 2 calories is still worth a line — the person said it, and
-         a breakdown missing what they mentioned reads as not listening. So
-         zero is allowed here; only a MISSING number disqualifies. */
+         a breakdown missing what they mentioned reads as not listening. */
       if (!name || calories == null) return null;
       return {
         name,
