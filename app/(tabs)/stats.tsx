@@ -36,6 +36,9 @@ import WeighInSheet from "../../components/WeighInSheet";
 import WeightChart from "../../components/WeightChart";
 import { useApp } from "../../constants/AppState";
 import * as H from "../../constants/haptics";
+/* ⚠️ DEV MODE ONLY — delete this import and its two uses below, along with
+   Profile's dev panel, before launch. See constants/demoStats.ts. */
+import { demoActivity, demoDayTotals, demoHeartRate, demoWeighIns } from "../../constants/demoStats";
 import { DayActivity, isHealthAvailable, loadActivity, recentHeartRate, requestHealthPermission } from "../../constants/health";
 import { loadDayTotals, loggedDayCount, todayLocal } from "../../constants/meals";
 import { FONTS, tierForStreak } from "../../constants/theme";
@@ -127,7 +130,7 @@ const STEP_SUMMARY_LABEL: Record<Range, string> = {
 
 export default function Stats() {
   const router = useRouter();
-  const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, userId } = useApp();
+  const { T, freeLocked, plan, profile, openPaywall, tabResetKey, streakDays, userId, devMode } = useApp();
   const [range, setRange] = useState<Range>("Week");
 
   /* ---------- ARRIVING FROM SOMEWHERE ELSE ----------
@@ -201,6 +204,19 @@ export default function Stats() {
       which read as the app taking thirty seconds to catch up. The save was
       always instant; the screen simply wasn't listening. */
   const loadAll = useCallback(async () => {
+    /* ⚠️ DEV MODE — months of logged meals, weigh-ins and a consistency count,
+       so the tab is worth filming. A real two-day-old account shows two bars
+       and proves nothing about what this screen does. Returns before touching
+       Supabase, so nothing fake can reach the database. */
+    if (devMode) {
+      const totals = demoDayTotals(plan.calories || 2000);
+      setDayTotals(totals);
+      setDaysLogged(Object.keys(totals).length);
+      setWeighIns(demoWeighIns(toKg(profile.startWeight || 0, (profile.weightUnit || "kg") as "kg" | "lbs")));
+      setLoaded(true);
+      return;
+    }
+
     if (!userId) { setLoaded(true); return; }
 
     const from = new Date();
@@ -218,7 +234,7 @@ export default function Stats() {
     setDaysLogged(count);
     setWeighIns(entries);
     setLoaded(true);
-  }, [userId]);
+  }, [userId, devMode, plan.calories, profile.startWeight, profile.weightUnit]);
 
   /* THE ONE THAT MAKES A WEIGH-IN APPEAR IMMEDIATELY. weighTick is bumped the
      moment the sheet reports a successful save, and this runs whether or not
@@ -238,6 +254,18 @@ export default function Stats() {
     let cancelled = false;
 
     (async () => {
+      /* ⚠️ DEV MODE — a year of steps from a phone that has been in someone's
+         pocket. Also forces `available` true, because the simulator and most
+         test devices report no health data at all and would otherwise show
+         the Connect prompt forever. */
+      if (devMode) {
+        setAvailable(true);
+        setActivity(demoActivity());
+        setBpm(demoHeartRate());
+        setHealthLoading(false);
+        return;
+      }
+
       const ok = await isHealthAvailable();
       if (cancelled) return;
       setAvailable(ok);
@@ -256,7 +284,7 @@ export default function Stats() {
     })();
 
     return () => { cancelled = true; };
-  }, [healthTick]);
+  }, [healthTick, devMode]);
 
   const connectHealth = async () => {
     H.tap();
