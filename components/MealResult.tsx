@@ -1,46 +1,47 @@
 // components/MealResult.tsx
-// What a meal photo produced, and how to improve it.
+// What a meal estimate produced, and how to improve it.
 //
 // THIS SCREEN'S WHOLE JOB IS HONEST UNCERTAINTY. A nutrition panel gives
-// printed numbers; a plate of food gives none. The model identified what it
-// could see and guessed at volumes it can't — the honest accuracy is around
-// ±25%, and nothing in this file changes that.
+// printed numbers; a plate of food gives none. The honest accuracy is around
+// ±25%, and nothing in this file changes that. So it says it's an estimate,
+// marks the shaky items, makes everything correctable, and lets the person
+// describe the dish out loud.
 //
-// So instead of hiding the estimate behind confident-looking numbers:
+// A DISH CAN HOLD ITS INGREDIENTS. Describe a stew and what went into it and
+// the stew stays ONE row — it's one thing you eat — but it carries its
+// ingredients, each with its own calories, and the row is worth what they add
+// up to. Counting the oil actually moves the day's total.
 //
-//   1. IT SAYS IT'S AN ESTIMATE, plainly, at the top.
-//   2. IT MARKS THE SHAKY ITEMS — a splash of oil genuinely is less knowable
-//      than a whole apple, and pointing at the uncertain ones tells the user
-//      where their attention is worth spending.
-//   3. EVERY ITEM IS CORRECTABLE. Tap it, change the amount, remove it.
-//   4. THEY CAN DESCRIBE THE DISH OUT LOUD. A photo shows the surface; it
-//      can't see the oil the rice was fried in. See mealFix.ts.
+// TAP EDITS, HOLD REVEALS. Tapping any row opens the amount sheet, dish or
+// not, so that gesture never changes meaning. HOLDING a dish opens what went
+// into it. The row SAYS "hold to see what's in it" — a hidden gesture is only
+// fair when it's advertised.
 //
-// SET ASIDE, NOT DELETED. When a description replaces the plate, the items
-// the photo guessed and the person didn't mention are NOT thrown away — they
-// drop into a section below, with their calories shown but NOT counted.
+// THE DISH ROW IS GOLD AND IT TRAVELS. Gold elsewhere means label-exact
+// manufacturer data, and this isn't that — Dion's call, made deliberately: the
+// barcode scanner and a home-cooked stew never share a screen, someone who
+// cooks their own curry isn't scanning packets, and a fifth colour costs more
+// in consistency than the overlap costs in meaning. The traveling border makes
+// it catch the eye, which is the point — it's the row with something behind
+// it.
 //
-// That's deliberate. The photo saw something. Maybe it was wrong, or maybe
-// they forgot to mention it — only they know. Deleting it silently would be
-// the app deciding; leaving it in the total would count food nobody ate.
-// Showing it, uncounted, next to a question is the only honest option.
+// SET ASIDE, NOT DELETED. When a description replaces the plate, what the
+// photo guessed and the person didn't mention drops below with its calories
+// shown but NOT counted. The photo saw something; maybe they forgot. Nothing
+// nags — log without touching it and it isn't logged.
 //
-// AND NOTHING NAGS. Log the meal without touching a set-aside item and it
-// simply isn't logged. Someone who ignored the question has answered it.
-//
-// A HAND CORRECTION OUTRANKS A SPOKEN ONE. Once someone has set an amount
-// themselves, voice never overwrites it and never sets it aside.
+// A HAND CORRECTION OUTRANKS A SPOKEN ONE.
 import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, EyeOff, Mic, Plus, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Easing, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import { colorFor } from "../constants/foodColors";
 import { Amount } from "../constants/foods";
 import * as H from "../constants/haptics";
 import { fixMealWithVoice } from "../constants/mealFix";
 import { MealItem, mealTotals } from "../constants/mealPhoto";
-import { saveMeal, setMealPhoto } from "../constants/meals";
+import { MealPart, partsTotal, saveMeal, setMealPhoto } from "../constants/meals";
 import { uploadMealPhoto } from "../constants/photos";
 import { FONTS } from "../constants/theme";
 import AmountSheet from "./AmountSheet";
@@ -50,11 +51,6 @@ import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 import VoiceCapture from "./VoiceCapture";
 
-/* how the model's own confidence reads to a person.
-
-   The wording matters. "Low confidence" sounds like a failure; "hard to judge"
-   is the truth and doesn't imply anyone did anything wrong. Some things are
-   genuinely unknowable from a photograph. */
 const SHAKY = {
   label: "HARD TO JUDGE",
   note: "Hidden volume — worth a look if you know better than the photo does.",
@@ -63,10 +59,9 @@ const SHAKY = {
 /* a row is an item plus the bookkeeping this screen needs.
 
    `manual`     — the user set this themselves. Voice never touches it.
-   `justChanged`— lit up by the last spoken description, so a correction that
-                  worked doesn't look like nothing happened.
-   `setAside`   — the photo saw it, the description didn't mention it. Shown
-                  but NOT counted, pending their answer.
+   `justChanged`— lit by the last spoken description.
+   `setAside`   — the photo saw it, the description didn't mention it.
+   `parts`      — the ingredients of a cooked dish.
    `uid`        — everything is keyed by this rather than by position, because
                   adding and setting aside shuffles the indexes underneath. */
 type Row = MealItem & {
@@ -74,10 +69,15 @@ type Row = MealItem & {
   manual?: boolean;
   justChanged?: boolean;
   setAside?: boolean;
+  parts?: MealPart[];
 };
 
 let nextUid = 1;
-const toRow = (item: MealItem, manual = false): Row => ({ ...item, uid: nextUid++, manual });
+const toRow = (item: MealItem & { parts?: MealPart[] }, manual = false): Row => ({
+  ...item,
+  uid: nextUid++,
+  manual,
+});
 
 export default function MealResult({
   meal, photoUri, items: initialItems, summary, onExit, onRetake,
@@ -93,11 +93,11 @@ export default function MealResult({
   const s = styles(T);
 
   const [items, setItems] = useState<Row[]>(() => initialItems.map((i) => toRow(i)));
-  /* keyed by uid, not position — see the note on Row */
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+  /* which dish's ingredients are on screen, by uid */
+  const [showing, setShowing] = useState<number | null>(null);
 
-  /* describing the dish out loud */
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [fixing, setFixing] = useState(false);
   const [fixNote, setFixNote] = useState<string | null>(null);
@@ -107,13 +107,13 @@ export default function MealResult({
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  /* WHAT COUNTS. Set-aside items are on screen but out of every number on it —
-     the total, the macros, and what gets logged. */
+  /* WHAT COUNTS. Set-aside items are on screen but out of every number on it. */
   const counted = items.filter((r) => !r.setAside);
   const aside = items.filter((r) => r.setAside);
   const totals = mealTotals(counted);
 
   const editingRow = editing != null ? items.find((r) => r.uid === editing) : null;
+  const showingRow = showing != null ? items.find((r) => r.uid === showing) : null;
 
   /* the count animating up, so the number arrives rather than appearing */
   const count = useRef(new Animated.Value(0)).current;
@@ -132,11 +132,7 @@ export default function MealResult({
     return () => count.removeListener(id);
   }, [totals.cal]);
 
-  /* ---------- correcting an item ----------
-     The ladder here is generic, because a photo estimate has no label to
-     anchor to — but it's still relative to what the model saw, which is
-     honest, rather than "a normal serving", which would be the abstract
-     phrasing the whole amount system exists to remove. */
+  /* ---------- correcting an item ---------- */
   const ladderFor = (item: Row): Amount[] => {
     const g = item.grams || 100;
     return [
@@ -151,9 +147,21 @@ export default function MealResult({
     setItems((list) =>
       list.map((it) => {
         if (it.uid !== uid) return it;
-        /* scale the macros with the weight — the per-gram figures were the
-           model's, and changing how much doesn't change what it is */
         const factor = grams / (it.grams || 1);
+
+        /* A DISH SCALES ITS INGREDIENTS TOO. Halving the bowl halves the oil in
+           it — otherwise the row says one thing and the breakdown another. */
+        const parts = it.parts
+          ? it.parts.map((p) => ({
+              ...p,
+              grams: p.grams != null ? Math.round(p.grams * factor) : undefined,
+              calories: Math.round(p.calories * factor),
+              protein: p.protein != null ? Math.round(p.protein * factor) : undefined,
+              carbs: p.carbs != null ? Math.round(p.carbs * factor) : undefined,
+              fat: p.fat != null ? Math.round(p.fat * factor) : undefined,
+            }))
+          : undefined;
+
         return {
           ...it,
           grams: Math.round(grams),
@@ -162,8 +170,7 @@ export default function MealResult({
           protein: Math.round(it.protein * factor),
           carbs: Math.round(it.carbs * factor),
           fat: Math.round(it.fat * factor),
-          /* a corrected item is no longer a guess, and no longer something a
-             spoken description is allowed to overwrite or set aside */
+          parts,
           sure: "high",
           manual: true,
           justChanged: false,
@@ -191,7 +198,6 @@ export default function MealResult({
           protein: f.p,
           carbs: f.c,
           fat: f.f,
-          /* the user chose this one themselves — nothing estimated about it */
           sure: "high",
         },
         true
@@ -199,30 +205,25 @@ export default function MealResult({
     ]);
   };
 
-  /* ---------- the set-aside answers ---------- */
+  const holdDish = (uid: number) => {
+    H.tap();
+    setShowing(uid);
+  };
 
-  /* "it WAS there" — back into the total, and marked as theirs so a later
-     description can't set it aside again */
+  /* ---------- the set-aside answers ---------- */
   const restoreAside = (uid: number) => {
     H.success();
     setItems((list) =>
-      list.map((r) =>
-        r.uid === uid ? { ...r, setAside: false, manual: true, justChanged: true } : r
-      )
+      list.map((r) => (r.uid === uid ? { ...r, setAside: false, manual: true, justChanged: true } : r))
     );
   };
 
-  /* "it wasn't" — gone for good. It was never in the total, so nothing
-     changes numerically; this just clears it off the screen. */
   const dropAside = (uid: number) => {
     H.tick();
     setItems((list) => list.filter((r) => r.uid !== uid));
   };
 
-  /* ---------- what they said about the dish ----------
-     mealFix returns CHANGES against the COUNTED items, so the indexes it
-     answers with line up with what's actually on the plate. Set-aside rows
-     are invisible to it — they've already been ruled out once. */
+  /* ---------- what they said about the dish ---------- */
   const onTranscript = async (text: string) => {
     setVoiceOpen(false);
     setFixNote(null);
@@ -243,7 +244,7 @@ export default function MealResult({
 
     /* the model answered in positions; translate to uids before touching
        anything, because the list is about to change shape */
-    const editByUid = new Map<number, MealItem>();
+    const editByUid = new Map<number, MealItem & { parts?: MealPart[] }>();
     fix.edits.forEach(({ index, item }) => {
       const row = active[index];
       if (row) editByUid.set(row.uid, item);
@@ -256,34 +257,33 @@ export default function MealResult({
     });
 
     let skipped = 0;
-    let setAsideCount = 0;
+    let gainedParts = 0;
 
     setItems((list) => {
       const next: Row[] = list.map((r) => {
-        /* clear the previous round's badges, so what lights up is only what
-           just changed */
         const base: Row = { ...r, justChanged: false };
 
         if (base.setAside) return base;
 
-        /* HAND CORRECTIONS WIN — see the note at the top of this file */
+        /* HAND CORRECTIONS WIN */
         if (base.manual) {
           if (editByUid.has(base.uid) || asideUids.has(base.uid)) skipped++;
           return base;
         }
 
         const edit = editByUid.get(base.uid);
-        if (edit) return { ...base, ...edit, justChanged: true };
-
-        if (asideUids.has(base.uid)) {
-          setAsideCount++;
-          return { ...base, setAside: true, justChanged: false };
+        if (edit) {
+          if (edit.parts?.length) gainedParts++;
+          return { ...base, ...edit, justChanged: true };
         }
+
+        if (asideUids.has(base.uid)) return { ...base, setAside: true, justChanged: false };
 
         return base;
       });
 
       fix.adds.forEach((item) => {
+        if (item.parts?.length) gainedParts++;
         next.push({ ...toRow(item), justChanged: true });
       });
 
@@ -292,14 +292,21 @@ export default function MealResult({
 
     H.success();
 
-    const parts: string[] = [];
-    if (fix.note) parts.push(fix.note);
-    if (setAsideCount > 0 && !fix.note) {
-      parts.push("Updated to what you described.");
+    const bits: string[] = [];
+    if (fix.note) bits.push(fix.note);
+    /* SAY THE BREAKDOWN EXISTS. Nobody discovers a hold on their own, and a
+       dish quietly gaining ingredients nobody opens is the same as not having
+       them. */
+    if (gainedParts > 0) {
+      bits.push(
+        gainedParts === 1
+          ? "Hold the gold row to see what went into it."
+          : "Hold a gold row to see what went into it."
+      );
     }
-    if (skipped > 0) parts.push("Your own corrections were left as they are.");
+    if (skipped > 0) bits.push("Your own corrections were left as they are.");
 
-    setFixNote(parts.length ? parts.join(" ") : "Updated.");
+    setFixNote(bits.length ? bits.join(" ") : "Updated.");
   };
 
   /* ---------- the write ---------- */
@@ -313,8 +320,7 @@ export default function MealResult({
     const { mealId, error } = await saveMeal(userId, {
       mealType: meal.toLowerCase() as any,
       source: "photo",
-      /* SET-ASIDE ITEMS DON'T GO. They were never counted, and ignoring the
-         question is a valid way of answering it. */
+      /* SET-ASIDE ITEMS DON'T GO. Ignoring the question is a valid answer. */
       items: counted.map((i) => ({
         foodName: i.name,
         amountLabel: i.amountLabel,
@@ -323,19 +329,15 @@ export default function MealResult({
         protein: i.protein,
         carbs: i.carbs,
         fat: i.fat,
-        /* an item the user corrected — by hand OR by describing it — is no
-           longer the AI's guess. Worth keeping apart, so we can later measure
-           how often the estimate needed fixing and by how much. */
         source: i.manual || i.justChanged || i.sure === "high" ? "user" : "ai",
+        /* the ingredients ride along, so the calendar can show them later */
+        parts: i.parts,
       })),
     });
 
     setSaving(false);
 
     if (error || !mealId) {
-      /* stay on the plate. Bouncing to the success screen after a failed save
-         would tell them it worked when it didn't, and they'd lose every
-         correction they just made. */
       setSaveErr(error || "Couldn't save that meal.");
       H.warn();
       return;
@@ -343,22 +345,15 @@ export default function MealResult({
 
     /* THE MEAL IS ALREADY SAVED. The photo goes up afterwards and is NOT
        awaited — a slow or failed upload must not cost the user their meal.
-       Worst case they get a recap card with no picture, which is a far
-       smaller loss than a save that appeared to fail.
-
        The upload needs the meal's id for its filename, which is why it can't
-       happen any earlier. Forgetting this call entirely is exactly what left
-       photo-logged meals showing up on the calendar with no image at all,
-       while barcode meals looked fine — the bug was invisible until someone
-       went back and looked at a previous day. */
+       happen earlier. Forgetting this call is what once left photo-logged
+       meals on the calendar with no image at all. */
     if (photoUri) {
       uploadMealPhoto(userId, mealId, photoUri)
         .then(({ path }) => { if (path) setMealPhoto(mealId, path); })
         .catch(() => {});
     }
 
-    /* today's first meal may have just extended the streak — recompute so the
-       flame and tier are right by the time they're back on Home */
     refreshStreak();
     H.success();
     setDone(true);
@@ -393,6 +388,77 @@ export default function MealResult({
 
   const anyShaky = counted.some((i) => i.sure === "low");
 
+  /* one item row — a plain food, or a dish wearing the traveling gold border */
+  const ItemRow = ({ item }: { item: Row }) => {
+    const shaky = item.sure === "low";
+    const col = colorFor(guessColorKey(item.name));
+    const hasParts = !!item.parts?.length;
+
+    const inner = (
+      <View style={[s.item, !hasParts && s.itemPlain, shaky && !hasParts && s.itemShaky, item.justChanged && !hasParts && s.itemChanged]}>
+        <LinearGradient
+          colors={hasParts ? [T.gold, "#B45309"] : [col.from, col.to]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={s.itemStripe}
+        />
+
+        <View style={{ flex: 1, minWidth: 0, paddingLeft: 12 }}>
+          {hasParts ? (
+            <View style={s.dishTag}>
+              <Text style={s.dishTagText}>
+                {item.parts!.length} INGREDIENTS · HOLD TO SEE
+              </Text>
+            </View>
+          ) : item.justChanged ? (
+            <View style={s.changedTag}>
+              <Mic size={9} color={T.green} />
+              <Text style={s.changedTagText}>FROM WHAT YOU SAID</Text>
+            </View>
+          ) : shaky ? (
+            <View style={s.shakyTag}>
+              <AlertTriangle size={9} color={T.gold} />
+              <Text style={s.shakyTagText}>{SHAKY.label}</Text>
+            </View>
+          ) : null}
+
+          <Text style={s.itemName} numberOfLines={2}>{item.name}</Text>
+          <Text style={s.itemAmount}>
+            {item.amountLabel} · about {item.grams} g
+          </Text>
+
+          {shaky && !item.justChanged && !hasParts ? (
+            <Text style={s.shakyNote}>{SHAKY.note}</Text>
+          ) : null}
+        </View>
+
+        <View style={{ alignItems: "flex-end" }}>
+          <Text style={[s.itemCal, hasParts && { color: T.gold }]}>{item.calories}</Text>
+          <Text style={s.itemCalUnit}>cal</Text>
+        </View>
+
+        <ChevronRight size={17} color={hasParts ? T.gold : T.micro} style={{ marginLeft: 8 }} />
+      </View>
+    );
+
+    return (
+      <Tap
+        onPress={() => { H.tap(); setEditing(item.uid); }}
+        onLongPress={hasParts ? () => holdDish(item.uid) : undefined}
+      >
+        {hasParts ? (
+          /* the traveling gold light — the app's own shine, so the dish row
+             catches the eye without inventing a new effect for it */
+          <TravelBorder color={T.gold} cardBg={T.card} borderColor={`${T.gold}44`} radius={15}>
+            {inner}
+          </TravelBorder>
+        ) : (
+          inner
+        )}
+      </Tap>
+    );
+  };
+
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56, paddingBottom: 30 }}>
@@ -404,9 +470,6 @@ export default function MealResult({
           <View style={{ width: 22 }} />
         </View>
 
-        {/* AN ESTIMATE, said plainly and at the top. The barcode path earns
-            "EXACT · FROM THE LABEL"; this one hasn't, and pretending otherwise
-            would be the single most damaging thing this screen could do. */}
         <View style={s.estimateRow}>
           <Sparkles size={14} color={T.green} />
           <Text style={s.estimateText}>MOTION'S ESTIMATE</Text>
@@ -414,7 +477,6 @@ export default function MealResult({
 
         <Text style={s.summary}>{summary || "Your meal"}</Text>
 
-        {/* the photo, small — enough to confirm we read the right plate */}
         {photoUri ? (
           <View style={s.photoWrap}>
             <Image source={{ uri: photoUri }} style={s.photo} resizeMode="cover" />
@@ -443,10 +505,8 @@ export default function MealResult({
           </TravelBorder>
         </View>
 
-        {/* TELL IT ABOUT THE DISH. Sits directly under the number it improves,
-            because describing the meal is the single most useful thing someone
-            can do here — a photo can't see oil, butter, stock, or what a dish
-            actually is. */}
+        {/* TELL IT ABOUT THE DISH — the single most useful thing someone can do
+            here, and naming what went into a stew is the most useful version */}
         <Tap
           onPress={() => { if (!fixing) { H.tap(); setVoiceOpen(true); } }}
           style={{ marginTop: 14 }}
@@ -466,14 +526,13 @@ export default function MealResult({
               <Text style={s.voiceSub}>
                 {fixing
                   ? "Working out what to change"
-                  : "What it is, how it was cooked — or what MOTION got wrong"}
+                  : "What it is, how it was cooked, what went into it"}
               </Text>
             </View>
             <ChevronRight size={17} color={T.micro} />
           </View>
         </Tap>
 
-        {/* what the description did, or why it didn't */}
         {fixNote ? (
           <View style={s.fixNoteRow}>
             <Check size={14} color={T.green} />
@@ -492,8 +551,6 @@ export default function MealResult({
           </View>
         ) : null}
 
-        {/* WHY THE ITEMS ARE SEPARATE, said once. A user who understands this
-            will correct the one wrong item instead of retaking the photo. */}
         <View style={s.explainRow}>
           <CircleHelp size={13} color={T.micro} />
           <Text style={s.explainText}>
@@ -506,64 +563,12 @@ export default function MealResult({
         </Text>
 
         <View style={{ gap: 9 }}>
-          {counted.map((item) => {
-            const shaky = item.sure === "low";
-            const col = colorFor(guessColorKey(item.name));
-
-            return (
-              <Tap key={item.uid} onPress={() => { H.tap(); setEditing(item.uid); }}>
-                <View style={[s.item, shaky && s.itemShaky, item.justChanged && s.itemChanged]}>
-                  {/* a thin colour bar, so the list reads as food rather than
-                      a spreadsheet */}
-                  <LinearGradient
-                    colors={[col.from, col.to]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 0, y: 1 }}
-                    style={s.itemStripe}
-                  />
-
-                  <View style={{ flex: 1, minWidth: 0, paddingLeft: 12 }}>
-                    {/* WHAT THE DESCRIPTION JUST DID. Without this, a
-                        correction that worked perfectly looks like nothing
-                        happened. Lucide here rather than the animation — at
-                        9px a Lottie is unreadable and costs frames for
-                        nothing. */}
-                    {item.justChanged ? (
-                      <View style={s.changedTag}>
-                        <Mic size={9} color={T.green} />
-                        <Text style={s.changedTagText}>FROM WHAT YOU SAID</Text>
-                      </View>
-                    ) : shaky ? (
-                      <View style={s.shakyTag}>
-                        <AlertTriangle size={9} color={T.gold} />
-                        <Text style={s.shakyTagText}>{SHAKY.label}</Text>
-                      </View>
-                    ) : null}
-
-                    <Text style={s.itemName} numberOfLines={2}>{item.name}</Text>
-                    <Text style={s.itemAmount}>
-                      {item.amountLabel} · about {item.grams} g
-                    </Text>
-
-                    {shaky && !item.justChanged ? <Text style={s.shakyNote}>{SHAKY.note}</Text> : null}
-                  </View>
-
-                  <View style={{ alignItems: "flex-end" }}>
-                    <Text style={s.itemCal}>{item.calories}</Text>
-                    <Text style={s.itemCalUnit}>cal</Text>
-                  </View>
-
-                  <ChevronRight size={17} color={T.micro} style={{ marginLeft: 8 }} />
-                </View>
-              </Tap>
-            );
-          })}
+          {counted.map((item) => (
+            <ItemRow key={item.uid} item={item} />
+          ))}
         </View>
 
-        {/* ---------- WHAT THE PHOTO SAW AND YOU DIDN'T MENTION ----------
-            Not counted, not deleted. The photo saw something; maybe it was
-            wrong, maybe they forgot. Only they know, so it sits here with its
-            calories visible and excluded until they say. */}
+        {/* ---------- WHAT THE PHOTO SAW AND YOU DIDN'T MENTION ---------- */}
         {aside.length > 0 && (
           <View style={s.asideWrap}>
             <View style={s.asideHead}>
@@ -617,8 +622,6 @@ export default function MealResult({
           </View>
         )}
 
-        {/* MISSING SOMETHING. The model lists what it can see, and a photo
-            taken from above misses the glass of juice beside the plate. */}
         <Tap onPress={() => { H.tap(); setAdding(true); }} style={{ marginTop: 12 }}>
           <View style={s.addRow}>
             <Plus size={16} color={T.green} />
@@ -657,7 +660,63 @@ export default function MealResult({
         </Tap>
       </ScrollView>
 
-      {/* correcting one item */}
+      {/* ---------- WHAT WENT INTO IT ----------
+          Rises up like the camera sheet, because that's this app's language for
+          "something has come forward". Read-only: these came from what the
+          person said, and the way to change them is to say it again rather
+          than tap through a ladder for every spoon of oil. */}
+      <Modal visible={!!showingRow} transparent animationType="slide" onRequestClose={() => setShowing(null)}>
+        <View style={{ flex: 1 }}>
+          <Pressable style={s.partsBackdrop} onPress={() => setShowing(null)} />
+
+          <View style={s.partsCentre} pointerEvents="box-none">
+            {showingRow && (
+              <TravelBorder color={T.gold} cardBg={T.bg} borderColor={`${T.gold}55`} radius={24} strokeWidth={2.5}>
+                <View style={{ padding: 20 }}>
+                  <View style={s.partsHead}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.partsLabel}>WHAT WENT INTO IT</Text>
+                      <Text style={s.partsTitle}>{showingRow.name}</Text>
+                      <Text style={s.partsSub}>{showingRow.amountLabel}</Text>
+                    </View>
+                    <Pressable onPress={() => setShowing(null)} hitSlop={12} style={s.partsClose}>
+                      <X size={17} color={T.sub} />
+                    </Pressable>
+                  </View>
+
+                  <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
+                    {showingRow.parts!.map((p, n) => (
+                      <View key={`${showingRow.uid}-${n}`} style={s.partRow}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={s.partName} numberOfLines={1}>{p.name}</Text>
+                          {p.amountLabel ? (
+                            <Text style={s.partAmount} numberOfLines={1}>{p.amountLabel}</Text>
+                          ) : null}
+                        </View>
+                        <Text style={s.partCal}>{p.calories} cal</Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+
+                  <View style={s.partsTotalRow}>
+                    <Text style={s.partsTotalLabel}>These add up to</Text>
+                    <Text style={s.partsTotalCal}>
+                      {Math.round(partsTotal(showingRow.parts).calories)} cal
+                    </Text>
+                  </View>
+
+                  <Text style={s.partsNote}>
+                    Scaled to the portion you ate, not the whole pot. To change any of it, describe
+                    the dish again — or tap the row to adjust how much you had, and everything here
+                    moves with it.
+                  </Text>
+                </View>
+              </TravelBorder>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {editingRow && (
         <AmountSheet
           visible
@@ -683,7 +742,6 @@ export default function MealResult({
         />
       )}
 
-      {/* adding what the photo missed */}
       <FoodPicker
         visible={adding}
         title="Add to this meal"
@@ -691,8 +749,6 @@ export default function MealResult({
         onPick={addPicked}
       />
 
-      {/* the same listening screen as Describe a meal — same on-device
-          transcription, same transcript toggle, same wording about mishearing */}
       <VoiceCapture
         visible={voiceOpen}
         meal={meal}
@@ -782,10 +838,13 @@ const styles = (T: any) =>
 
     item: {
       flexDirection: "row", alignItems: "center",
-      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      backgroundColor: T.card,
       borderRadius: 15, paddingVertical: 13, paddingRight: 15,
       overflow: "hidden",
     },
+    /* the border lives on TravelBorder for a dish, so only plain rows draw
+       their own */
+    itemPlain: { borderWidth: 1, borderColor: T.border },
     itemShaky: { borderColor: `${T.gold}44` },
     itemChanged: { borderColor: T.greenBorder, backgroundColor: T.greenBg },
     itemStripe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 4 },
@@ -796,12 +855,36 @@ const styles = (T: any) =>
     changedTag: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 4 },
     changedTagText: { fontSize: 8, letterSpacing: 0.8, color: T.green, fontFamily: FONTS.headingMed },
 
+    dishTag: { marginBottom: 4 },
+    dishTagText: { fontSize: 8, letterSpacing: 0.8, color: T.gold, fontFamily: FONTS.headingMed },
+
     itemName: { fontSize: 15, color: T.text, fontFamily: FONTS.headingMed },
     itemAmount: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 3 },
     shakyNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, marginTop: 5, lineHeight: 15 },
 
     itemCal: { fontSize: 17, color: T.text, fontFamily: FONTS.heading },
     itemCalUnit: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
+
+    /* the ingredients sheet */
+    partsBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.7)" },
+    partsCentre: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
+    partsHead: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 14 },
+    partsLabel: { fontSize: 9.5, letterSpacing: 1.2, color: T.gold, fontFamily: FONTS.body },
+    partsTitle: { fontSize: 19, color: T.text, fontFamily: FONTS.heading, marginTop: 4 },
+    partsSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2 },
+    partsClose: { width: 32, height: 32, alignItems: "center", justifyContent: "center", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 10 },
+    partRow: {
+      flexDirection: "row", alignItems: "center", gap: 10,
+      paddingVertical: 10,
+      borderBottomWidth: 1, borderBottomColor: T.border,
+    },
+    partName: { fontSize: 13.5, color: T.text, fontFamily: FONTS.body },
+    partAmount: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
+    partCal: { fontSize: 13.5, color: T.gold, fontFamily: FONTS.headingMed },
+    partsTotalRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", marginTop: 14 },
+    partsTotalLabel: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
+    partsTotalCal: { fontSize: 20, color: T.gold, fontFamily: FONTS.heading },
+    partsNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 15.5, marginTop: 12 },
 
     /* set aside — visible, uncounted, undecided */
     asideWrap: { marginTop: 18 },

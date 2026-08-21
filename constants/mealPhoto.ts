@@ -14,12 +14,8 @@
 // times used to come back 60, 85, then 140 — not because the model couldn't
 // tell what the vegetables were, but because nothing told it HOW to judge
 // size. It was guessing portions in the abstract, and an abstract guess lands
-// somewhere different every time.
-//
-// So the size section below is the heart of this file: find something in the
-// frame whose real size is known, work out the vessel's capacity from it,
-// judge how full it is, and convert. A quarter-full takeaway container is
-// something to reason toward. "Some roasted vegetables" is not.
+// somewhere different every time. With the sizing section below, six photos
+// from six angles landed five of them inside a five-calorie band.
 //
 // That matters more than accuracy. A steady error cancels out over weeks of
 // logging; a jumpy one never settles, and a user watching the same meal
@@ -108,24 +104,40 @@ Return ONLY a JSON object. No markdown, no code fences, no explanation.
 
 HOW TO SPLIT THE PLATE:
 
-1. List each distinct food SEPARATELY. A plate of chicken, rice and broccoli
-   is three items, not one. This matters: when an estimate is wrong the person
-   can correct the single item that's off, instead of rejecting the whole
-   thing.
+1. List each distinct food SEPARATELY, and prefer splitting. When an estimate
+   is wrong the person can correct the single item that's off, instead of
+   rejecting the whole thing — and separate foods can each be weighed and
+   counted properly instead of averaged into one lump.
 
-2. But don't split what's eaten as one thing. A sandwich is a sandwich, not
-   bread plus filling plus butter. A curry is a curry. Use judgement: if
-   someone would name it as one food, keep it as one.
+2. THE TEST IS WHETHER YOU COULD POINT AT THEM. If you can see the broccoli
+   and the carrots as distinct things in the photograph, they are two items,
+   even though they were roasted on the same tray and are served together.
+   Cooked TOGETHER is not the same as cooked INTO one another.
 
-3. Five items at most. Beyond that the list stops being correctable and starts
-   being a chore.
+3. A tray of mixed roasted vegetables is NOT one item. Broccoli, cauliflower,
+   carrots and mushrooms are four items. They have different weights for their
+   size and different calories, so bundling them makes the numbers worse as
+   well as making them uncorrectable. Do not write "mixed roasted vegetables"
+   when you can see which vegetables they are. The same goes for a mixed
+   salad, a fruit bowl, a stir-fry with visible pieces, a fry-up, a mezze
+   plate, a bowl of jollof rice with visible chicken and plantain beside it.
+
+4. Only keep something as ONE item when it genuinely cannot be separated on
+   the plate: a sandwich is a sandwich, not bread plus filling. A curry is a
+   curry — you can't lift the sauce out. A smoothie, a soup, a stew, a
+   casserole where everything has merged. If someone would have to unmake the
+   dish to separate the parts, keep it whole.
+
+5. Five items at most. If a plate genuinely has more, list the five biggest
+   contributors and leave the trivial ones out — a garnish of parsley is not
+   worth a row.
 
 HOW BIG IS IT — WORK THIS OUT BEFORE ANYTHING ELSE:
 
-4. Never guess a portion in the abstract. Measure it against something in the
+6. Never guess a portion in the abstract. Measure it against something in the
    photograph whose real size you know. Do it in this order, every time.
 
-5. FIND THE SCALE. Look for anything with a standard size and use it to judge
+7. FIND THE SCALE. Look for anything with a standard size and use it to judge
    how big everything else is:
      - a dinner plate is about 26-28 cm across
      - a side plate is about 20 cm
@@ -138,90 +150,97 @@ HOW BIG IS IT — WORK THIS OUT BEFORE ANYTHING ELSE:
    If a hand is holding the container, use the hand — it is the most reliable
    scale in the picture.
 
-6. IDENTIFY THE VESSEL AND ITS CAPACITY. A shallow takeaway container holds
+8. IDENTIFY THE VESSEL AND ITS CAPACITY. A shallow takeaway container holds
    roughly 500-750 ml. A dinner plate holds about 600-900 ml heaped. A cereal
    bowl is about 400-500 ml, a large mixing or salad bowl 1.5-3 litres. This
    is the step that matters most: the SAME food filling a takeaway container
    and filling a large bowl differ by five times or more, and a photo taken
    from above makes them look identical.
 
-7. JUDGE HOW FULL IT IS, as a fraction. A quarter full, half full, level with
+9. JUDGE HOW FULL IT IS, as a fraction. A quarter full, half full, level with
    the rim, heaped above it. Say this to yourself before estimating weight.
 
-8. ESTIMATE DEPTH HONESTLY. A photo from directly above hides height. Unless
-   the food is visibly piled up, assume a modest depth — food spread across a
-   container is usually 2-4 cm deep, not filled to the top.
+10. ESTIMATE DEPTH HONESTLY. A photo from directly above hides height. Unless
+    the food is visibly piled up, assume a modest depth — food spread across a
+    container is usually 2-4 cm deep, not filled to the top.
 
-9. CONVERT VOLUME TO WEIGHT using roughly how heavy the food is for its size:
+11. THEN SPLIT THAT TOTAL BETWEEN THE ITEMS. Work out the whole amount of food
+    first, then divide it across the separate items by how much of the surface
+    each one covers. The parts must add up to the whole: four vegetables in a
+    quarter-full container might be 40 g each, not 150 g each.
+
+12. CONVERT VOLUME TO WEIGHT using roughly how heavy the food is for its size:
      - leaves, salad, popcorn: about 0.3 g per ml
      - chopped or roasted vegetables: about 0.6 g per ml
      - cooked rice, pasta, grains: about 0.8 g per ml
      - stews, curries, soups: about 1.0 g per ml
      - meat, fish, dense foods: about 1.05 g per ml
 
-10. SANITY-CHECK AGAINST REAL PORTIONS. A restaurant chicken breast is
+13. SANITY-CHECK AGAINST REAL PORTIONS. A restaurant chicken breast is
     150-200 g. A home portion of cooked rice is 150-250 g. A slice of bread is
     40-50 g. A portion of vegetables as a side is 80-150 g. If your number
     lands far outside the normal range for that food, you have probably
-    misjudged the vessel — go back to step 5.
+    misjudged the vessel — go back to step 7.
 
-11. IF THERE IS NOTHING TO SCALE AGAINST — no hand, no cutlery, no plate rim,
+14. IF THERE IS NOTHING TO SCALE AGAINST — no hand, no cutlery, no plate rim,
     just food filling the frame — assume an ordinary single portion rather
     than an extreme one, and set "sure" to "low" for those items. Do not
     invent a large portion from a close-up.
 
-12. BE CONSISTENT. Two photos of the same meal should produce close to the
+15. BE CONSISTENT. Two photos of the same meal should produce close to the
     same answer. When you're torn between two estimates, take the middle one
     rather than the more dramatic one.
 
 HOW TO DESCRIBE AMOUNTS:
 
-13. "amountLabel" must be something a person can PICTURE, anchored to a hand
+16. "amountLabel" must be something a person can PICTURE, anchored to a hand
     or a common object. Good: "a palm-sized piece", "a cup", "half a cup",
     "a small handful", "two slices", "a tablespoon", "a medium apple".
     Bad: "a serving", "a portion", "some", "a normal amount" — those are
     abstract words that give no guidance at all.
 
-14. Where a container is visible, the label may refer to it: "about a quarter
+17. Where a container is visible, the label may refer to it: "about a quarter
     of the container", "half the bowl". That's the most honest description of
     what you actually judged.
 
 HOW TO NUMBER IT:
 
-15. ROUND EVERYTHING. Calories to the nearest 10 for anything over 100,
+18. ROUND EVERYTHING. Calories to the nearest 10 for anything over 100,
     nearest 5 below that. Macros to the nearest gram. Reporting "412 calories"
     implies a measurement nobody took — say 410.
 
-16. Calories must be consistent with the macros: protein and carbs are about
+19. Calories must be consistent with the macros: protein and carbs are about
     4 calories a gram, fat about 9. If they don't roughly add up, fix them.
 
 BEING HONEST ABOUT WHAT YOU CAN'T SEE:
 
-17. "sure" is per item, and it should genuinely vary. HIGH for something
+20. "sure" is per item, and it should genuinely vary. HIGH for something
     clearly visible whose size is easy to judge — a whole apple, two visible
     eggs, a countable number of slices. MEDIUM for a normal plated portion
     where you had a scale reference. LOW for anything where you're guessing at
     hidden volume: how much oil the vegetables were cooked in, how much rice
     is under the sauce, how much dressing is on the salad, or any item where
-    step 11 applied.
+    step 14 applied.
 
-18. Do NOT invent items you cannot see. If the chicken looks like it was
+21. Do NOT invent items you cannot see. If the chicken looks like it was
     fried, say so in its name — but don't add a separate "cooking oil" entry
     you have no way to measure.
 
-19. If the photo isn't food, is too dark or blurry to judge, or shows a packet
+22. If the photo isn't food, is too dark or blurry to judge, or shows a packet
     rather than a meal, set "confident" to false, leave "items" empty, and put
     ONE short sentence in "problem" addressed to the person — for example
     "That looks like a packaged product — the barcode scanner will be more
     accurate" or "Too dark to make out what's on the plate".
 
-20. "summary" is a few plain words for the whole plate — "Chicken with rice
-    and broccoli". Not a sentence, not a description of the photograph.
+23. "summary" is a few plain words for the whole plate — "Chicken with rice
+    and broccoli". THIS is where the collective name belongs: the summary may
+    say "Roasted mixed vegetables" even though the items list them
+    separately.
 
 You are ESTIMATING, and the person will be told that. A sensible estimate they
 can correct is far more useful than a precise-looking number that's wrong —
-so measure against what you can see, round honestly, mark your uncertainty,
-and never pretend to know a volume you cannot see.`;
+so measure against what you can see, split what can be split, round honestly,
+mark your uncertainty, and never pretend to know a volume you cannot see.`;
 
 /** Estimate a meal from a photo.
 

@@ -1,42 +1,47 @@
 // constants/mealFix.ts
-// Talking to a photo estimate — describing the whole dish, or fixing one item.
+// Talking to a meal estimate — describing the whole dish, fixing one item, or
+// saying what went into something you cooked.
 //
 // THE PERSON WHO ATE IT KNOWS THINGS THE PHOTO CAN'T SHOW. A camera sees the
 // surface: it can't tell mashed spinach from scrambled egg, can't see what the
-// rice was fried in, can't know it was cooked with butter. Whoever made it can
-// say all of that in a sentence, and it moves the numbers more than correcting
-// a single item ever would.
+// rice was fried in, can't know there's butter under the toast.
 //
-// TWO DIFFERENT THINGS CAN BE SAID, and telling them apart is the whole job:
+// THREE THINGS CAN BE SAID:
 //
 //   A FULL DESCRIPTION — "this is broccoli, cauliflower and carrots, all
-//   roasted." They have just told you what the dish IS. Their list BECOMES the
-//   plate: anything the photo guessed that they didn't name is removed.
+//   roasted." Their list BECOMES the plate; anything they didn't name goes.
 //
-//   A SINGLE CORRECTION — "the green one is spinach, not eggs." They pointed
-//   at one item. Everything else stays exactly as it was.
+//   A SINGLE CORRECTION — "the green one is spinach, not eggs." One item.
 //
-// GETTING THIS WRONG IS WORSE THAN NO FEATURE AT ALL. It used to treat every
-// description as a correction, so a full description ADDED to the photo's
-// guess instead of replacing it: a plate the model read as plantain and beans,
-// described by the cook as beef, spinach, beans and olive oil, ended up
-// carrying the plantain AND all four — double-counted calories, and a plate
-// containing food nobody ate. Found on a real meal, and it's the reason the
-// replace/correct split exists.
+//   A RECIPE — "curry stew, I made it with tomatoes, onions and oil." The stew
+//   is ONE thing on the plate made of things that each carry calories. It
+//   comes back as one item carrying its INGREDIENTS, and the item is worth
+//   what they add up to.
 //
-// WHAT WAS REMOVED IS ALWAYS SAID OUT LOUD. When a description replaces the
-// plate, the note names what went — "plantain removed, you didn't mention it".
-// That hands the judgement back: maybe there WAS plantain and they forgot, and
-// they can add it back. Silently deleting three items would be the app
-// deciding for them.
+// THE RECIPE CASE IS WHERE THE REAL ACCURACY LIVES. Cooking oil is invisible
+// in a photograph and enormous in calories — a dish estimated at 300 might
+// genuinely be 550 once the oil is counted.
 //
-// WHEN IT CAN'T TELL, IT DOES NOTHING. A sentence that could mean two items
-// comes back as understood:false and the plate is untouched. A silent wrong
-// change to a plate someone already checked is worse than being asked again.
+// ⚠️ THE FAILURE THIS PROMPT IS BUILT AROUND: told "white rice and Nigerian
+// tomato stew, I made the stew with tomatoes, onions and oil", the model
+// returned ONE item called "Tomato and onion curry stew with oil" and no
+// ingredients at all. It heard every ingredient and spent them on a longer
+// NAME. Three separate tests, same result — so the rules below say
+// explicitly that ingredient words may not appear in a dish's name, and that
+// naming a cooked dish plus its contents ALWAYS produces parts. A name is not
+// a breakdown: it counts nothing.
 //
-// Reuses the same speech path as mealVoice.ts: the phone transcribes
-// on-device for free, and only the text is sent.
+// AND THEY DESCRIBED THE POT, NOT THE PLATE. Someone lists what went into a
+// pot that fed four, then eats a bowl. Ingredients are scaled to the portion.
+//
+// GETTING THE REPLACE/CORRECT SPLIT WRONG IS WORSE THAN NO FEATURE AT ALL. It
+// used to treat every description as a correction, so a description ADDED to
+// the photo's guess — a plate read as plantain and beans, described as beef,
+// spinach, beans and olive oil, kept the plantain AND added all four.
+//
+// WHEN IT CAN'T TELL, IT DOES NOTHING.
 import { MealItem } from "./mealPhoto";
+import { MealPart } from "./meals";
 
 const GEMINI_KEY = process.env.EXPO_PUBLIC_GEMINI_KEY;
 
@@ -49,20 +54,17 @@ const endpointFor = (model: string) =>
 
 const ATTEMPTS = 2;
 
+/** an item as this file returns it — the photo reader's shape, plus the
+    ingredients a spoken recipe can attach to it */
+export type FixItem = MealItem & { parts?: MealPart[] };
+
 export type MealFix = {
-  /** replace the item at this index with this one */
-  edits: { index: number; item: MealItem }[];
-  /** drop these indexes */
+  edits: { index: number; item: FixItem }[];
   removes: number[];
-  /** append these */
-  adds: MealItem[];
-  /** false means the plate must be left exactly as it was */
+  adds: FixItem[];
   understood: boolean;
-  /** true when they described the whole dish rather than fixing one item */
   fullDescription: boolean;
-  /** one short line describing what changed, shown to the user */
   note: string | null;
-  /** why nothing happened, when understood is false */
   problem: string | null;
 };
 
@@ -87,37 +89,67 @@ Return ONLY a JSON object. No markdown, no code fences, no explanation.
       "protein": number,
       "carbs": number,
       "fat": number,
-      "sure": "high" | "medium" | "low"
+      "sure": "high" | "medium" | "low",
+      "parts": [
+        {
+          "name": string,
+          "amountLabel": string,
+          "grams": number,
+          "calories": number,
+          "protein": number,
+          "carbs": number,
+          "fat": number
+        }
+      ]
     }
   ],
   "removes": [number],
-  "adds": [
-    {
-      "name": string,
-      "amountLabel": string,
-      "grams": number,
-      "calories": number,
-      "protein": number,
-      "carbs": number,
-      "fat": number,
-      "sure": "high" | "medium" | "low"
-    }
-  ]
+  "adds": [ same shape as an edit, without "index" ]
 }
 
-FIRST, DECIDE WHICH OF TWO THINGS THEY DID. This decision changes everything
-else, so make it before anything else.
+═══ THE MOST IMPORTANT RULE IN THIS PROMPT ═══
 
-A) A FULL DESCRIPTION — they told you what the dish IS, or listed what's in it.
-   "This is broccoli, cauliflower and carrots, all roasted."
-   "It's jollof rice with chicken, fried in groundnut oil."
-   "There's beef, spinach, beans and olive oil in it."
+IF THEY TELL YOU WHAT WENT INTO A COOKED DISH, THOSE THINGS GO IN "parts".
+NEVER INTO THE NAME.
+
+Given "white rice and Nigerian tomato stew — I made the stew with tomatoes,
+onions, pepper and oil":
+
+  WRONG — this loses everything and counts nothing:
+    { "name": "Tomato and onion stew with oil", "calories": 310 }
+
+  WRONG — the ingredients are not separate foods on the plate:
+    { "name": "Tomatoes" }, { "name": "Onions" }, { "name": "Oil" }
+
+  RIGHT:
+    {
+      "name": "Nigerian tomato stew",
+      "amountLabel": "a bowl",
+      "parts": [
+        { "name": "Tomatoes", "amountLabel": "about half a cup", ... },
+        { "name": "Onions", "amountLabel": "about a quarter cup", ... },
+        { "name": "Pepper", "amountLabel": "a spoonful", ... },
+        { "name": "Vegetable oil", "amountLabel": "two tablespoons", ... }
+      ]
+    }
+
+A NAME IS NOT A BREAKDOWN. "Stew with oil" counts no oil — it's just a longer
+label on the same guess. The whole reason they told you is so the oil gets
+counted, and only "parts" does that.
+
+THE DISH'S NAME IS WHAT THEY CALLED IT: "Nigerian tomato stew", "Curry stew",
+"Jollof rice". Do NOT append ingredients to it. If your name contains "with",
+"and" followed by an ingredient, or lists contents, you have made this mistake
+— move those words into "parts".
+
+═══════════════════════════════════════════
+
+FIRST, DECIDE WHICH OF TWO THINGS THEY DID:
+
+A) A FULL DESCRIPTION — they told you what the dish IS, or what's in it.
    Set "fullDescription": true.
 
-B) A SINGLE CORRECTION — they pointed at one thing and fixed it.
-   "The green one is mashed spinach, not eggs."
-   "There's no butter on that toast."
-   "The rice was more like two cups."
+B) A SINGLE CORRECTION — they pointed at one item and fixed it.
    Set "fullDescription": false.
 
 The tell is whether they are naming THE DISH or its contents as a whole (A), or
@@ -125,85 +157,100 @@ referring to ONE item on a list they can see (B).
 
 IF IT IS A FULL DESCRIPTION (A):
 
-1. WHAT THEY SAID IS NOW THE PLATE. They were there and you were not. Their
-   list replaces the guess entirely.
+1. WHAT THEY SAID IS NOW THE PLATE. Their list replaces the guess entirely.
 
-2. Every item in the current list that their description does NOT account for
-   goes in "removes". This is the most important rule in this file. If the list
-   says plantain and beans, and they say beef, spinach, beans and olive oil,
-   then plantain is REMOVED — not kept alongside. Keeping it would count food
-   nobody ate.
+2. Every item in the current list their description does NOT account for goes
+   in "removes".
 
-3. Items they named that already exist in the list should be EDITED to match
-   what they said, not added again. Beans stay beans; adjust the numbers if
-   their description changes them.
+3. Items they named that already exist should be EDITED, not added again.
 
 4. Items they named that aren't in the list go in "adds".
 
-5. In "note", say plainly what you removed and why, addressed to them. For
-   example: "Updated to what you described. Removed plantain — you didn't
-   mention it." Under twenty words. If nothing was removed, just say what
-   changed.
+5. In "note", say what you removed and why — "Updated to what you described.
+   Removed plantain — you didn't mention it." Under twenty words.
 
 IF IT IS A SINGLE CORRECTION (B):
 
-6. TOUCH ONLY WHAT THEY MENTIONED. Every other item is left out of your answer
-   entirely — no edit, no remove.
+6. TOUCH ONLY WHAT THEY MENTIONED. Every other item is left out entirely.
 
-7. NOT MENTIONING SOMETHING IS NOT DENYING IT here. Only remove an item if they
-   explicitly say it isn't there.
+7. NOT MENTIONING SOMETHING IS NOT DENYING IT here. Only remove an item if
+   they explicitly say it isn't there.
 
 8. In "note", say what you changed, under twelve words.
 
+USING "parts" — WHEN AND HOW:
+
+9. A dish takes "parts" when it is cooked as ONE thing but MADE of several: a
+   stew, a soup, a sauce, a curry, a smoothie, a casserole, a marinade. If
+   they name what went into one, return one item with its ingredients.
+
+10. THE DISH IS ONE ROW. The person eats a stew, not a bowl of separate
+    tomatoes. Never split the ingredients into top-level items.
+
+11. THE ITEM'S CALORIES AND MACROS MUST EQUAL THE SUM OF ITS PARTS. They are
+    recomputed from the parts anyway, so anything else is simply wrong.
+
+12. TWO OR MORE INGREDIENTS, or none. One ingredient is not a breakdown.
+
+13. THEY DESCRIBED THE POT, NOT THE PLATE. People list what they cooked with —
+    a pot that fed four — but they ate one portion. Scale EVERY ingredient
+    down to what's in front of them. Cooked with 100 ml of oil and eating
+    about a quarter of it? That's 25 ml in this bowl, not 100.
+
+14. Say the portion in the item's amountLabel — "a bowl", "about a cup" — and
+    each part's amountLabel is that ingredient's share.
+
+15. OIL, BUTTER AND CREAM ARE THE POINT. Invisible in a photo, huge in
+    calories. A tablespoon of oil is about 120 calories. Count them properly.
+
+16. SPICES AND SEASONINGS STILL EARN A LINE even at a few calories — curry
+    powder, pepper, salt, stock cubes. The person mentioned them and expects
+    to see them; a breakdown missing what they said reads as not having
+    listened. Small numbers are fine.
+
+17. Rice served ALONGSIDE a stew is its own item. Only what went INTO the pot
+    is a part of the stew.
+
+18. Don't invent ingredients. If they say "curry stew" and nothing else, it's
+    a plain item with no parts.
+
 BOTH CASES:
 
-9. "index" refers to the numbered list below. Use those exact numbers.
+19. "index" refers to the numbered list below. Use those exact numbers.
 
-10. When a food CHANGES, its calories and macros must change with it. Spinach
-    is not egg. Work them out fresh for the new food at a sensible weight.
+20. When a food CHANGES, its calories and macros must change with it.
 
-11. Cooking method changes fat and calories, not identity. Rice fried in oil
-    carries meaningfully more than boiled rice — reflect that in the numbers
-    and say so in the name ("Jollof rice, fried").
+21. Cooking method changes fat and calories, not identity.
 
-12. Oil, butter and dressing they mention are real calories and usually the
-    biggest thing a photo misses. Add them as their own item where that makes
-    sense.
+22. Keep an existing weight unless they said otherwise.
 
-13. Keep an existing weight unless they said otherwise — usually they're
-    telling you WHAT it was, not how much.
-
-14. ROUND. Calories to the nearest 10 above 100, nearest 5 below. Macros to
+23. ROUND. Calories to the nearest 10 above 100, nearest 5 below. Macros to
     whole grams. Calories must match the macros: protein and carbs about 4 a
     gram, fat about 9.
 
-15. "amountLabel" must stay PICTURABLE — "a cup", "a palm-sized piece", "two
-    slices". Never "a serving" or "a portion".
+24. "amountLabel" must stay PICTURABLE — "a cup", "two tablespoons", "a
+    palm-sized piece". Never "a serving" or "a portion".
 
-16. "sure" for something they told you themselves is "high" when they gave an
-    amount too, "medium" when they named the food but not the amount.
+25. "sure" is "high" when they gave an amount too, "medium" when they named
+    the food but not the amount.
 
 THE TRANSCRIPT IS MESSY:
 
-17. This came from speech recognition. Expect false starts, filler words and
-    misheard words, and read through them the way a person would. "Spin itch"
-    is spinach. "Jelly rice" is jollof rice.
+26. This came from speech recognition. Read through false starts, filler and
+    misheard words the way a person would. "Spin itch" is spinach. "Jelly
+    rice" is jollof rice. "Corey stew" is curry stew.
 
-18. The speaker never sees the transcript, so refusing over a garbled word
-    helps nobody — if their intent is clear, act on it.
+27. The speaker never sees the transcript, so refusing over a garbled word
+    helps nobody.
 
 WHEN YOU GENUINELY CAN'T TELL:
 
-19. If you cannot work out what they mean, set "understood" to false, leave
-    edits, removes and adds EMPTY, and put one short sentence in "problem"
-    addressed to them.
+28. Set "understood" to false, leave edits, removes and adds EMPTY, and put
+    one short sentence in "problem" addressed to them.
 
-20. Do the same if there's nothing about food in what they said at all.
+29. NEVER guess between two possible items.`;
 
-21. NEVER guess between two possible items. Leaving the plate untouched and
-    asking again is always better than changing the wrong thing.`;
-
-/** Apply a spoken description or correction to a plate.
+/** Apply a spoken description, correction or recipe to a plate.
 
     NEVER THROWS — failures come back with understood:false and a problem
     message, same contract as the readers. */
@@ -215,15 +262,9 @@ export async function fixMealWithVoice(
   if (!GEMINI_KEY) return fail("Voice isn't set up on this build.");
 
   const text = transcript.trim();
-  if (text.length < 3) {
-    return fail("MOTION didn't catch that — try again?");
-  }
-  if (!items.length) {
-    return fail("There's nothing on the plate to describe yet.");
-  }
+  if (text.length < 3) return fail("MOTION didn't catch that — try again?");
+  if (!items.length) return fail("There's nothing on the plate to describe yet.");
 
-  /* the numbered list the prompt refers to. Names, amounts and current
-     numbers, so the model can judge what needs recalculating. */
   const list = items
     .map(
       (it, i) =>
@@ -243,10 +284,10 @@ export async function fixMealWithVoice(
       },
     ],
     generationConfig: {
-      /* same warmth as the voice reader — interpreting messy speech needs a
-         little flexibility, but this is correction, not invention */
       temperature: 0.2,
-      maxOutputTokens: 2048,
+      /* a recipe with eight ingredients inside an item is a lot of JSON, and a
+         truncated response is unparseable */
+      maxOutputTokens: 3072,
       responseMimeType: "application/json",
     },
   });
@@ -258,9 +299,7 @@ export async function fixMealWithVoice(
     const model = MODELS[m];
 
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
-      if (attempt > 0 || m > 0) {
-        await new Promise((r) => setTimeout(r, 1000));
-      }
+      if (attempt > 0 || m > 0) await new Promise((r) => setTimeout(r, 1000));
 
       try {
         const res = await fetch(`${endpointFor(model)}?key=${GEMINI_KEY}`, {
@@ -270,7 +309,7 @@ export async function fixMealWithVoice(
         });
 
         if (res.ok) {
-          const parsed = await parseResponse(res, items);
+          const parsed = await parseResponse(res, items.length);
           if (parsed) {
             console.log(`FIX: ${model} answered in ${((Date.now() - started) / 1000).toFixed(1)}s`);
             return parsed;
@@ -304,9 +343,7 @@ export async function fixMealWithVoice(
   return fail("Couldn't reach the reader. Check your connection and try again.");
 }
 
-async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix | null> {
-  const itemCount = items.length;
-
+async function parseResponse(res: Response, itemCount: number): Promise<MealFix | null> {
   try {
     const json = await res.json();
     const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -328,8 +365,6 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
       parsed = JSON.parse(clean.slice(start, end + 1));
     }
 
-    /* an index the model invented would silently edit the wrong row, or crash
-       on a row that doesn't exist — drop anything out of range */
     const validIndex = (v: any) => {
       const n = num(v);
       return n != null && Number.isInteger(n) && n >= 0 && n < itemCount;
@@ -342,11 +377,11 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
             const item = toItem(e);
             return item ? { index: Math.round(Number(e.index)), item } : null;
           })
-          .filter(Boolean) as { index: number; item: MealItem }[])
+          .filter(Boolean) as { index: number; item: FixItem }[])
       : [];
 
     const adds = Array.isArray(parsed.adds)
-      ? (parsed.adds.map(toItem).filter(Boolean) as MealItem[]).slice(0, 8)
+      ? (parsed.adds.map(toItem).filter(Boolean) as FixItem[]).slice(0, 8)
       : [];
 
     let removes = Array.isArray(parsed.removes)
@@ -357,12 +392,8 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
 
     /* ---------- THE SAFETY NET ----------
        On a full description, everything they didn't account for should have
-       been listed in "removes". Models forget this: they add the four things
-       said and leave the phantom item sitting there, which is exactly the
-       double-counting bug this file exists to prevent.
-
-       So on a full description, anything neither EDITED nor explicitly kept is
-       removed here, whether or not the model remembered to say so. */
+       been listed in "removes". Models forget, leaving the phantom item
+       sitting there — the double-counting bug this file exists to prevent. */
     if (fullDescription) {
       const edited = new Set(edits.map((e) => e.index));
       const all = Array.from({ length: itemCount }, (_, i) => i);
@@ -371,11 +402,7 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
 
     const changedSomething = edits.length > 0 || removes.length > 0 || adds.length > 0;
 
-    /* a full description that removes everything and adds nothing would leave
-       an empty plate — that's a misread, not an answer */
-    const wouldEmpty = fullDescription && !adds.length && !edits.length;
-
-    if (wouldEmpty) {
+    if (fullDescription && !adds.length && !edits.length) {
       return {
         edits: [],
         removes: [],
@@ -387,10 +414,6 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
       };
     }
 
-    /* THE MODEL SAYING "understood" ISN'T ENOUGH. If it claims to have
-       understood but returns no changes, nothing would happen and the user
-       would be left staring at an unchanged plate wondering whether it
-       worked. Treat that as not understood. */
     return {
       edits,
       removes,
@@ -402,19 +425,54 @@ async function parseResponse(res: Response, items: MealItem[]): Promise<MealFix 
         str(parsed.problem) ||
         (changedSomething
           ? null
-          : "MOTION didn't find anything to change from that — try describing the dish, like \"it's roasted broccoli, cauliflower and carrots\"."),
+          : "MOTION didn't find anything to change from that — try describing the dish, like \"curry stew with tomatoes, onions and oil\"."),
     };
   } catch {
     return null;
   }
 }
 
-function toItem(raw: any): MealItem | null {
-  const name = str(raw?.name);
+function toItem(raw: any): FixItem | null {
+  let name = str(raw?.name);
   const grams = num(raw?.grams);
   const calories = num(raw?.calories);
 
   if (!name || !grams || calories == null) return null;
+
+  const parts = toParts(raw?.parts);
+
+  if (parts) {
+    /* CLEAN THE NAME. Even with the rule stated three ways, the model still
+       sometimes writes "Tomato stew with oil" AND supplies the parts. Once the
+       ingredients are listed below it, the trailing "with…" is noise — and it
+       reads as though the oil is counted twice. */
+    name = stripIngredientTail(name);
+
+    /* THE DISH IS WORTH WHAT WENT INTO IT. Recomputed rather than trusted:
+       models routinely list ingredients and then report a headline number that
+       doesn't match them. */
+    const t = parts.reduce(
+      (acc, p) => ({
+        calories: acc.calories + (p.calories || 0),
+        protein: acc.protein + (p.protein || 0),
+        carbs: acc.carbs + (p.carbs || 0),
+        fat: acc.fat + (p.fat || 0),
+      }),
+      { calories: 0, protein: 0, carbs: 0, fat: 0 }
+    );
+
+    return {
+      name,
+      amountLabel: str(raw?.amountLabel) || `about ${Math.round(grams)} g`,
+      grams: Math.round(grams),
+      calories: Math.round(t.calories),
+      protein: Math.round(t.protein),
+      carbs: Math.round(t.carbs),
+      fat: Math.round(t.fat),
+      sure: raw?.sure === "high" || raw?.sure === "low" ? raw.sure : "medium",
+      parts,
+    };
+  }
 
   return {
     name,
@@ -426,6 +484,48 @@ function toItem(raw: any): MealItem | null {
     fat: Math.round(num(raw?.fat) ?? 0),
     sure: raw?.sure === "high" || raw?.sure === "low" ? raw.sure : "medium",
   };
+}
+
+/** "Nigerian tomato stew with oil and onions" → "Nigerian tomato stew".
+
+    ONLY applied to a dish that already has its ingredients listed — for a
+    plain item "with oil" may be the only record that oil exists, and cutting
+    it would lose real information. */
+function stripIngredientTail(name: string): string {
+  const cut = name.replace(/\s*[,(]?\s*\bwith\b[^,()]*\)?\s*$/i, "").trim();
+  /* never strip a name down to nothing, or to something meaninglessly short */
+  return cut.length >= 3 ? cut : name;
+}
+
+/** ingredients, cleaned.
+
+    ONE ingredient is not a recipe — it would give a dish a breakdown
+    consisting of itself. Two or more, or nothing. */
+function toParts(raw: any): MealPart[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const parts = raw
+    .map((p: any) => {
+      const name = str(p?.name);
+      const calories = num(p?.calories);
+      /* a spice at 2 calories is still worth a line — the person said it, and
+         a breakdown missing what they mentioned reads as not listening. So
+         zero is allowed here; only a MISSING number disqualifies. */
+      if (!name || calories == null) return null;
+      return {
+        name,
+        amountLabel: str(p?.amountLabel) || undefined,
+        grams: num(p?.grams) ?? undefined,
+        calories: Math.round(calories),
+        protein: Math.round(num(p?.protein) ?? 0),
+        carbs: Math.round(num(p?.carbs) ?? 0),
+        fat: Math.round(num(p?.fat) ?? 0),
+      } as MealPart;
+    })
+    .filter(Boolean) as MealPart[];
+
+  /* ten is already more than anyone lists out loud */
+  return parts.length >= 2 ? parts.slice(0, 10) : undefined;
 }
 
 function fail(problem: string): MealFix {

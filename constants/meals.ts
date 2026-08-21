@@ -5,7 +5,32 @@
 // A meal and its items are TWO tables but ONE user action, so the functions
 // here always handle both together. No screen should ever write to
 // meal_items directly.
+//
+// AN ITEM CAN HOLD ITS INGREDIENTS. A curry stew is one thing you eat, but
+// it's made of things that each carry calories — and the person who cooked it
+// can list them, which is the best information the app will ever get about a
+// dish a camera can only see the surface of.
+//
+// Those ingredients live in a `parts` column ON the item, not in a table of
+// their own. They belong to exactly one row, they're never searched across,
+// and they're only read when someone opens that row — a separate table would
+// add a third join to every meal query in the app for something looked at
+// occasionally.
 import { supabase } from "./supabase";
+
+/** one ingredient inside a cooked dish — a spoon of oil in the curry stew.
+    Deliberately smaller than MealItem: a part is a contribution to a dish, not
+    something logged in its own right. */
+export type MealPart = {
+  name: string;
+  /** plain-English, same rule as amountLabel — "two tablespoons", "a handful" */
+  amountLabel?: string;
+  grams?: number;
+  calories: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+};
 
 export type MealItem = {
   id?: string;
@@ -21,6 +46,10 @@ export type MealItem = {
   carbs?: number;
   fat?: number;
   source?: string;
+  /* what went into it, when it's a cooked dish someone described.
+     THE ITEM'S OWN NUMBERS ARE THE SUM OF THESE — see saveMeal. Undefined for
+     ordinary foods, which is most of them. */
+  parts?: MealPart[];
 };
 
 export type Meal = {
@@ -43,11 +72,45 @@ export function todayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** add up a dish's ingredients.
+
+    EXPORTED because the screens need the same arithmetic while the user is
+    still editing, before anything is saved. Two implementations of "what does
+    this dish come to" would eventually disagree, and the one on screen
+    disagreeing with the one in the database is the worst version of that. */
+export function partsTotal(parts?: MealPart[]) {
+  return (parts || []).reduce(
+    (t, p) => ({
+      calories: t.calories + (p.calories || 0),
+      protein: t.protein + (p.protein || 0),
+      carbs: t.carbs + (p.carbs || 0),
+      fat: t.fat + (p.fat || 0),
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+}
+
 /** Save a meal and its items. The meal row goes first — the items need its id
     — and the totals are summed here rather than trusted from the caller, so
     they can't drift from the items they're meant to summarise. */
 export async function saveMeal(userId: string, meal: Meal) {
-  const totals = meal.items.reduce(
+  /* AN ITEM WITH INGREDIENTS IS WORTH WHAT THEY ADD UP TO. Recomputed here
+     rather than trusted, for the same reason the meal totals are: the sum and
+     the parts must never be able to disagree. Correct the oil and the dish
+     follows, all the way up to the day's total. */
+  const items: MealItem[] = meal.items.map((it) => {
+    if (!it.parts || !it.parts.length) return it;
+    const t = partsTotal(it.parts);
+    return {
+      ...it,
+      calories: Math.round(t.calories),
+      protein: Math.round(t.protein),
+      carbs: Math.round(t.carbs),
+      fat: Math.round(t.fat),
+    };
+  });
+
+  const totals = items.reduce(
     (acc, it) => ({
       calories: acc.calories + (it.calories || 0),
       protein: acc.protein + (it.protein || 0),
@@ -75,9 +138,9 @@ export async function saveMeal(userId: string, meal: Meal) {
 
   if (error || !data) return { mealId: null, error: error?.message ?? "Couldn't save that meal." };
 
-  if (meal.items.length) {
+  if (items.length) {
     const { error: itemErr } = await supabase.from("meal_items").insert(
-      meal.items.map((it) => ({
+      items.map((it) => ({
         meal_id: data.id,
         food_name: it.foodName,
         amount_label: it.amountLabel,
@@ -87,6 +150,10 @@ export async function saveMeal(userId: string, meal: Meal) {
         carbs: it.carbs ?? 0,
         fat: it.fat ?? 0,
         source: it.source,
+        /* NULL rather than an empty array for ordinary foods — most items have
+           no ingredients, and null reads as "not a composed dish" while [] is
+           ambiguous between that and "a dish whose ingredients we lost". */
+        parts: it.parts && it.parts.length ? it.parts : null,
       }))
     );
 
@@ -140,10 +207,50 @@ export async function loadDay(userId: string, day: string) {
       carbs: it.carbs,
       fat: it.fat,
       source: it.source,
+      /* comes back as real JSON already. Guarded anyway: a row written before
+         this column existed has null here, and a hand-edited row could hold
+         anything — neither should crash a day the user is trying to read. */
+      parts: toParts(it.parts),
     })),
   }));
 
   return { meals, error: null };
+}
+
+/** trust nothing from the parts column.
+
+    It's the one field in the app that isn't shaped by the database, so a bad
+    value would otherwise reach the screen and take the whole day's recap down
+    with it. Anything that isn't a usable ingredient is dropped. */
+function toParts(raw: any): MealPart[] | undefined {
+  if (!raw) return undefined;
+
+  let arr = raw;
+  /* some drivers hand back jsonb as a string rather than parsed */
+  if (typeof raw === "string") {
+    try { arr = JSON.parse(raw); } catch { return undefined; }
+  }
+  if (!Array.isArray(arr)) return undefined;
+
+  const parts = arr
+    .filter((p: any) => p && typeof p.name === "string" && p.name.trim())
+    .map((p: any) => ({
+      name: String(p.name).trim(),
+      amountLabel: typeof p.amountLabel === "string" ? p.amountLabel : undefined,
+      grams: numOrUndef(p.grams),
+      calories: numOrUndef(p.calories) ?? 0,
+      protein: numOrUndef(p.protein),
+      carbs: numOrUndef(p.carbs),
+      fat: numOrUndef(p.fat),
+    }));
+
+  return parts.length ? parts : undefined;
+}
+
+function numOrUndef(v: any): number | undefined {
+  if (v === null || v === undefined || v === "") return undefined;
+  const n = Number(v);
+  return isFinite(n) && n >= 0 ? n : undefined;
 }
 
 /** One number per day across a range — what the CALENDAR needs to know which
