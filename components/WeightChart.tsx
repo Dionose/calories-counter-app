@@ -73,6 +73,10 @@ const TAP_RADIUS_X = 46;
    ordinary taps as drags. */
 const TAP_SLOP = 14;
 
+/* roughly how wide a date label prints, plus a little air. Two labels closer
+   than this collide — see the date block in FullChart. */
+const DATE_LABEL_W = 52;
+
 const MAX_ZOOM = 14;
 const ZOOM_STEP = 1.6;
 
@@ -630,6 +634,44 @@ function FullChart({
     setPicked(null);
   };
 
+  /* ---------- WHICH DATES GET A LABEL ----------
+     CHOSEN BY SPACE, NOT BY COUNT.
+
+     They used to be picked by position in the list — every Nth reading —
+     which says nothing about whether there's room for them: two weigh-ins a
+     day apart sit a few pixels apart, both qualified, and both printed on top
+     of each other. That's how "Aug 20" and "Aug 21" ended up as one
+     unreadable smudge with nothing even selected.
+
+     So this walks left to right and keeps a label only if it clears the last
+     one actually placed. Which of two crowded dates survives doesn't matter;
+     the axis staying legible does.
+
+     THE TAPPED DATE IS PLACED FIRST and can never be dropped — it's the one
+     being read, so it must not be the one that loses.
+
+     A consequence worth knowing: labels are no longer evenly spaced. A dense
+     cluster of weigh-ins gets one, a sparse stretch gets several — which is
+     honest, because the readings aren't evenly spaced either. */
+  const dateLabels = useMemo(() => {
+    const out: { i: number; px: number; picked: boolean }[] = [];
+
+    if (picked != null && model.points[picked]) {
+      out.push({ i: picked, px: x(model.points[picked].t), picked: true });
+    }
+
+    model.points.forEach((p, i) => {
+      if (i === picked) return;
+      const px = x(p.t);
+      /* off the edges — no point measuring something nobody can see */
+      if (px < P_L - 20 || px > W - P_R + 20) return;
+      if (out.some((l) => Math.abs(l.px - px) < DATE_LABEL_W)) return;
+      out.push({ i, px, picked: false });
+    });
+
+    return out;
+  }, [model.points, picked, zoom, tx]);
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={s.fullScreen}>
@@ -774,30 +816,20 @@ function FullChart({
               );
             })}
 
-            {/* dates along the bottom — every reading gets one when there's
-                room, thinned out when there isn't, so labels never overlap
-                into mush */}
-            {model.points.map((p, i) => {
-              const step = Math.ceil(
-                model.points.length / Math.max(2, Math.floor((plotW * zoom) / 62))
-              );
-              if (i % step !== 0 && i !== model.points.length - 1 && i !== picked) return null;
-              const px = x(p.t);
-              if (px < P_L - 20 || px > W - P_R + 20) return null;
-              return (
-                <SvgText
-                  key={`fdate${p.t}`}
-                  x={px}
-                  y={H - 12}
-                  fill={i === picked ? T.green : T.micro}
-                  fontSize={9.5}
-                  fontFamily={FONTS.body}
-                  textAnchor="middle"
-                >
-                  {shortDate(p.t)}
-                </SvgText>
-              );
-            })}
+            {/* the dates — worked out above, so nothing here can collide */}
+            {dateLabels.map(({ i, px, picked: isPicked }) => (
+              <SvgText
+                key={`fdate${model.points[i].t}`}
+                x={px}
+                y={H - 12}
+                fill={isPicked ? T.green : T.micro}
+                fontSize={9.5}
+                fontFamily={FONTS.body}
+                textAnchor="middle"
+              >
+                {shortDate(model.points[i].t)}
+              </SvgText>
+            ))}
           </Svg>
         </View>
 

@@ -1,50 +1,43 @@
 // components/LeaderboardSheet.tsx
 // The whole board, however big it gets.
 //
-// IT FILLS THE SCREEN, like the inline camera and the full leaderboard in the
-// mockup — edge-inset and about four-fifths tall, with just enough margin for
-// the traveling border to be seen going round.
+// IT FILLS THE SCREEN, like the inline camera — edge-inset and about
+// four-fifths tall, with just enough margin for the traveling border to be
+// seen going round.
 //
-// FIFTY AT A TIME. Dion's rule is that with five thousand users you can scroll
-// to all five thousand — so it pages as you go rather than pretending the
-// board is a top ten. Asking for five thousand rows at once would be a slow
-// screen and a lot of someone's data allowance, and a board capped at 100
-// would tell everyone below that they don't exist.
+// DENSE RANKING. Rank counts DISTINCT SCORES above you, not people: fifty
+// players tied on 400 are all #1, and 398 is #2 — not #51. The competition
+// alternative meant someone four points off the lead could read as #112, which
+// looks like a thrashing when the actual gap is nothing.
 //
-// JUMP TO ME. Rank 4,318 is a lot of scrolling. The database can answer "how
-// many people are above me" in one count, which gives the page to load
-// directly — no walking through four thousand rows to find yourself.
+// WHICH MAKES RANK AND POSITION DIFFERENT NUMBERS. #2 isn't the second row if
+// ninety-eight people share first — so "jump to me" uses POSITION, and only
+// the rank is ever shown. Conflating them lands the jump on the wrong page.
 //
-// AND "TOP 14%" NEXT TO IT. "4,318th" reads as failure; "top 14% of 31,000"
-// reads as an achievement, and both are the same fact.
+// AND THE PERCENTILE STILL COUNTS PEOPLE. "#2 · top 51%" reads oddly for a
+// second and is two true things: second-best score, half the board above you.
+// Making them agree would mean inventing one of them.
 //
-// ⚠️ THE CROWN COLUMN — ONE BOX, SAME FOR EVERY ROW.
+// FIFTY AT A TIME, because a board can hold every user and someone at position
+// 4,318 should still be able to scroll to themselves.
 //
-// This took four attempts and three wrong diagnoses, so it's worth writing
-// down. SeasonCrown's reveal renders in a box 2.1× its size with the crown
-// centred; the still version is exactly its size. Every fix that tried to
-// COMPENSATE for that difference — a slot, a centred inner box, a left-pinned
-// one, then shrinking the reveal to fit — moved the crown without aligning it,
-// and the last one clipped the stars on all four sides.
+// THE CROWN COLUMN — one box, same for every row. SeasonCrown's reveal renders
+// in a box 2.1× its size with the crown centred; the still version is exactly
+// its size. Four attempts to COMPENSATE for that difference each moved the
+// crown without aligning it, so nothing compensates any more: every crown gets
+// a box the full 2.1× size, and the row is tall enough to hold it.
 //
-// So nothing compensates any more. Every crown, animated or not, is centred in
-// one fixed-width box wide enough for the full reveal, and the row is tall
-// enough to contain it. A hair of misalignment remains between the animated
-// crown and the still ones; Dion looked at it and called it — not worth more
-// time, and invisible to anyone who didn't build it.
-//
-// THE STAR BURST CAPS AT 20, in SeasonCrown rather than here — twenty fills
-// two rings handsomely and was judged at that count. The number in the middle
-// keeps climbing past it, because the number is the data and the stars are the
-// ceremony.
+// THE STAR BURST CAPS AT 20, in SeasonCrown rather than here. The number in
+// the middle keeps climbing past it, because the number is the data and the
+// stars are the ceremony.
 import { ChevronLeft, ChevronRight, Crosshair, HelpCircle, X } from "lucide-react-native";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
 import {
-    BoardRow, BoardScope, currentSeason, loadBoard, myStanding,
-    PAGE_SIZE, pageForRank, seasonLine, Standing,
+  BoardRow, BoardScope, currentSeason, loadBoard, myStanding,
+  PAGE_SIZE, pageForPosition, seasonLine, Standing,
 } from "../constants/leaderboard";
 import { FONTS, TIERS, ULT_COLORS } from "../constants/theme";
 import GradientText from "./GradientText";
@@ -63,17 +56,8 @@ const SHEET_H = Math.round(SCREEN_H * 0.78);
    screen. */
 const SHEET_W = SCREEN_W - 20;
 
-/* ---------- THE CROWN COLUMN ----------
-   THE BOX IS SIZED FOR THE REVEAL, not for the still crown: SeasonCrown's
-   animation needs 2.1× the crown's size for the stars to fly into, so the box
-   is that big for EVERY row whether it animates or not. A still crown just
-   sits centred in a slightly roomy box, which costs nothing — and it means the
-   two can't drift apart. */
 const CROWN_SIZE = 30;
 const CROWN_BOX = Math.ceil(CROWN_SIZE * 2.1);
-
-/* and the row is tall enough to hold that box with a little air, so the stars
-   never reach a boundary */
 const ROW_MIN_H = CROWN_BOX + 12;
 
 const SCOPES: { key: BoardScope; label: string }[] = [
@@ -91,29 +75,58 @@ const TIER_RANGE: Record<string, string> = {
   Ultimate: "day 17+",
 };
 
-/* demo rows — dev mode only, so the board can be shown full to someone.
+/* ---------- DEMO ROWS ----------
+   Dev mode only — but built to be RECORDED. Dion films the app with dev mode
+   on for marketing, so the demo has to look like a real busy board rather
+   than a neat descending list nobody would ever see.
 
-   The season counts run 22 down to 1, which deliberately straddles the star
-   cap: the top few crowns show a full ring with a bigger number in the middle,
-   which is exactly the case the cap exists for and worth being able to see. */
+   So the scores are DELIBERATELY CLUSTERED: five people share first, four
+   share second, and so on. That's what a real leaderboard looks like once
+   points come from a small set of daily values, and it's the only way to see
+   dense ranking working — five #1s followed by #2, not by #6.
+
+   Remove alongside Profile's dev panel before launch. */
 function demoRows(scope: BoardScope): BoardRow[] {
   const names = [
-    "amara_k", "dionj", "kwame.b", "lena.m", "tomiwa", "sofia_r", "nate", "yusuf.a",
-    "priya", "marcus", "chidera", "hana_s", "olu.a", "mei_l", "jonas", "rania",
-    "diego_p", "aisha", "ben.w", "zanele", "arjun", "clara_v", "ifeoma", "leo.k",
-    "noor", "santi", "grace.o", "haruto", "elif", "malik_d",
+    "amara_k", "dionj", "kwame.b", "lena.m", "tomiwa",
+    "sofia_r", "nate", "yusuf.a", "priya",
+    "marcus", "chidera", "hana_s", "olu.a", "mei_l", "jonas",
+    "rania", "diego_p", "aisha",
+    "ben.w", "zanele", "arjun", "clara_v",
+    "ifeoma", "leo.k", "noor",
+    "santi", "grace.o", "haruto", "elif", "malik_d",
   ];
-  return names.map((handle, i) => ({
-    userId: `demo-${i}`,
-    handle,
-    region: "Canada",
-    points: scope === "total" ? 41280 - i * 1100 : 412 - i * 9,
-    tier: Math.max(1, 5 - Math.floor(i / 7)),
-    seasons: scope === "total" ? Math.max(1, 22 - i) : undefined,
-    rank: i + 1,
-    tied: false,
-    me: handle === "dionj",
-  }));
+
+  /* how many people share each rank, in order */
+  const groups = [5, 4, 6, 3, 4, 3, 5];
+
+  const rows: BoardRow[] = [];
+  let i = 0;
+  let rank = 1;
+
+  groups.forEach((size) => {
+    /* every rank steps down by a believable amount — a few points, not a
+       chasm, which is the whole reason dense ranking matters */
+    const points = scope === "total" ? 41280 - (rank - 1) * 940 : 412 - (rank - 1) * 6;
+
+    for (let k = 0; k < size && i < names.length; k++, i++) {
+      rows.push({
+        userId: `demo-${i}`,
+        handle: names[i],
+        region: "Canada",
+        points,
+        tier: Math.max(1, 6 - rank),
+        seasons: scope === "total" ? Math.max(1, 22 - i) : undefined,
+        rank,
+        tiedCount: size,
+        tied: size > 1,
+        me: names[i] === "dionj",
+      });
+    }
+    rank++;
+  });
+
+  return rows;
 }
 
 export default function LeaderboardSheet({
@@ -155,14 +168,23 @@ export default function LeaderboardSheet({
        the rows were, but not the view. */
     setHowOpen(false);
 
-    /* the crown performs each time the sheet opens or the board changes.
-       Without a changing key it renders in its resting state and the sequence
-       never runs. */
+    /* the crown performs each time the sheet opens or the board changes */
     setCrownPlay((k) => k + 1);
 
     if (devMode) {
-      setRows(demoRows(scope));
-      setStanding({ rank: 2, points: 388, tier: 5, total: 30, topPercent: 7, tied: false });
+      const demo = demoRows(scope);
+      const me = demo.find((r) => r.me);
+      setRows(demo);
+      setStanding({
+        rank: me?.rank ?? 1,
+        position: demo.findIndex((r) => r.me) + 1,
+        points: me?.points ?? 0,
+        tier: me?.tier ?? 5,
+        total: demo.length,
+        topPercent: 7,
+        tiedCount: me?.tiedCount ?? 1,
+        tied: !!me?.tied,
+      });
       setHasMore(false);
       setOffset(0);
       setLoading(false);
@@ -189,9 +211,8 @@ export default function LeaderboardSheet({
   }, [visible, loadFirst]);
 
   /* ---------- the next page ----------
-     Fired by scrolling near the bottom. The guard matters: FlatList calls
-     onEndReached more than once for the same scroll, and without it the same
-     fifty rows arrive twice. */
+     The guard matters: FlatList calls onEndReached more than once for the
+     same scroll, and without it the same fifty rows arrive twice. */
   const loadMore = useCallback(async () => {
     if (loadingMore || loading || !hasMore || devMode || !userId) return;
 
@@ -210,16 +231,19 @@ export default function LeaderboardSheet({
   }, [loadingMore, loading, hasMore, devMode, userId, scope, profile.region, offset]);
 
   /* ---------- jump to me ----------
-     Loads the page the user's rank falls on and REPLACES the list rather than
-     appending — otherwise someone at 4,318 would be holding four thousand
-     rows in memory to see one. */
+     USES POSITION, NOT RANK. With dense ranking those are different numbers —
+     #2 can be the hundredth row — and jumping by rank would land on page one
+     while the user sits two thousand rows down.
+
+     REPLACES the list rather than appending, or someone at position 4,318
+     would be holding four thousand rows in memory to see one. */
   const jumpToMe = useCallback(async () => {
     if (!standing || !userId || devMode) return;
 
     H.tap();
     setLoading(true);
 
-    const start = pageForRank(standing.rank);
+    const start = pageForPosition(standing.position);
     const { rows: r } = await loadBoard({
       scope,
       region: profile.region,
@@ -233,7 +257,6 @@ export default function LeaderboardSheet({
     setJumped(true);
     setLoading(false);
 
-    /* land at the top of that page rather than mid-scroll */
     setTimeout(() => list.current?.scrollToOffset({ offset: 0, animated: false }), 50);
   }, [standing, userId, devMode, scope, profile.region]);
 
@@ -330,11 +353,33 @@ export default function LeaderboardSheet({
 
                   <View style={s.howDivider} />
 
-                  <Text style={s.howSmallTitle}>Ties</Text>
+                  {/* ---------- THE TIES SECTION, REWRITTEN ----------
+                      The old version described competition ranking and was
+                      accurate about behaviour nobody wanted: fifty people at
+                      first meant the next score was #51. Now rank counts
+                      SCORES, and this says so plainly — including the odd
+                      moment where the rank and the percentage disagree, which
+                      would otherwise look like a bug. */}
+                  <Text style={s.howSmallTitle}>Ties, and how ranks are counted</Text>
                   <Text style={s.howText}>
-                    Equal points means equal rank. Three people tied at first are all first, and
-                    the next score down is fourth. Within a tie, whoever joined MOTION earliest
-                    shows first — but that's only the order they're listed in, not a better rank.
+                    Your rank counts SCORES above you, not people. If fifty players are tied on
+                    400 points they're all 1st — and the next score down is 2nd, not 51st.
+                  </Text>
+
+                  <Text style={[s.howText, { marginTop: 10 }]}>
+                    That's deliberate. Someone four points off the lead is four points off the
+                    lead; calling them 51st would describe a gap that isn't there.
+                  </Text>
+
+                  <Text style={[s.howText, { marginTop: 10 }]}>
+                    So you may see something like <Text style={s.howBold}>2nd · top 51%</Text>.
+                    Both are true and they measure different things: you have the second-best
+                    score on the board, and about half the players are ahead of you on points.
+                  </Text>
+
+                  <Text style={[s.howText, { marginTop: 10 }]}>
+                    Within a tie, whoever joined MOTION earliest is listed first — but that's only
+                    the order names appear in, not a better rank.
                   </Text>
 
                   <View style={s.howDivider} />
@@ -361,8 +406,6 @@ export default function LeaderboardSheet({
                     ))}
                   </View>
 
-                  {/* THE SEASON, IN FULL. The Home card only has room for the
-                      countdown; this is where it's spelled out. */}
                   <Text style={s.seasonLine}>
                     {isTotal
                       ? "Every season added together · this board never resets"
@@ -376,7 +419,11 @@ export default function LeaderboardSheet({
                       <View style={{ flex: 1 }}>
                         <Text style={s.standingRank}>
                           #{standing.rank.toLocaleString()}
-                          {standing.tied ? <Text style={s.standingTied}>  tied</Text> : null}
+                          {standing.tied ? (
+                            <Text style={s.standingTied}>
+                              {"  "}tied with {standing.tiedCount - 1}
+                            </Text>
+                          ) : null}
                         </Text>
                         <Text style={s.standingSub}>
                           Top {standing.topPercent}% of {standing.total.toLocaleString()}{" "}
@@ -423,16 +470,21 @@ export default function LeaderboardSheet({
                       ref={list}
                       data={rows}
                       keyExtractor={(r) => r.userId}
-                      renderItem={({ item }) => (
-                        <Row r={item} isTotal={isTotal} T={T} playKey={crownPlay} />
+                      renderItem={({ item, index }) => (
+                        <Row
+                          r={item}
+                          isTotal={isTotal}
+                          T={T}
+                          playKey={crownPlay}
+                          /* only the FIRST of a tied group prints its rank —
+                             see the note in Row */
+                          showRank={index === 0 || rows[index - 1].rank !== item.rank}
+                        />
                       )}
                       style={{ flex: 1 }}
                       contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 8 }}
                       showsVerticalScrollIndicator={false}
                       onEndReached={loadMore}
-                      /* 0.4 rather than 0.1: at fifty rows a page, waiting until
-                         the very bottom means a visible pause before more
-                         arrives */
                       onEndReachedThreshold={0.4}
                       ListFooterComponent={
                         loadingMore ? (
@@ -473,15 +525,21 @@ export default function LeaderboardSheet({
 
 /** one row.
 
+    THE RANK PRINTS ONCE PER GROUP. Five people tied at first showing "1 1 1 1
+    1" down the margin reads as a rendering fault; printing it against the
+    first of them and leaving the rest blank reads as a group, which is what it
+    is. The tie is named in words on the row instead.
+
     THE NAME GLOWS IN THAT PERSON'S OWN TIER, not their rank's — someone can
     sit high on points and still be Red-hot because they skipped yesterday. */
 function Row({
-  r, isTotal, T, playKey,
+  r, isTotal, T, playKey, showRank,
 }: {
   r: BoardRow;
   isTotal: boolean;
   T: any;
   playKey?: number;
+  showRank: boolean;
 }) {
   const s = styles(T);
   const t = TIERS[Math.min(5, Math.max(1, r.tier)) as 1 | 2 | 3 | 4 | 5];
@@ -489,37 +547,42 @@ function Row({
 
   return (
     <View style={[s.row, r.me && s.rowMe]}>
-      <Text style={[s.rank, r.rank <= 3 && { color: T.gold }]}>
-        {r.rank.toLocaleString()}
-      </Text>
+      {showRank ? (
+        <Text style={[s.rank, r.rank <= 3 && { color: T.gold }]}>
+          {r.rank.toLocaleString()}
+        </Text>
+      ) : (
+        /* the blank keeps the column aligned without repeating the number */
+        <View style={s.rankBlank} />
+      )}
 
       {isTotal && r.seasons != null && (
-        /* THE SAME BOX FOR EVERY ROW — see the note at the top of the file.
-           Wide enough for the full reveal, and every crown centred in it
-           whether it performs or not, so no two rows can sit differently. */
         <View style={s.crownBox}>
           <SeasonCrown
             color={t.color}
             count={r.seasons}
             size={CROWN_SIZE}
             /* ONLY YOUR OWN CROWN PERFORMS. Thirty crowns running their
-               star-into-crown build at once on a scrolling list would be
-               noise, and it's your own you actually want to watch. */
+               star-into-crown build at once would be noise. */
             sequence={r.me}
             playKey={r.me ? playKey : undefined}
           />
         </View>
       )}
 
-      {ult ? (
-        <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        {ult ? (
           <GradientText text={`@${r.handle}`} colors={ULT_COLORS} fontSize={13} fontFamily={FONTS.headingMed} />
-        </View>
-      ) : (
-        <Text style={[s.name, { color: t.color }]} numberOfLines={1}>@{r.handle}</Text>
-      )}
+        ) : (
+          <Text style={[s.name, { color: t.color }]} numberOfLines={1}>@{r.handle}</Text>
+        )}
 
-      {r.tied && <Text style={s.tied}>tied</Text>}
+        {/* said once, against the top of the group */}
+        {r.tied && showRank && (
+          <Text style={s.tiedNote}>{r.tiedCount} players tied here</Text>
+        )}
+      </View>
+
       {r.me && <View style={s.youChip}><Text style={s.youChipText}>YOU</Text></View>}
 
       <Text style={s.pts}>{r.points.toLocaleString()}</Text>
@@ -530,8 +593,6 @@ function Row({
 const styles = (T: any) =>
   StyleSheet.create({
     backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.7)" },
-    /* NO PADDING HERE — the sheet's width is set explicitly on the card below,
-       so the centring view shouldn't be squeezing it as well. */
     centre: { flex: 1, alignItems: "center", justifyContent: "center" },
     card: { width: SHEET_W, height: SHEET_H },
 
@@ -583,8 +644,6 @@ const styles = (T: any) =>
     loadingText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
     emptyText: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 19 },
 
-    /* TALL ENOUGH FOR THE REVEAL. The stars need somewhere to go, and a row
-       that clips what it's showing is worse than a taller one. */
     row: {
       flexDirection: "row", alignItems: "center", gap: 9,
       minHeight: ROW_MIN_H,
@@ -593,15 +652,15 @@ const styles = (T: any) =>
     },
     rowMe: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder },
     rank: { minWidth: 34, fontSize: 13, color: T.sub, fontFamily: FONTS.heading, textAlign: "center" },
+    rankBlank: { minWidth: 34 },
 
-    /* the identical box every crown lives in */
     crownBox: {
       width: CROWN_BOX, height: CROWN_BOX,
       alignItems: "center", justifyContent: "center",
     },
 
-    name: { flex: 1, fontSize: 13, fontFamily: FONTS.headingMed },
-    tied: { fontSize: 9, color: T.micro, fontFamily: FONTS.body },
+    name: { fontSize: 13, fontFamily: FONTS.headingMed },
+    tiedNote: { fontSize: 9, color: T.micro, fontFamily: FONTS.body, marginTop: 2 },
     youChip: { backgroundColor: T.greenBg, borderRadius: 5, paddingHorizontal: 5, paddingVertical: 2 },
     youChipText: { fontSize: 9, color: T.green, fontFamily: FONTS.heading },
     pts: { fontSize: 12.5, color: T.text, fontFamily: FONTS.headingMed },

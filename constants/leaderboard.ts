@@ -1,11 +1,26 @@
 // constants/leaderboard.ts
 // Reading the standings.
 //
-// THE POINTS ARE NOT WORKED OUT HERE. They're computed in the database, by a
-// function that runs whenever a meal is logged or deleted. A phone can only
-// see its own user, so it could never rank anyone — and anything a phone
-// calculates, someone can lie about. This file only reads what's already
-// decided.
+// THE POINTS AND THE RANKS ARE NOT WORKED OUT HERE. Both are computed in the
+// database — points by a function that runs whenever a meal is logged or
+// deleted, ranks by the views. A phone can only see its own user, so it could
+// never rank anyone; and anything a phone calculates, someone can lie about.
+// This file reads what's already decided.
+//
+// DENSE RANKING, and it matters. Rank counts DISTINCT SCORES above you, not
+// people: fifty players tied on 400 are all #1, and 398 is #2 — not #51. The
+// competition-style alternative meant someone four points off the lead could
+// show as #112, which reads as a thrashing when the actual gap is nothing.
+// Dion's call, and the right one.
+//
+// SO RANK AND POSITION ARE DIFFERENT NUMBERS NOW, and conflating them breaks
+// "jump to me". Being #2 doesn't make you the second row — you might be the
+// hundredth, if ninety-eight people share first place. Rank is for SHOWING;
+// position is for FINDING. See myStanding().
+//
+// THE PERCENTILE STILL COUNTS PEOPLE. "#2 · top 51%" looks odd at a glance and
+// is two true things: second-best score, and half the board is above you.
+// Making the percentile agree with the rank would mean inventing a figure.
 //
 // SEASONS ARE CALENDAR MONTHS, and they end by themselves. Every row is
 // stamped with its month, so when the calendar turns, "this season" simply
@@ -13,10 +28,9 @@
 // overnight and wipe everyone's points. Past months stay, which is what the
 // all-time board adds up and what the crowns count.
 //
-// FIFTY AT A TIME. A board can hold every user, and someone at rank 4,318 can
-// scroll to themselves — but asking for five thousand rows at once is a slow
-// screen and a lot of someone's data allowance. It pages, the way the calorie
-// history already does.
+// FIFTY AT A TIME. A board can hold every user, and someone at position 4,318
+// can scroll to themselves — but asking for five thousand rows at once is a
+// slow screen and a lot of someone's data allowance.
 //
 // WHAT'S PUBLIC, AND WHAT ISN'T. This is the one place in the app where people
 // see each other, and what they see is a handle, points and a tier. Real
@@ -36,21 +50,27 @@ export type BoardRow = {
   tier: number;
   /** all-time only: how many seasons they've finished. Drives the crown. */
   seasons?: number;
-  /** worked out on this side — see rankRows */
+  /** DENSE rank — how many distinct scores are above them, plus one */
   rank: number;
-  /** several people on the same points share a rank */
+  /** how many people share this exact score */
+  tiedCount: number;
+  /** shorthand for tiedCount > 1 */
   tied: boolean;
   me?: boolean;
 };
 
 export type Standing = {
+  /** what to SHOW — dense, so it reads as a position in the race */
   rank: number;
+  /** where they actually sit in the list — what "jump to me" needs. 1-based. */
+  position: number;
   points: number;
   tier: number;
   /** how many people are on this board at all */
   total: number;
-  /** "top 14%" — kinder and more meaningful than "4,318th" */
+  /** "top 14%" — counted in PEOPLE, so it stays a real measure of standing */
   topPercent: number;
+  tiedCount: number;
   tied: boolean;
 };
 
@@ -79,9 +99,8 @@ export type Season = {
 
     THE COUNTDOWN IS THE POINT. Someone joining on the 28th sees a hopeless
     rank; seeing "3 days left, then everyone starts level" turns that into a
-    reason to stay. Dion's call, and the right one — no leaderboard can be
-    fair to someone who joined yesterday, but a monthly reset is the closest
-    thing to it. */
+    reason to stay. No leaderboard can be fair to someone who joined
+    yesterday, but a monthly reset is the closest thing to it. */
 export function currentSeason(now = new Date()): Season {
   const start = new Date(now.getFullYear(), now.getMonth(), 1);
   const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -121,11 +140,17 @@ export function seasonLine(s: Season): string {
 const viewFor = (scope: BoardScope) =>
   scope === "total" ? "leaderboard_alltime" : "leaderboard_current";
 
+/** the regional board ranks within one country, so it reads different columns
+    from the same view */
+const rankCol = (scope: BoardScope) =>
+  scope === "regional" ? "rank_regional" : "rank_general";
+const tiedCol = (scope: BoardScope) =>
+  scope === "regional" ? "tied_regional" : "tied_general";
+
 /** One page of a board.
 
-    `startRank` is what the first row on this page ranks — the caller doesn't
-    have to track it, because a page starting at offset 50 doesn't necessarily
-    start at rank 51 once ties are counted. */
+    `offset` is a POSITION in the list, not a rank — see the note at the top
+    about why those are now different numbers. */
 export async function loadBoard(opts: {
   scope: BoardScope;
   /** required for the regional board; ignored otherwise */
@@ -140,12 +165,23 @@ export async function loadBoard(opts: {
     return { rows: [], error: "No region set on your profile yet." };
   }
 
+  const cols = [
+    "user_id", "handle", "region", "points", "tier",
+    rankCol(scope), tiedCol(scope),
+    scope === "total" ? "seasons" : null,
+  ].filter(Boolean).join(", ");
+
   let q = supabase
     .from(viewFor(scope))
-    .select("user_id, handle, region, points, tier" + (scope === "total" ? ", seasons" : ""))
+    .select(cols)
     .order("points", { ascending: false })
-    /* a STABLE second sort. Without one, two people on the same points can
-       swap places between pages and appear twice — or not at all. */
+    /* OLDEST ACCOUNT FIRST within a tied group. It decides display order only;
+       the rank itself is shared, so nobody is promoted above someone on
+       identical points.
+       user_id is the final tiebreak: two people could have signed up in the
+       same second, and without something stable they'd swap places between
+       pages and appear twice, or not at all. */
+    .order("joined_at", { ascending: true, nullsFirst: false })
     .order("user_id", { ascending: true })
     .range(offset, offset + limit - 1);
 
@@ -156,74 +192,31 @@ export async function loadBoard(opts: {
   if (error) return { rows: [], error: error.message };
   if (!data?.length) return { rows: [], error: null };
 
-  /* what rank does this page START at? Count everyone with MORE points than
-     its first row — that's the number of people above them, whatever the ties
-     look like. */
-  const first = data[0] as any;
-  let above = supabase
-    .from(viewFor(scope))
-    .select("user_id", { count: "exact", head: true })
-    .gt("points", first.points);
+  const rank = rankCol(scope);
+  const tied = tiedCol(scope);
 
-  if (scope === "regional") above = above.eq("region", region);
+  const rows: BoardRow[] = (data as any[]).map((r) => ({
+    userId: r.user_id,
+    handle: r.handle,
+    region: r.region ?? null,
+    points: r.points ?? 0,
+    tier: r.tier ?? 1,
+    seasons: r.seasons,
+    /* straight from the database — no ranking arithmetic on this side */
+    rank: r[rank] ?? 1,
+    tiedCount: r[tied] ?? 1,
+    tied: (r[tied] ?? 1) > 1,
+    me: meId ? r.user_id === meId : false,
+  }));
 
-  const { count } = await above;
-  const startRank = (count ?? 0) + 1;
-
-  return { rows: rankRows(data as any[], startRank, meId), error: null };
+  return { rows, error: null };
 }
 
-/** Turn a page of rows into ranked ones.
+/** Where the user stands, without loading the pages in between.
 
-    SHARED RANKS. Equal points means equal rank — and the next distinct total
-    takes the rank AFTER the whole tied group, so three people tied at #1 are
-    followed by #4. Showing one of two identical scores as second would be
-    plainly unfair, and points are visible so any other choice would look like
-    a bug. */
-function rankRows(raw: any[], startRank: number, meId?: string | null): BoardRow[] {
-  const rows: BoardRow[] = [];
-
-  let rank = startRank;
-  let lastPoints: number | null = null;
-  let seen = 0;
-
-  raw.forEach((r) => {
-    seen++;
-    if (lastPoints != null && r.points !== lastPoints) {
-      /* the next distinct score sits below everyone tied above it */
-      rank = startRank + seen - 1;
-    }
-    lastPoints = r.points;
-
-    rows.push({
-      userId: r.user_id,
-      handle: r.handle,
-      region: r.region ?? null,
-      points: r.points ?? 0,
-      tier: r.tier ?? 1,
-      seasons: r.seasons,
-      rank,
-      tied: false,
-      me: meId ? r.user_id === meId : false,
-    });
-  });
-
-  /* mark the ties once the whole page is built — a row is tied if anything
-     next to it shares its rank */
-  rows.forEach((row, i) => {
-    const prev = rows[i - 1];
-    const next = rows[i + 1];
-    row.tied = (!!prev && prev.rank === row.rank) || (!!next && next.rank === row.rank);
-  });
-
-  return rows;
-}
-
-/** Where the user actually stands, without loading the pages in between.
-
-    Two counts rather than a scan: how many are above them, and how many are on
-    the board at all. That's a fast answer at any size, and it's what makes
-    "jump to me" possible without walking four thousand rows. */
+    RETURNS BOTH NUMBERS. `rank` is dense and is what gets shown; `position` is
+    how far down the list they physically are, and is the only thing "jump to
+    me" can use. With ninety-eight people tied at first, #2 lives on page two. */
 export async function myStanding(
   userId: string,
   scope: BoardScope,
@@ -234,10 +227,12 @@ export async function myStanding(
   }
 
   const view = viewFor(scope);
+  const rank = rankCol(scope);
+  const tied = tiedCol(scope);
 
   const { data: mine, error: mineErr } = await supabase
     .from(view)
-    .select("points, tier")
+    .select(`points, tier, ${rank}, ${tied}`)
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -245,49 +240,52 @@ export async function myStanding(
   /* nothing logged this season yet — not an error, just nothing to rank */
   if (!mine) return { standing: null, error: null };
 
+  const myPoints = (mine as any).points ?? 0;
+
+  /* how many PEOPLE are above them. Two jobs: the percentile, and the
+     starting position for "jump to me". */
   let aboveQ = supabase
     .from(view)
     .select("user_id", { count: "exact", head: true })
-    .gt("points", mine.points);
+    .gt("points", myPoints);
 
   let totalQ = supabase
     .from(view)
     .select("user_id", { count: "exact", head: true });
 
-  let tiedQ = supabase
-    .from(view)
-    .select("user_id", { count: "exact", head: true })
-    .eq("points", mine.points);
-
   if (scope === "regional") {
     aboveQ = aboveQ.eq("region", region);
     totalQ = totalQ.eq("region", region);
-    tiedQ = tiedQ.eq("region", region);
   }
 
-  const [{ count: above }, { count: total }, { count: tiedCount }] = await Promise.all([
-    aboveQ, totalQ, tiedQ,
-  ]);
+  const [{ count: above }, { count: total }] = await Promise.all([aboveQ, totalQ]);
 
-  const rank = (above ?? 0) + 1;
+  const peopleAbove = above ?? 0;
   const totalPlayers = total ?? 1;
 
   return {
     standing: {
-      rank,
-      points: mine.points ?? 0,
-      tier: mine.tier ?? 1,
+      rank: (mine as any)[rank] ?? 1,
+      /* 1-based, and it lands them at the TOP of their tied group rather than
+         somewhere in the middle of it */
+      position: peopleAbove + 1,
+      points: myPoints,
+      tier: (mine as any).tier ?? 1,
       total: totalPlayers,
-      /* rounded UP, so someone at rank 1 of 100 reads "top 1%" rather than
+      /* rounded UP, so someone at the very top reads "top 1%" rather than
          "top 0%", which would be nonsense */
-      topPercent: Math.max(1, Math.ceil((rank / totalPlayers) * 100)),
-      tied: (tiedCount ?? 1) > 1,
+      topPercent: Math.max(1, Math.ceil(((peopleAbove + 1) / totalPlayers) * 100)),
+      tiedCount: (mine as any)[tied] ?? 1,
+      tied: ((mine as any)[tied] ?? 1) > 1,
     },
     error: null,
   };
 }
 
-/** the page a given rank falls on — what "jump to me" needs */
-export function pageForRank(rank: number, size = PAGE_SIZE): number {
-  return Math.max(0, Math.floor((rank - 1) / size) * size);
+/** the page a POSITION falls on — what "jump to me" needs.
+
+    Takes a position, not a rank. Passing a dense rank here would send someone
+    to page one when they're actually two thousand rows down. */
+export function pageForPosition(position: number, size = PAGE_SIZE): number {
+  return Math.max(0, Math.floor((position - 1) / size) * size);
 }
