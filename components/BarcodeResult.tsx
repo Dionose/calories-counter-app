@@ -10,11 +10,22 @@
 //      Gemini and gives the manufacturer's exact figures.
 //   3. RESULT — the amount ladder and the log button.
 //
-// AND WHEN THE SCAN FINDS NOTHING, that's no longer a dead end. A bag of large
-// green lentils has a name on the front and a nutrition panel on the back —
-// the user is holding the answer, so AddFoodFlow takes two photos and saves
-// the food against this barcode. Scanning the same packet next month finds
-// their own entry instantly.
+// AND WHEN THE SCAN FINDS NOTHING, that's no longer a dead end. AddFoodFlow
+// takes two photos and saves the food against this barcode.
+//
+// ⚠️ CONFIRMING A LABEL SAVES IT — EVEN FOR A PRODUCT THE DATABASE KNEW.
+// Open Food Facts is volunteer-entered: it often has a product's per-100g
+// figures but a vague or missing serving size, which is exactly why this
+// screen offers the panel photo in the first place. That reading used to be
+// thrown away the moment the meal was logged, so the same carton got
+// photographed again next week and the week after.
+//
+// A user's own label reading BEATS the database permanently, not just for one
+// meal. So confirming it writes a custom food against this barcode, and the
+// lookup at the top of this file finds it first from then on. Same rule as
+// AddFoodFlow, which had the same bug and was fixed first: photographing is
+// building your library, logging is saying you ate it, and the two are
+// separate acts.
 //
 // NOTHING READ FROM A PHOTO IS APPLIED SILENTLY. A misread panel is WORSE than
 // no panel: the user trusts it because it came from their own label. So the
@@ -26,7 +37,7 @@ import { AlertTriangle, BadgeCheck, Camera, Check, ChevronRight, Info, Minus, Pl
 import React, { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
-import { customToFoodDef, findCustomByBarcode } from "../constants/customFoods";
+import { customToFoodDef, findCustomByBarcode, saveCustomFood } from "../constants/customFoods";
 import { lookupBarcode } from "../constants/foodApi";
 import { colorFor } from "../constants/foodColors";
 import { Amount, FoodDef, nutritionFor, rungDetail, rungLabel } from "../constants/foods";
@@ -116,6 +127,9 @@ export default function BarcodeResult({
 
   const [stage, setStage] = useState<Stage>("looking");
   const [food, setFood] = useState<FoodDef | null>(null);
+  /* the name as the database gave it, kept for saving — food.name may have
+     the brand appended for display */
+  const [rawName, setRawName] = useState<string>("");
 
   const [reading, setReading] = useState<LabelReading | null>(null);
   const [fromLabel, setFromLabel] = useState(false);
@@ -129,6 +143,10 @@ export default function BarcodeResult({
 
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  /* keeping the label reading for next time — separate from logging the meal */
+  const [keeping, setKeeping] = useState(false);
+  const [keepErr, setKeepErr] = useState<string | null>(null);
+  const [kept, setKept] = useState(false);
 
   /* ---------- THE LOOKUP ----------
      THE USER'S OWN FOODS FIRST. Someone who photographed this packet once
@@ -146,6 +164,7 @@ export default function BarcodeResult({
         if (own) {
           const f = customToFoodDef(own);
           setFood(f);
+          setRawName(own.name);
           setIdx(0);
           setCount(1);
           setFromSaved(true);
@@ -163,6 +182,7 @@ export default function BarcodeResult({
       if (!f) { setStage("missing"); return; }
 
       setFood(f);
+      setRawName(f.name);
       setIdx(f.defaultIndex);
       setCount(1);
       H.success();
@@ -218,30 +238,30 @@ export default function BarcodeResult({
     if (r.confident) H.success(); else H.warn();
   };
 
-  /** accept the reading — rebuild the food from the LABEL'S numbers */
-  const acceptReading = () => {
-    if (!food || !reading) return;
+  /** build the food from the LABEL'S numbers — pure, no saving */
+  const foodFromReading = (r: LabelReading): FoodDef | null => {
+    if (!food) return null;
 
-    const per100 = per100From(reading);
-    if (!per100) { setStage("result"); return; }
+    const per100 = per100From(r);
+    if (!per100) return null;
 
-    const servingG = reading.servingGrams ?? reading.servingMl ?? null;
+    const servingG = r.servingGrams ?? r.servingMl ?? null;
 
     /* EVERY MEASURE THE LABEL GAVE. Someone who thinks in cups, someone who
        thinks in ml and someone who thinks in grams are all looking at the same
        rung, and each should find their own unit without converting anything. */
     const measures: string[] = [];
-    if (reading.servingMl) measures.push(`${Math.round(reading.servingMl)} ml`);
-    if (reading.servingGrams) measures.push(`${Math.round(reading.servingGrams)} g`);
-    else if (reading.servingMl) measures.push(`about ${Math.round(reading.servingMl)} g`);
+    if (r.servingMl) measures.push(`${Math.round(r.servingMl)} ml`);
+    if (r.servingGrams) measures.push(`${Math.round(r.servingGrams)} g`);
+    else if (r.servingMl) measures.push(`about ${Math.round(r.servingMl)} g`);
 
     const labelRung: Amount = {
-      label: reading.servingText || "One serving",
+      label: r.servingText || "One serving",
       hint: measures.length
         ? `${measures.join(", ")} — read from your packet`
         : "read from your packet",
       grams: Math.round(servingG || 100),
-      ml: reading.servingMl ?? undefined,
+      ml: r.servingMl ?? undefined,
       unit: "serving",
       unitPlural: "servings",
       exact: true,
@@ -251,7 +271,7 @@ export default function BarcodeResult({
       (a) => !a.exact && Math.abs(a.grams - (servingG || 0)) > (servingG || 100) * 0.08
     );
 
-    setFood({
+    return {
       ...food,
       per100: per100.per100,
       p: per100.p,
@@ -259,8 +279,55 @@ export default function BarcodeResult({
       f: per100.f,
       amounts: [labelRung, ...others],
       defaultIndex: 0,
-    });
+    };
+  };
 
+  /** ---------- ACCEPT THE READING — AND KEEP IT ----------
+      This is the fix. The reading is applied to the food on screen AND written
+      against this barcode, so scanning this product again brings back the
+      user's own figures rather than the database's vague ones.
+
+      A failed save does NOT block them. Unlike AddFoodFlow — where a failure
+      means losing two photos and the whole food — here there's a perfectly
+      good reading already on screen and a meal waiting to be logged. Losing
+      "we'll remember this" is a smaller loss than blocking the log, so it
+      warns and carries on. */
+  const acceptReading = async () => {
+    if (!food || !reading || keeping) return;
+
+    const next = foodFromReading(reading);
+    if (!next) { setStage("result"); return; }
+
+    const per100 = per100From(reading);
+
+    if (userId && code && per100) {
+      setKeeping(true);
+      setKeepErr(null);
+
+      const { error } = await saveCustomFood(userId, {
+        name: rawName || food.name,
+        brand: null,
+        barcode: code,
+        per100: per100.per100,
+        protein: per100.p,
+        carbs: per100.c,
+        fat: per100.f,
+        servingText: reading.servingText,
+        servingGrams: reading.servingGrams,
+        servingMl: reading.servingMl,
+      });
+
+      setKeeping(false);
+
+      if (error) {
+        console.log("BARCODE: couldn't keep label reading →", error);
+        setKeepErr(error);
+      } else {
+        setKept(true);
+      }
+    }
+
+    setFood(next);
     setIdx(0);
     setCount(1);
     setFromLabel(true);
@@ -286,9 +353,11 @@ export default function BarcodeResult({
         onClose={() => setStage("missing")}
         onDone={({ food: f }) => {
           setFood(f);
+          setRawName(f.name);
           setIdx(0);
           setCount(1);
           setFromLabel(true);
+          setKept(true);
           setStage("result");
         }}
       />
@@ -434,13 +503,23 @@ export default function BarcodeResult({
                 </TravelBorder>
               </View>
 
+              {/* THE SAVE, and it says so. The database's serving size is often
+                  vague or missing — this reading is better, and it should
+                  outlive this one meal. */}
               <Tap onPress={acceptReading} style={{ marginTop: 18 }}>
-                <View style={s.confirmBtn}>
-                  <Text style={s.confirmBtnText}>Yes, that's my label</Text>
+                <View style={[s.confirmBtn, keeping && { opacity: 0.6 }]}>
+                  <Text style={s.confirmBtnText}>
+                    {keeping ? "Saving…" : "Yes, that's my label — save it"}
+                  </Text>
                 </View>
               </Tap>
 
-              <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 10 }}>
+              <Text style={s.keepNote}>
+                MOTION keeps these figures against this barcode. Scan this product again and your
+                own reading comes back — no photo, and no vague database serving size.
+              </Text>
+
+              <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 12 }}>
                 <View style={s.retryBtn}>
                   <RefreshCw size={15} color={T.sub} />
                   <Text style={s.retryText}>Something's off — take it again</Text>
@@ -597,6 +676,30 @@ export default function BarcodeResult({
         <Text style={s.productName}>{food.name}</Text>
         {code ? <Text style={s.codeLine}>Barcode {code}</Text> : null}
 
+        {/* IT'S KEPT — said once, quietly. They tapped a button that promised
+            this, and a promise with no confirmation is how the last bug went
+            unnoticed for so long. */}
+        {kept && fromLabel && (
+          <View style={s.keptRow}>
+            <Check size={13} color={T.gold} />
+            <Text style={s.keptText}>
+              Saved to your foods — scanning this barcode again brings your own reading straight
+              back.
+            </Text>
+          </View>
+        )}
+
+        {/* and when it DIDN'T save, say that too rather than pretending */}
+        {keepErr && fromLabel && (
+          <View style={s.keepFailRow}>
+            <AlertTriangle size={13} color={T.sub} />
+            <Text style={s.keepFailText}>
+              MOTION couldn't save these figures for next time, but they're being used for this
+              meal. You can scan again later to retry.
+            </Text>
+          </View>
+        )}
+
         {!hasAnyExact && !fromLabel && !fromSaved && (
           <Tap onPress={() => { H.tap(); setStage("found"); }} style={{ marginTop: 16 }}>
             <View style={s.checkCard}>
@@ -608,7 +711,8 @@ export default function BarcodeResult({
                 The nutrition here came off this product's label, but the database didn't record
                 what it calls one serving — so the amounts below are MOTION's estimates.
                 {"\n\n"}
-                Photographing the panel takes a second and gets the manufacturer's own figures.
+                Photographing the panel takes a second, gets the manufacturer's own figures, and
+                MOTION keeps them for every time you scan this product from now on.
               </Text>
             </View>
           </Tap>
@@ -779,6 +883,10 @@ const styles = (T: any) =>
 
     confirmBtn: { backgroundColor: T.gold, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
     confirmBtnText: { fontSize: 14.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
+    keepNote: {
+      fontSize: 10.5, color: T.micro, fontFamily: FONTS.body,
+      textAlign: "center", marginTop: 10, lineHeight: 16, paddingHorizontal: 6,
+    },
     retryBtn: {
       flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
@@ -805,6 +913,20 @@ const styles = (T: any) =>
     exactText: { fontSize: 10, letterSpacing: 1.2, color: T.green, fontFamily: FONTS.body },
     productName: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, lineHeight: 28 },
     codeLine: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 4, letterSpacing: 0.5 },
+
+    keptRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 12,
+      backgroundColor: "rgba(251,191,36,0.08)", borderWidth: 1, borderColor: `${T.gold}44`,
+      borderRadius: 12, padding: 11,
+    },
+    keptText: { flex: 1, fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 16.5 },
+
+    keepFailRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 12,
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 12, padding: 11,
+    },
+    keepFailText: { flex: 1, fontSize: 11, color: T.micro, fontFamily: FONTS.body, lineHeight: 16 },
 
     checkCard: {
       backgroundColor: "rgba(251,191,36,0.07)",
