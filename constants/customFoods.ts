@@ -11,6 +11,13 @@
 // AND WHY IT SAVES. Photographing a panel takes seconds, but doing it every
 // week for the same bag of lentils is a chore that would stop them logging it
 // at all. Once is reasonable; once a week is not.
+//
+// SAVING IS SEPARATE FROM LOGGING. Photographing a product is building your
+// own food library; logging is saying you ate it. They used to be tangled
+// together — the food was only written as a side effect of logging a meal —
+// so someone who photographed a carton of almond milk, confirmed the label,
+// then backed out without eating it lost the lot. Scanning the same carton
+// again found nothing. Confirming the label is now the save.
 import { Amount, FoodDef } from "./foods";
 import { kindFor, liquidPortions, packPortions, powderPortions, proteinPortions, scoopPortions, spreadPortions } from "./portions";
 import { supabase } from "./supabase";
@@ -30,11 +37,16 @@ export type CustomFood = {
   createdAt: string;
 };
 
-/** save a food the user photographed.
+/** save a food the user photographed, or update it if they've saved this
+    barcode before.
 
-    The barcode goes in when they arrived from a failed scan — so scanning that
-    same packet in three months finds their own entry rather than the
-    not-found screen again. */
+    UPDATES RATHER THAN DUPLICATES. Now that confirming a label saves, the same
+    packet can easily be scanned and confirmed several times — a second reading
+    of the same barcode should REPLACE the first, not sit beside it. Otherwise
+    the food list fills with copies and their search results turn to mush.
+
+    A re-read is also usually the BETTER reading: someone rescanning a packet
+    they already have is generally doing it because the first attempt was off. */
 export async function saveCustomFood(
   userId: string,
   food: {
@@ -50,21 +62,41 @@ export async function saveCustomFood(
     servingMl?: number | null;
   }
 ): Promise<{ id: string | null; error: string | null }> {
+  const row = {
+    user_id: userId,
+    name: food.name,
+    brand: food.brand || null,
+    barcode: food.barcode || null,
+    per100: Math.round(food.per100),
+    protein: food.protein,
+    carbs: food.carbs,
+    fat: food.fat,
+    serving_text: food.servingText || null,
+    serving_grams: food.servingGrams ?? null,
+    serving_ml: food.servingMl ?? null,
+  };
+
+  /* only a BARCODE identifies the same product reliably. Two foods can share a
+     name — "protein powder" from different tubs — so a name match would
+     overwrite something the user meant to keep. */
+  if (food.barcode) {
+    const existing = await findCustomByBarcode(userId, food.barcode);
+
+    if (existing) {
+      const { error } = await supabase
+        .from("custom_foods")
+        .update(row)
+        .eq("id", existing.id)
+        .eq("user_id", userId);
+
+      if (error) return { id: null, error: error.message };
+      return { id: existing.id, error: null };
+    }
+  }
+
   const { data, error } = await supabase
     .from("custom_foods")
-    .insert({
-      user_id: userId,
-      name: food.name,
-      brand: food.brand || null,
-      barcode: food.barcode || null,
-      per100: Math.round(food.per100),
-      protein: food.protein,
-      carbs: food.carbs,
-      fat: food.fat,
-      serving_text: food.servingText || null,
-      serving_grams: food.servingGrams ?? null,
-      serving_ml: food.servingMl ?? null,
-    })
+    .insert(row)
     .select("id")
     .single();
 
@@ -106,11 +138,17 @@ export async function searchCustomFoods(userId: string, query: string): Promise<
     scan gets their own entry back the next time they scan that packet — no
     photographs, no typing, straight to the amount screen. */
 export async function findCustomByBarcode(userId: string, barcode: string): Promise<CustomFood | null> {
+  const code = barcode.trim();
+  if (!code) return null;
+
   const { data, error } = await supabase
     .from("custom_foods")
     .select("*")
     .eq("user_id", userId)
-    .eq("barcode", barcode)
+    .eq("barcode", code)
+    /* newest first, so if an older duplicate exists from before saves started
+       updating in place, the most recent reading is the one that comes back */
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 

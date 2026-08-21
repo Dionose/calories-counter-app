@@ -10,20 +10,31 @@
 //
 // TWO PHOTOS, NO TYPING. The front for the name, the panel for the numbers.
 // "Large green lentils" is a genuinely annoying thing to thumb into a phone
-// while standing in a kitchen, and the camera is already open — asking someone
-// to transcribe what the phone can plainly see is the kind of small friction
-// that stops people logging at all.
+// while standing in a kitchen, and the camera is already open.
 //
-// Typing stays available underneath, quietly, for the jar with a handwritten
-// sticker. But the camera opens first, because that's what nearly everyone
-// will want.
+// ⚠️ CONFIRMING THE LABEL IS THE SAVE. It used to be that saving happened only
+// if you took the "Save it and log it" path — so someone who photographed a
+// carton of almond milk, confirmed the reading, then backed out without eating
+// it lost everything. Scanning that carton again found nothing, twice over,
+// with no error and no explanation. Found on a real product.
+//
+// The two acts are separate: photographing a packet is BUILDING YOUR FOOD
+// LIBRARY, logging is saying you ate it. Someone cataloguing the cupboard
+// shouldn't have to pretend to eat things. So confirming the reading writes
+// the food, immediately, and whether they go on to log it is a different
+// question.
+//
+// AND A FAILED SAVE STOPS EVERYTHING. The old code set an error message and
+// then navigated away in the same breath, so the message was never seen — a
+// silent failure dressed up as success. Now nothing moves until the write
+// comes back.
 import * as FileSystem from "expo-file-system/legacy";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
-import { AlertTriangle, BadgeCheck, Pencil, RefreshCw, X } from "lucide-react-native";
+import { AlertTriangle, BadgeCheck, Check, Pencil, RefreshCw, X } from "lucide-react-native";
 import React, { useState } from "react";
 import {
-    KeyboardAvoidingView, Platform, Pressable, ScrollView,
-    StyleSheet, Text, TextInput, View,
+  KeyboardAvoidingView, Platform, Pressable, ScrollView,
+  StyleSheet, Text, TextInput, View,
 } from "react-native";
 import { useApp } from "../constants/AppState";
 import { saveCustomFood } from "../constants/customFoods";
@@ -37,11 +48,11 @@ import LabelCamera from "./LabelCamera";
 import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
-type Step = "front" | "readingFront" | "typeName" | "panel" | "readingPanel" | "confirm";
+type Step = "front" | "readingFront" | "typeName" | "panel" | "readingPanel" | "confirm" | "saved";
 
 export type AddedFood = {
   food: FoodDef;
-  /** null when they chose not to keep it */
+  /** null when the save failed and they chose to carry on anyway */
   savedId: string | null;
 };
 
@@ -100,6 +111,10 @@ export default function AddFoodFlow({
 
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  /* the food, built and kept once saved — so the "log it" button on the next
+     screen doesn't have to rebuild it */
+  const [savedFood, setSavedFood] = useState<FoodDef | null>(null);
+  const [savedId, setSavedId] = useState<string | null>(null);
 
   /* ---------- PHOTO 1: what is it? ---------- */
   const readFront = async (uri: string) => {
@@ -165,45 +180,11 @@ export default function AddFoodFlow({
     if (r.confident) H.success(); else H.warn();
   };
 
-  /* ---------- keep it, or just log it once ---------- */
-  const finish = async (keep: boolean) => {
-    if (!reading) return;
+  /** build the FoodDef from the reading. Pure — no saving, no navigation. */
+  const buildFood = (finalName: string): FoodDef | null => {
+    if (!reading) return null;
     const per100 = per100From(reading);
-    if (!per100) return;
-
-    const finalName = (name || typed).trim();
-    if (!finalName) return;
-
-    let savedId: string | null = null;
-
-    if (keep && userId) {
-      setSaving(true);
-      setSaveErr(null);
-
-      const { id, error } = await saveCustomFood(userId, {
-        name: finalName,
-        brand,
-        barcode,
-        per100: per100.per100,
-        protein: per100.p,
-        carbs: per100.c,
-        fat: per100.f,
-        servingText: reading.servingText,
-        servingGrams: reading.servingGrams,
-        servingMl: reading.servingMl,
-      });
-
-      setSaving(false);
-
-      if (error) {
-        /* a failed save shouldn't block the log — they can still eat the
-           lentils today and add them properly another time */
-        setSaveErr(error);
-        H.warn();
-      } else {
-        savedId = id;
-      }
-    }
+    if (!per100) return null;
 
     const servingG = reading.servingGrams ?? reading.servingMl ?? null;
 
@@ -224,7 +205,7 @@ export default function AddFoodFlow({
       exact: true,
     };
 
-    const food: FoodDef = {
+    return {
       name: brand ? `${finalName} · ${brand}` : finalName,
       sub: "your own",
       key: "greens",
@@ -243,9 +224,76 @@ export default function AddFoodFlow({
       gramsPerUnit: servingG || 100,
       mlPerUnit: reading.servingMl ?? undefined,
     };
+  };
 
+  /* ---------- CONFIRMING THE LABEL — THIS IS THE SAVE ----------
+     Nothing moves until the write comes back. A failure stays on this screen
+     with the food still on it, because the alternative is what caused the bug
+     this whole change exists to fix: an error prepared, then navigated past. */
+  const confirmAndSave = async () => {
+    if (saving || !reading) return;
+
+    const per100 = per100From(reading);
+    if (!per100) return;
+
+    const finalName = (name || typed).trim();
+    if (!finalName) {
+      setSaveErr("Give it a name first — tap the name above to type one.");
+      H.warn();
+      return;
+    }
+
+    const food = buildFood(finalName);
+    if (!food) return;
+
+    if (!userId) {
+      setSaveErr("You're signed out, so MOTION can't save this food. Sign in and try again.");
+      H.warn();
+      return;
+    }
+
+    setSaving(true);
+    setSaveErr(null);
+
+    const { id, error } = await saveCustomFood(userId, {
+      name: finalName,
+      brand,
+      barcode,
+      per100: per100.per100,
+      protein: per100.p,
+      carbs: per100.c,
+      fat: per100.f,
+      servingText: reading.servingText,
+      servingGrams: reading.servingGrams,
+      servingMl: reading.servingMl,
+    });
+
+    setSaving(false);
+
+    if (error) {
+      /* STAY PUT. They've taken two photos; losing that to a silent failure is
+         the worst thing this screen could do. */
+      setSaveErr(error);
+      H.warn();
+      return;
+    }
+
+    setSavedFood(food);
+    setSavedId(id);
     H.success();
-    onDone({ food, savedId });
+    setStep("saved");
+  };
+
+  /** they'd rather not keep it — log it once and it's gone.
+      Rare, but someone eating a friend's snack shouldn't have it clutter
+      their food list forever. */
+  const logWithoutSaving = () => {
+    const finalName = (name || typed).trim();
+    if (!finalName) return;
+    const food = buildFood(finalName);
+    if (!food) return;
+    H.tick();
+    onDone({ food, savedId: null });
   };
 
   if (!visible) return null;
@@ -357,7 +405,48 @@ export default function AddFoodFlow({
     );
   }
 
-  /* ---------- CONFIRM AND KEEP ---------- */
+  /* ---------- SAVED ----------
+     A real screen rather than a toast, because the whole point of this change
+     is that the user KNOWS the food is theirs now. From here, logging it is
+     optional — closing this screen keeps the food. */
+  if (step === "saved" && savedFood) {
+    return (
+      <View style={s.screen}>
+        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 56, paddingBottom: 30 }}>
+          <View style={s.savedWrap}>
+            <View style={s.savedCircle}>
+              <Check size={34} color={T.gold} />
+            </View>
+
+            <Text style={s.savedTitle}>Saved to your foods</Text>
+            <Text style={s.savedName}>{savedFood.name}</Text>
+
+            <Text style={s.savedBody}>
+              It's yours now. {barcode
+                ? "Scan this barcode again and MOTION will bring it straight up — no photos."
+                : "Search for it by name and it'll be there."}
+              {"\n\n"}
+              You can close this without logging anything and it stays saved.
+            </Text>
+
+            <Tap onPress={() => onDone({ food: savedFood, savedId })} style={{ width: "100%", marginTop: 22 }}>
+              <View style={s.primaryBtn}>
+                <Text style={s.primaryBtnText}>Log it to {meal.toLowerCase()}</Text>
+              </View>
+            </Tap>
+
+            <Tap onPress={onClose} style={{ width: "100%", marginTop: 10 }}>
+              <View style={s.secondaryBtn}>
+                <Text style={s.secondaryBtnText}>Not eating it now — just save it</Text>
+              </View>
+            </Tap>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  /* ---------- CONFIRM AND SAVE ---------- */
   const per100 = reading ? per100From(reading) : null;
   const usable = !!reading?.confident && !!per100;
 
@@ -434,35 +523,44 @@ export default function AddFoodFlow({
               </TravelBorder>
             </View>
 
+            {/* A REAL FAILURE, SAID OUT LOUD. This is the message that used to
+                be written and then navigated past. */}
             {saveErr ? (
               <View style={s.errRow}>
                 <AlertTriangle size={14} color={T.red} />
-                <Text style={s.errText}>Couldn't save it for next time — but you can still log it now.</Text>
+                <Text style={s.errText}>
+                  Couldn't save it: {saveErr}
+                  {"\n\n"}
+                  Nothing has been lost — tap the button again to retry, or log it just this once
+                  below.
+                </Text>
               </View>
             ) : null}
 
-            {/* KEEPING IT is the point. Photographing a panel takes seconds,
-                but doing it every week for the same bag of lentils is a chore
-                that would stop them bothering at all. */}
-            <Tap onPress={() => finish(true)} style={{ marginTop: 18 }}>
+            {/* THE SAVE. Not a side effect of logging — this button IS the
+                save, and it says so. */}
+            <Tap onPress={confirmAndSave} style={{ marginTop: 18 }}>
               <View style={[s.primaryBtn, saving && { opacity: 0.6 }]}>
                 <Text style={s.primaryBtnText}>
-                  {saving ? "Saving…" : "Save it and log it"}
+                  {saving ? "Saving…" : saveErr ? "Try saving again" : "Yes, that's my label — save it"}
                 </Text>
               </View>
             </Tap>
+
             <Text style={s.saveNote}>
-              Saved foods show up straight away when you search, so you'll never photograph this
-              packet again.
+              MOTION keeps this food for you. {barcode
+                ? "Scanning this barcode again brings it straight up, and it shows in search too."
+                : "It'll show up in search from now on."} You don't have to log it now — saving and
+              eating are two different things.
             </Text>
 
-            <Tap onPress={() => finish(false)} style={{ marginTop: 12 }}>
+            <Tap onPress={logWithoutSaving} style={{ marginTop: 14 }}>
               <View style={s.secondaryBtn}>
-                <Text style={s.secondaryBtnText}>Just log it this once</Text>
+                <Text style={s.secondaryBtnText}>Don't keep it — just log it this once</Text>
               </View>
             </Tap>
 
-            <Tap onPress={() => { H.tap(); setStep("panel"); }} style={{ marginTop: 10 }}>
+            <Tap onPress={() => { H.tap(); setSaveErr(null); setStep("panel"); }} style={{ marginTop: 10 }}>
               <View style={s.ghostBtn}>
                 <RefreshCw size={15} color={T.sub} />
                 <Text style={s.ghostBtnText}>Something's off — retake the panel</Text>
@@ -560,7 +658,7 @@ const styles = (T: any) =>
 
     primaryBtn: { backgroundColor: T.gold, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
     primaryBtnText: { fontSize: 14.5, color: "#0A0A0A", fontFamily: FONTS.headingMed },
-    saveNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 8, lineHeight: 15.5, paddingHorizontal: 10 },
+    saveNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 10, lineHeight: 16, paddingHorizontal: 6 },
 
     secondaryBtn: {
       backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
@@ -573,6 +671,20 @@ const styles = (T: any) =>
       paddingVertical: 12,
     },
     ghostBtnText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
+
+    /* saved */
+    savedWrap: { alignItems: "center", paddingTop: 40, gap: 8 },
+    savedCircle: {
+      width: 78, height: 78, borderRadius: 39,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: `${T.gold}66`,
+      alignItems: "center", justifyContent: "center", marginBottom: 10,
+    },
+    savedTitle: { fontSize: 11, letterSpacing: 1.2, color: T.gold, fontFamily: FONTS.headingMed, textTransform: "uppercase" },
+    savedName: { fontSize: 22, color: T.text, fontFamily: FONTS.heading, textAlign: "center", marginTop: 4 },
+    savedBody: {
+      fontSize: 12.5, color: T.sub, fontFamily: FONTS.body,
+      textAlign: "center", lineHeight: 19, marginTop: 12, paddingHorizontal: 6,
+    },
 
     failIcon: {
       width: 58, height: 58, borderRadius: 19, alignSelf: "center",

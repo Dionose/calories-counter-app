@@ -14,21 +14,23 @@
 //
 // TAP EDITS, HOLD REVEALS. Tapping any row opens the amount sheet, dish or
 // not, so that gesture never changes meaning. HOLDING a dish opens what went
-// into it. The row SAYS "hold to see what's in it" — a hidden gesture is only
-// fair when it's advertised.
+// into it. The row SAYS "hold to see" — a hidden gesture is only fair when
+// it's advertised.
 //
 // THE DISH ROW IS GOLD AND IT TRAVELS. Gold elsewhere means label-exact
 // manufacturer data, and this isn't that — Dion's call, made deliberately: the
-// barcode scanner and a home-cooked stew never share a screen, someone who
-// cooks their own curry isn't scanning packets, and a fifth colour costs more
-// in consistency than the overlap costs in meaning. The traveling border makes
-// it catch the eye, which is the point — it's the row with something behind
-// it.
+// barcode scanner and a home-cooked stew never share a screen, and a fifth
+// colour costs more in consistency than the overlap costs in meaning.
 //
 // SET ASIDE, NOT DELETED. When a description replaces the plate, what the
 // photo guessed and the person didn't mention drops below with its calories
 // shown but NOT counted. The photo saw something; maybe they forgot. Nothing
 // nags — log without touching it and it isn't logged.
+//
+// THE VOICE SHEET OPENS IN "improve" MODE from here, not "describe". There's
+// already a plate on screen, so asking "say what you ate" would be asking them
+// to repeat what MOTION just told them. What's actually missing is what the
+// photo COULDN'T see — the oil, the butter, what the dish really is.
 //
 // A HAND CORRECTION OUTRANKS A SPOKEN ONE.
 import { LinearGradient } from "expo-linear-gradient";
@@ -505,8 +507,8 @@ export default function MealResult({
           </TravelBorder>
         </View>
 
-        {/* TELL IT ABOUT THE DISH — the single most useful thing someone can do
-            here, and naming what went into a stew is the most useful version */}
+        {/* TELL IT WHAT IT COULDN'T SEE — a photo shows the surface, and the
+            calories hide in the oil underneath. */}
         <Tap
           onPress={() => { if (!fixing) { H.tap(); setVoiceOpen(true); } }}
           style={{ marginTop: 14 }}
@@ -526,7 +528,7 @@ export default function MealResult({
               <Text style={s.voiceSub}>
                 {fixing
                   ? "Working out what to change"
-                  : "What it is, how it was cooked, what went into it"}
+                  : "The oil, the butter, what it really is — the things a photo can't show"}
               </Text>
             </View>
             <ChevronRight size={17} color={T.micro} />
@@ -749,9 +751,12 @@ export default function MealResult({
         onPick={addPicked}
       />
 
+      {/* "improve", not "describe" — the plate is already on screen, so the
+          question is what the photo COULDN'T see */}
       <VoiceCapture
         visible={voiceOpen}
         meal={meal}
+        mode="improve"
         onClose={() => setVoiceOpen(false)}
         onTranscript={onTranscript}
       />
