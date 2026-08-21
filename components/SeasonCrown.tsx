@@ -3,12 +3,37 @@
 // tier, with the number of seasons finished at that tier set in the centre.
 // A higher tier REPLACES the lower one — you only ever wear one colour.
 //
+// THE STARS CAP AT 20; THE NUMBER DOESN'T.
+//
+// One star per season works until it doesn't. The burst splits into two rings
+// above eight, and twenty fills both handsomely — tested at that count and it
+// reads as full rather than crowded. Past twenty the rings run out of arc and
+// the stars smear into each other, and the outer ring reaches beyond the box.
+//
+// But the deeper reason is that nobody counts past about eight. A person sees
+// "lots" and reads the NUMBER in the middle for the actual figure — so every
+// star beyond that costs legibility and adds nothing. Someone with 40 seasons
+// sees a full ring and the number 40, which is the truth told the way it's
+// actually read.
+//
+// This matters mostly for Ultimate players, since the count only climbs while
+// someone stays at one tier — a higher tier replaces the badge and restarts
+// the count. So the people who reach big numbers are the ones wearing the best
+// badge, which is an argument for it staying handsome rather than degrading.
+//
 // PERFORMANCE — read before changing, this was tested the hard way:
 // The sheen animates strokeDashoffset over a path with hundreds of segments.
 // Running it on ten crowns freezes the app — and that holds EVEN on Reanimated
 // with the animation on the UI thread, because the cost is the SVG redraw, not
 // the bridge. So the sheen runs ONLY on the reveal crown, where there is one.
 // Everything in a list gets the float and nothing else.
+//
+// ⚠️ TWO SIZES, AND `fit` DECIDES WHICH. The reveal needs room for the stars to
+// fly out into, so by default it renders in a box 2.1× the crown's size with
+// the crown centred in it. `fit` keeps everything inside the crown's own
+// footprint instead — smaller orbit, clipped at the edge. The leaderboard uses
+// neither: it gives every crown a box the full 2.1× size, so animated and
+// still crowns can't drift apart.
 //
 // BACKGROUNDING: iOS suspends animations when you leave the app and resumes
 // them where they paused, so crowns come back bobbing out of step with each
@@ -21,6 +46,11 @@ import { FONTS, ULT_COLORS } from "../constants/theme";
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
 const SHEEN = "#FFF0B8";
+
+/* the most stars the burst will ever draw. Twenty fills two rings without
+   crowding; see the note at the top for why the number in the centre keeps
+   climbing past it. */
+const MAX_STARS = 20;
 
 // measured length of the crown outline in its 100-unit viewBox. react-native-svg
 // has no pathLength, so the dash values below are absolute rather than percentages.
@@ -44,7 +74,8 @@ function starPath(cx: number, cy: number, r: number) {
 type Props = {
   /** a tier hex, or "ultimate" for the rainbow */
   color?: string;
-  /** seasons finished at this tier */
+  /** seasons finished at this tier. Shown in full in the centre; the star
+      burst caps at MAX_STARS. */
   count: number;
   size?: number;
   /** play the full reveal instead of showing it settled */
@@ -54,6 +85,9 @@ type Props = {
   /** the travelling light. Defaults to ON only for the reveal crown. Never
       switch it on for a list — it freezes, and Reanimated does not rescue it. */
   sheen?: boolean;
+  /** keep the whole performance inside size × size, for a crown that has to
+      match a still one's footprint exactly */
+  fit?: boolean;
 };
 
 export default function SeasonCrown({
@@ -63,11 +97,16 @@ export default function SeasonCrown({
   sequence = false,
   playKey = 0,
   sheen,
+  fit = false,
 }: Props) {
   const ult = color === "ultimate";
   const id = useMemo(() => `sc${++uid}`, []);
   const metal = ult ? `url(#metal-${id})` : color;
   const numColor = ult ? "#FFFFFF" : color;
+
+  /* HOW MANY STARS ACTUALLY FLY. The number in the middle stays true — see the
+     note at the top of the file. */
+  const stars = Math.min(count, MAX_STARS);
 
   // only the reveal crown glows unless a caller insists
   const withSheen = sheen ?? sequence;
@@ -161,10 +200,16 @@ export default function SeasonCrown({
   const introScale = intro.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] });
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
 
-  const orbit = size * 0.5;
-  const rings = count > 8 ? 2 : 1;
-  const perRing = Math.ceil(count / rings);
-  const starSize = Math.max(10, size * 0.145);
+  /* THE ORBIT. On a stage the stars fly well clear of the crown; in `fit` they
+     hug it, because anything wider would spill past the footprint. */
+  const orbit = fit ? size * 0.34 : size * 0.5;
+  /* the ring split is based on the STARS DRAWN, not the true count — otherwise
+     a 40-season crown would try to split twenty stars across five rings */
+  const rings = stars > 8 ? 2 : 1;
+  const perRing = Math.ceil(stars / rings);
+  const starSize = fit
+    ? Math.max(5, size * 0.17)
+    : Math.max(10, size * 0.145);
 
   const crown = (
     <Svg width={size} height={size} viewBox="0 0 100 100">
@@ -205,11 +250,13 @@ export default function SeasonCrown({
 
       <Circle cx="44" cy="52" r="13" fill="#0A0A0A" opacity={0.9} />
       <Circle cx="44" cy="52" r="13" fill="none" stroke={metal} strokeWidth="1.6" />
+      {/* THE TRUE COUNT, always — the stars cap, this doesn't. A three-digit
+          number needs a smaller face to fit inside the disc. */}
       <SvgText
         x="44"
-        y="57.5"
+        y={count > 99 ? 56.5 : 57.5}
         textAnchor="middle"
-        fontSize="15"
+        fontSize={count > 99 ? 11 : 15}
         fill={numColor}
         fontFamily={FONTS.heading}
       >
@@ -227,10 +274,22 @@ export default function SeasonCrown({
     );
   }
 
-  // the reveal, with room for the stars to orbit
-  const box = size * 2.1;
+  /* THE BOX. In `fit` it's exactly the crown's size — same footprint as the
+     still version. Otherwise it's 2.1× so the stars have somewhere to fly. */
+  const box = fit ? size : size * 2.1;
+
   return (
-    <View style={{ width: box, height: box, alignItems: "center", justifyContent: "center" }}>
+    <View
+      style={{
+        width: box,
+        height: box,
+        alignItems: "center",
+        justifyContent: "center",
+        /* clipped in `fit`, so a star that reaches the corner is cut at the
+           edge rather than drawn over whatever is next to it */
+        overflow: fit ? "hidden" : "visible",
+      }}
+    >
       <Animated.View
         style={{
           position: "absolute",
@@ -241,10 +300,10 @@ export default function SeasonCrown({
           transform: [{ rotate }],
         }}
       >
-        {Array.from({ length: count }).map((_, i) => {
+        {Array.from({ length: stars }).map((_, i) => {
           const ringIdx = Math.floor(i / perRing);
           const idxInRing = i % perRing;
-          const inThis = ringIdx === rings - 1 ? count - perRing * ringIdx : perRing;
+          const inThis = ringIdx === rings - 1 ? stars - perRing * ringIdx : perRing;
           const a = (idxInRing / inThis) * Math.PI * 2 - Math.PI / 2;
           const r = orbit + ringIdx * starSize * 1.5;
 
