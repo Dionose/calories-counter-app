@@ -66,7 +66,7 @@ function fromDbDate(s?: string | null) {
    ⚠️ NOT signup_date. That column has no default from the app — Postgres fills
    it with the server's own date, and Postgres runs in UTC. Dion signed up at
    19:22 on August 18th in Edmonton, which is 01:22 on the 19th in UTC, so the
-   column says the 19th. His own calendar shows food logged on the 18th, and
+   column said the 19th. His own calendar showed food logged on the 18th, and
    the two disagreed by a day.
 
    created_at is a full timestamp rather than a bare date, so the moment
@@ -102,7 +102,12 @@ export function formatMemberSince(iso?: string): string {
 /** Write the profile. Used at the end of onboarding and by every Profile
     edit screen. UPSERT rather than insert: the first call creates the row,
     every later one updates it, and a retry after a dropped connection can't
-    create a duplicate. */
+    create a duplicate.
+
+    ⚠️ AWAIT THIS AT THE END OF ONBOARDING. It used to be fired and forgotten
+    there, and router.replace() unmounted the screen before the request left
+    the device — leaving accounts in auth.users with no profile row at all. Two
+    of Dion's three test accounts ended up in that state. */
 export async function saveProfile(userId: string, p: Profile, plan?: Plan) {
   const row: Record<string, any> = {
     id: userId,
@@ -139,10 +144,26 @@ export async function saveProfile(userId: string, p: Profile, plan?: Plan) {
     row.add_burned = plan.addBurned;
   }
 
-  /* undefined means "not supplied", and sending it would blank a column the
+  /* ---------- WHAT NOT TO SEND ----------
+     UNDEFINED means "not supplied", and sending it would blank a column the
      caller never intended to touch. Stripping it makes partial updates safe —
-     changing just the target weight leaves everything else alone. */
-  Object.keys(row).forEach((k) => row[k] === undefined && delete row[k]);
+     changing just the target weight leaves everything else alone.
+
+     ⚠️ AND EMPTY STRINGS, which is a second and less obvious fix. The app's
+     default profile has region: "" — so ANY write made while state was
+     momentarily at defaults would overwrite a real country with nothing.
+     Dion's region reset itself once and we couldn't reproduce it; this closes
+     the most likely explanation, and it matters more now that AppState repairs
+     missing rows from whatever is in memory.
+
+     A blank can no longer overwrite a real value. Clearing a field on purpose
+     needs an explicit null, not "".
+
+     NOTE the deliberate exception: photo_url is set to `?? null` above, so
+     removing a photo still writes a real null and clears the column. */
+  Object.keys(row).forEach((k) => {
+    if (row[k] === undefined || row[k] === "") delete row[k];
+  });
 
   const { error } = await supabase.from("profiles").upsert(row);
   return { error: error?.message ?? null };
@@ -150,7 +171,11 @@ export async function saveProfile(userId: string, p: Profile, plan?: Plan) {
 
 /** Load the profile for whoever is signed in. Returns nulls rather than
     throwing when there's no row — a brand-new account is a normal state, not
-    an error. */
+    an error.
+
+    A NULL PROFILE IS ALSO A SIGNAL. AppState treats it as "this account never
+    got its row written" and creates one, which is the safety net for the
+    onboarding race described above. */
 export async function loadProfile(userId: string) {
   const { data, error } = await supabase
     .from("profiles")

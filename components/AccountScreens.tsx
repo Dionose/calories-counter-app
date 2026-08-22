@@ -3,17 +3,23 @@
 // six editors. Grouped in one file because they only exist for each other —
 // splitting them into seven would spread one flow across seven places.
 //
-// ⚠️ THE COUNTRY LIST LIVES IN constants/regions.ts NOW, not here. It used to
-// be a local array of thirty-five, and onboarding grew its own way of setting
-// a region from the phone's locale — which stored an ISO code ("CA") while
-// this screen stored a name ("Canada"). The leaderboard groups on that exact
+// ⚠️ THE COUNTRY LIST LIVES IN constants/regions.ts, not here. It used to be a
+// local array of thirty-five, and onboarding grew its own way of setting a
+// region from the phone's locale — which stored an ISO code ("CA") while this
+// screen stored a name ("Canada"). The leaderboard groups on that exact
 // string, so two people in the same country landed on two different Regional
-// boards depending on which path set their region. One list, one format.
+// boards. One list, one format.
 //
 // ⚠️ EMAIL AND PASSWORD DON'T LIVE IN THE PROFILE ROW. They belong to Supabase
 // Auth, and both screens here used to write to the profile table instead — so
 // "Password updated" appeared and the password you sign in with never changed.
-// Both now go through constants/auth.ts. See PasswordScreen and EmailScreen.
+// Both now go through constants/auth.ts.
+//
+// ⚠️ AND THE USERNAME IS CHECKED BEFORE IT'S SAVED. profiles.handle has a
+// UNIQUE INDEX; a collision makes Postgres reject the whole row. This screen
+// used to let you type anything and save it — the write would fail silently
+// and the change simply wouldn't take. Same constraint that left two accounts
+// with no profile at all. See UsernameScreen.
 import { AlertTriangle, Check, Crown, Eye, EyeOff, Globe, Lock, Mail, Search } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -29,6 +35,7 @@ import Avatar from "./Avatar";
 import BackRow from "./BackRow";
 import CameraSheet from "./CameraSheet";
 import GradientText from "./GradientText";
+import HandleField, { HandleState } from "./HandleField";
 import Icon, { IconName } from "./Icon";
 import PhotoSheet from "./PhotoSheet";
 import SaveBtn from "./SaveBtn";
@@ -69,10 +76,11 @@ function ProGate({ title, line, onBack }: { title: string; line: string; onBack:
 }
 
 /* ---------- a single-field editor ----------
-   For things that live in the PROFILE ROW and save instantly. Email is
-   deliberately not one of these — see EmailScreen. */
+   For things that live in the PROFILE ROW and save instantly. Email and
+   username are deliberately not among them — one sends a link, the other has
+   to check the database first. */
 function EditScreen({
-  title, label, initial, hint, note, autoCapitalize, glowColor, ultimate, anim, onBack, onSave,
+  title, label, initial, hint, note, autoCapitalize, anim, onBack, onSave,
 }: {
   title: string;
   label: string;
@@ -80,8 +88,6 @@ function EditScreen({
   hint?: string;
   note?: string;
   autoCapitalize?: "none" | "words";
-  glowColor?: string;
-  ultimate?: boolean;
   anim?: IconName;
   onBack: () => void;
   onSave: (v: string) => void;
@@ -103,19 +109,9 @@ function EditScreen({
       <BackRow title={title} onBack={onBack} />
 
       {/* the row's own animation, large, as the screen's mark */}
-      {anim && !glowColor && (
+      {anim && (
         <View style={s.editHeroIcon}>
           <Icon name={anim} size={54} mode="loop" />
-        </View>
-      )}
-
-      {glowColor && (
-        <View style={s.glowPreview}>
-          {ultimate ? (
-            <GradientText text={v || "@you"} colors={ULT_COLORS} fontSize={24} fontFamily={FONTS.heading} />
-          ) : (
-            <Text style={[s.glowText, { color: glowColor }]}>{v || "@you"}</Text>
-          )}
         </View>
       )}
 
@@ -137,6 +133,99 @@ function EditScreen({
   );
 }
 
+/* ================= USERNAME =================
+   ⚠️ IT CHECKS AVAILABILITY BEFORE SAVING, and it didn't used to.
+
+   profiles.handle has a UNIQUE INDEX — the leaderboard can't show two @dions
+   and tell them apart. Postgres enforces that by rejecting the ENTIRE row, so
+   the old version of this screen would show "saved", write nothing, and leave
+   the user with their old username and no explanation.
+
+   That's the same constraint that left two of Dion's accounts with no profile
+   at all, from onboarding's side. Both paths use the same HandleField now.
+
+   THE PREVIEW IS THE POINT of the top half. This is the one thing on the
+   profile other people see, so it's shown the way they'll see it — in your
+   tier colour, or the full gradient at Ultimate. */
+function UsernameScreen({
+  current, accent, ultimate, onBack, onSave,
+}: {
+  current: string;
+  accent: string;
+  ultimate: boolean;
+  onBack: () => void;
+  onSave: (v: string) => void;
+}) {
+  const { T, userId } = useApp();
+  const s = styles(T);
+
+  const [v, setV] = useState(current);
+  const [state, setState] = useState<HandleState>("empty");
+  const [saved, setSaved] = useState(false);
+
+  const clean = v.trim().toLowerCase();
+  const unchanged = clean === current.trim().toLowerCase();
+
+  /* SAVEABLE IF IT'S FREE, or if they never changed it. The second case
+     matters: opening this screen and tapping save without editing shouldn't
+     be blocked, and HandleField already excludes their own row from the
+     check. */
+  const ready = clean.length > 0 && (unchanged || state === "free");
+
+  const save = () => {
+    if (!ready) return;
+    H.success();
+    setSaved(true);
+    onSave(clean);
+    setTimeout(onBack, 750);
+  };
+
+  return (
+    <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+      <BackRow title="Username" onBack={onBack} />
+
+      {/* how it will actually look to everyone else */}
+      <View style={s.glowPreview}>
+        {ultimate ? (
+          <GradientText text={`@${clean || "you"}`} colors={ULT_COLORS} fontSize={24} fontFamily={FONTS.heading} />
+        ) : (
+          <Text style={[s.glowText, { color: accent }]}>@{clean || "you"}</Text>
+        )}
+      </View>
+
+      <Text style={s.note}>
+        This is what other people see on the leaderboard — it's the only part of your profile
+        that isn't private. Change it as often as you like.
+      </Text>
+
+      <Text style={s.fieldLabel}>Your username</Text>
+      <HandleField
+        value={v}
+        onChange={setV}
+        /* their OWN row is excluded, or saving without changing anything would
+           report their existing username as taken */
+        exceptUserId={userId || undefined}
+        onStateChange={setState}
+        placeholder="yourname"
+      />
+
+      <SaveBtn saved={saved} disabled={!ready} onPress={save} />
+
+      {!ready && !saved && (
+        <Text style={s.hint}>
+          {state === "taken"
+            ? "Pick a username nobody else is using."
+            : state === "invalid"
+              ? "Check the username above."
+              : state === "checking"
+                ? "Checking that one…"
+                : "Enter a username to save."}
+        </Text>
+      )}
+    </ScrollView>
+  );
+}
+
 /* ================= EMAIL =================
    ⚠️ THIS DOESN'T CHANGE ANYTHING IMMEDIATELY, and saying so is most of the
    screen's job.
@@ -149,9 +238,7 @@ function EditScreen({
    exist.
 
    Which means the button can't say "Saved". It says a link is on its way, and
-   it says plainly that the OLD address still works until they click it —
-   without that line, someone signs out expecting the new one to work and
-   can't get back in. */
+   it says plainly that the OLD address still works until they click it. */
 function EmailScreen({ current, onBack }: { current: string; onBack: () => void }) {
   const { T } = useApp();
   const s = styles(T);
@@ -283,9 +370,9 @@ function EmailScreen({ current, onBack }: { current: string; onBack: () => void 
 
    ALL THREE FIELDS SHOW THE EYE. Two of them didn't at first, which is worse
    than none: revealing one field and finding the next still hidden reads as a
-   broken toggle rather than a partial one. It matters most on the CURRENT
-   password, which is typed from memory — a typo there comes back as "that's
-   not your current password", which sounds like you've forgotten it. */
+   broken toggle. It matters most on the CURRENT password, typed from memory —
+   a typo there comes back as "that's not your current password", which sounds
+   like you've forgotten it. */
 function PasswordScreen({ onBack }: { onBack: () => void }) {
   const { T } = useApp();
   const s = styles(T);
@@ -658,16 +745,11 @@ export default function AccountScreen({
      The camera is the tall one — nearly full screen, so your face is in frame
      while the shutter stays under your thumb.
 
-     Uploading is the slow part, so it gets its own visible state. A silent
-     pause after the shutter, with the old picture still showing, reads as the
-     photo having failed.
-
      ⚠️ REPLACING A PHOTO NEEDS AN UPDATE POLICY ON THE BUCKET. Meal photos use
      a new filename every time and only ever INSERT; the avatar uses one fixed
      name, so a second photo is an UPDATE. Without that policy Supabase refused
      it with "new row violates row-level security policy" — the first photo
-     saved, every one after silently didn't, and the app kept a path pointing
-     at a file that had never changed. */
+     saved, every one after silently didn't. */
   const [camOpen, setCamOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [photoErr, setPhotoErr] = useState<string | null>(null);
@@ -701,8 +783,7 @@ export default function AccountScreen({
       return;
     }
 
-    /* the local file shows INSTANTLY while the signed URL is fetched — see
-       setAvatar in AppState. */
+    /* the local file shows INSTANTLY while the signed URL is fetched */
     setAvatar(path, uri);
     H.success();
   };
@@ -732,24 +813,23 @@ export default function AccountScreen({
   }
 
   if (sub === "username") {
-    // changing your handle is Pro — it's what the leaderboard shows
+    /* CHANGING it is Pro — it's what the leaderboard shows. Setting it once at
+       signup is free; changing it whenever you like is the paid part. A trial
+       user counts as Pro, so the crown only appears once the trial lapses. */
     return freeLocked ? (
       <ProGate title="Username" line="Changing your username is a Pro feature." onBack={back} />
     ) : (
-      <EditScreen
-        title="Username"
-        label="Your username (this is what others see)"
-        initial={`@${handle}`}
-        hint="Change it as often as you like."
-        glowColor={accent}
+      <UsernameScreen
+        current={handle}
+        accent={accent}
         ultimate={isUlt}
         onBack={back}
-        onSave={(v) => updateProfile({ handle: v.replace(/^@+/, "") })}
+        onSave={(v) => updateProfile({ handle: v })}
       />
     );
   }
 
-  /* NOT an EditScreen — it doesn't save, it sends a link. See EmailScreen. */
+  /* NOT an EditScreen — it doesn't save, it sends a link. */
   if (sub === "email") return <EmailScreen current={profile.email || ""} onBack={back} />;
   if (sub === "password") return <PasswordScreen onBack={back} />;
   if (sub === "dob") return <DobScreen onBack={back} />;
@@ -865,8 +945,7 @@ export default function AccountScreen({
         {/* ⚠️ FORMATTED, and derived from created_at rather than signup_date.
             signup_date has no default from the app, so Postgres fills it with
             the SERVER's date — and Postgres runs in UTC. Signing up at 19:22
-            in Edmonton is 01:22 the next day in UTC, so it read a day late.
-            See localDateFrom() in constants/profile.ts. */}
+            in Edmonton is 01:22 the next day in UTC, so it read a day late. */}
         <Text style={s.memberSince}>Member since {formatMemberSince(profile.memberSince)}</Text>
       </ScrollView>
 
@@ -879,8 +958,7 @@ export default function AccountScreen({
         onClose={() => setPhotoOpen(false)}
         onTakePhoto={() => setCamOpen(true)}
         /* the library goes through the SAME camera widget, which already knows
-           how to open the picker — a second copy of that code here would be
-           two places to fix when the picker API next changes */
+           how to open the picker */
         onPickLibrary={() => setCamOpen(true)}
         onRemove={removePhoto}
       />
@@ -938,9 +1016,9 @@ const styles = (T: any) =>
       paddingHorizontal: 14, paddingVertical: 14, fontSize: 15, color: T.text, fontFamily: FONTS.headingMed,
       marginBottom: 4,
     },
-    hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6, marginLeft: 2 },
+    hint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 10, marginLeft: 2, textAlign: "center" },
     note: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 18.5, marginBottom: 16 },
-    glowPreview: { alignItems: "center", marginBottom: 18 },
+    glowPreview: { alignItems: "center", marginBottom: 18, marginTop: 6 },
     glowText: { fontSize: 24, fontFamily: FONTS.heading },
 
     primaryBtn: { backgroundColor: T.green, borderRadius: 14, paddingVertical: 15, alignItems: "center" },

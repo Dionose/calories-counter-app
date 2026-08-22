@@ -18,7 +18,7 @@
 // changed. Keep it that way — a screen that imports supabase.ts has broken
 // the seam and will be painful to change later.
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { currentUser } from "./auth";
 import { currentStreak } from "./meals";
 import { avatarUrl, isStoragePath } from "./photos";
@@ -43,9 +43,20 @@ export type Plan = {
    `handle` is @dion — what the leaderboard and your coach see. Changing one
    must not change the other. */
 export type UserProfile = {
-  name: string;          // "Gideon" — the greeting
-  handle: string;        // "dion" — the leaderboard
+  name: string;          // "David" — the greeting
+
+  /* what the leaderboard shows. ⚠️ profiles.handle has a UNIQUE INDEX, so this
+     is checked against the database before any write — see
+     constants/handles.ts for why that check has to be a database function
+     rather than a query. */
+  handle: string;
+
+  /* ⚠️ FOR DISPLAY ONLY, and it has no column in the profiles table. The email
+     belongs to the AUTH record — Supabase owns it, and duplicating it into the
+     profile row would let the two drift apart. Anything writing to the
+     database has to strip this first; see forDatabase(). */
   email: string;
+
   region: string;        // decides which Regional leaderboard they're on
   memberSince: string;
 
@@ -74,27 +85,17 @@ export type UserProfile = {
   goalWeeks: number;     // how long the plan says it takes
 
   /* ---------- THE FOUR THAT WENT MISSING ----------
-     All optional, because a profile can exist without them — someone who
-     skipped the last onboarding screen has no heardFrom, and diet isn't asked
-     at all yet.
+     All optional, because a profile can exist without them.
 
      ⚠️ THESE WERE COLLECTED, SAVED AND UNREADABLE. constants/profile.ts maps
      every one of them to and from the database, and onboarding sends them —
      but they were never declared HERE, so no screen could read them without
-     TypeScript objecting.
-
-     It stayed hidden because every call to saveProfile below was written
-     `next as any`, which switches off exactly the check that would have caught
-     it. Those casts are gone now: if a field drifts between this type and
-     profile.ts again, the compiler says so.
-
-     The cost was real — Profile → Goal couldn't read your saved activity, so
-     it defaulted everyone to "moderately active" and quietly rebuilt their
-     plan around an answer they never gave. */
+     TypeScript objecting. It stayed hidden because every saveProfile call was
+     written `next as any`, which switches off exactly the check that would
+     have caught it. Those casts are gone. */
   activity?: string;     // low | light | mod | high — the TDEE multiplier
-  diet?: string;         // collected in Profile eventually; nothing reads it yet
-  workouts?: string;     // LEGACY. The question is gone from both flows — kept
-                         // so old rows still load rather than erroring
+  diet?: string;         // set in Profile → Goals → Diet; nothing reads it yet
+  workouts?: string;     // LEGACY — the question is gone from both flows
   heardFrom?: string;    // attribution, asked once after the paywall
 };
 
@@ -111,19 +112,29 @@ export type Settings = {
 
    NOTE the calorie value: 0, deliberately. It used to be 1,980 — a plausible
    number — and that made a failed load INVISIBLE, because a wrong target that
-   looks real is indistinguishable from a right one. Zero is obviously broken,
-   which is exactly what a placeholder should be. */
+   looks real is indistinguishable from a right one. */
 const DEFAULT_PLAN: Plan = { calories: 0, protein: 0, carbs: 0, fat: 0, tdee: 0, addBurned: false };
+
 const DEFAULT_PROFILE: UserProfile = {
-  name: "Dion",
-  handle: "dion",
-  email: "dion@motion.app",
-  /* EMPTY, not "Canada". A default country would put every user with no region
-     onto Canada's Regional board — including people whose phone reported a
-     country we don't list. An empty region shows the "set your region" prompt
-     instead, which is the honest state. */
+  /* ⚠️ EMPTY, NOT "Dion". These were Dion's own name, handle and a made-up
+     email, and all three leaked into real accounts:
+
+       - A new user's profile screen showed dion@motion.app as HER email.
+       - The missing-row repair tried to claim the handle "dion", which is a
+         REAL user's handle, hit the unique constraint, and failed — the very
+         failure it exists to prevent.
+
+     A placeholder that collides with a real row isn't a placeholder, it's a
+     landmine. saveProfile strips empty strings, so these can't overwrite
+     anything either. */
+  name: "",
+  handle: "",
+  email: "",
+
+  /* EMPTY region for the same reason plus one more: a default country would
+     put every user with no region onto Canada's Regional board. */
   region: "",
-  memberSince: "Aug 2026",
+  memberSince: "",
   photoUri: null,
   sex: "male",
   dobDay: 12,
@@ -138,6 +149,7 @@ const DEFAULT_PROFILE: UserProfile = {
   paceRate: 0.5,
   goalWeeks: 12,
 };
+
 const DEFAULT_SETTINGS: Settings = {
   watch: true,
   notifications: true,
@@ -150,87 +162,71 @@ const DEFAULT_SETTINGS: Settings = {
 const DEMO_STREAK = 19;
 
 type AppStateShape = {
-  // --- who's signed in ---
   userId: string | null;
-  /* true until the first profile load finishes. index.tsx waits on this so
-     nobody sees a placeholder plan flash before their real one arrives. */
   loading: boolean;
 
-  /* ---------- DEV MODE ----------
-     ONE switch for every piece of fake data in the app. Two dev controls that
-     could disagree is worse than none: Profile's tier chips used to overwrite
-     the real streak while the calendar kept drawing real tiles, so the two
-     screens showed different truths and neither was obviously wrong.
-
-     Now: dev mode ON means everything is consistently fake. OFF means
-     everything is real, everywhere. Turning it off is also the pre-launch
-     check — if the app looks right with it off, nothing fake is left. */
   devMode: boolean;
   toggleDevMode: () => void;
 
-  // --- Pro / free ---
   isPro: boolean;
   freeLocked: boolean;
   setIsPro: (v: boolean) => void;
   togglePro: () => void;
 
-  // --- theme ---
   themeMode: ThemeMode;
   T: typeof DARK | typeof LIGHT;
   setThemeMode: (m: ThemeMode) => void;
   toggleTheme: () => void;
 
-  // --- paywall ---
   paywallOpen: boolean;
   paywallVariant: "trial" | "subscribe";
   openPaywall: (variant?: "trial" | "subscribe") => void;
   closePaywall: () => void;
 
-  // --- streak ---
   streakDays: number;
-  /* only meaningful in dev mode — the real streak is computed, not set */
   setDemoStreak: (n: number) => void;
-  /* recompute after logging or deleting a meal, so the flame updates without
-     waiting for a restart */
   refreshStreak: () => void;
 
-  // --- settings ---
   settings: Settings;
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
 
-  // --- tab reset ---
   tabResetKey: number;
   resetTab: () => void;
 
-  // --- the user's plan ---
   plan: Plan;
   profile: UserProfile;
-  savePlan: (plan: Plan, profile: Partial<UserProfile>, userId?: string) => void;
-  updateProfile: (patch: Partial<UserProfile>) => void;  // Stats/Profile edits
+  /** ⚠️ AWAITABLE. Onboarding MUST await this before navigating away — see the
+      note on the function itself. */
+  savePlan: (plan: Plan, profile: Partial<UserProfile>, userId?: string) => Promise<void>;
+  updateProfile: (patch: Partial<UserProfile>) => void;
   updatePlanFlag: <K extends keyof Plan>(key: K, value: Plan[K]) => void;
-  setDailyCalories: (calories: number) => void;          // Profile → Daily calories
-  resetToRecommended: () => void;                        // Profile → "Reset to recommended"
-  recommendedCalories: number;                           // what onboarding worked out
+  setDailyCalories: (calories: number) => void;
+  resetToRecommended: () => void;
+  recommendedCalories: number;
 
-  /* ---------- THE PROFILE PHOTO ----------
-     `photoUrl` is what Avatar renders. It's a signed URL minted from the path
-     in profile.photoUri, and it's kept here rather than resolved inside Avatar
-     because Avatar appears in five places at once — five components each
-     signing the same file on every render would be absurd. */
   photoUrl: string | null;
-  /** after a new photo is uploaded: the stored path, plus the local file to
-      show immediately while the signed URL is fetched */
   setAvatar: (path: string, localUri?: string) => void;
   clearAvatar: () => void;
 };
 
 const AppStateContext = createContext<AppStateShape | null>(null);
 
+/** Everything the profiles table accepts — i.e. the profile minus the fields
+    that live somewhere else.
+
+    ONE PLACE TO STRIP. `email` belongs to the auth record and has no column,
+    so passing it through is a type error and would be a database error too.
+    Every write path goes through here so the same mistake can't return in one
+    of the six call sites. */
+function forDatabase(p: UserProfile) {
+  const { email, ...row } = p;
+  return row;
+}
+
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  /* OFF by default. The app's honest state is the one you see first. */
   const [devMode, setDevMode] = useState(false);
 
   const [isPro, setIsPro] = useState(false);
@@ -251,25 +247,27 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [demoStreak, setDemoStreak] = useState(DEMO_STREAK);
   const [streakTick, setStreakTick] = useState(0);
 
-  /* Bumped when you tap the tab you're already on. Each tab watches this and
-     drops back to its root — so Stats leaves its detail view and Profile
-     leaves the account screen, the way iOS tabs behave. */
   const [tabResetKey, setTabResetKey] = useState(0);
 
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [plan, setPlan] = useState<Plan>(DEFAULT_PLAN);
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
-  // what onboarding originally recommended — so "reset to recommended" can undo edits
   const [recommended, setRecommended] = useState<Plan>(DEFAULT_PLAN);
 
-  /* the displayable form of profile.photoUri — see the type above */
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+
+  /* ---------- THE LIVE COPY, FOR REPAIR ----------
+     State is async, so a callback firing moments after a write can still see
+     the old values. The repair below needs what's true NOW, not what the last
+     render captured. */
+  const planRef = useRef(plan);
+  const profileRef = useRef(profile);
+  useEffect(() => { planRef.current = plan; }, [plan]);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
 
   /* ---------- LOAD ON LAUNCH ----------
      Ask Supabase who's signed in — the session came back from AsyncStorage, so
-     this succeeds without any typing — then pull their row.
-     A user with no profile row yet (signed up but abandoned onboarding) is a
-     NORMAL state, not an error: they keep the defaults and finish later. */
+     this succeeds without any typing — then pull their row. */
   useEffect(() => {
     let cancelled = false;
 
@@ -290,8 +288,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         setProfile((cur) => ({
           ...cur,
           ...p,
-          /* the email lives on the AUTH record, not the profile row — it's
-             Supabase's to own, and duplicating it would let the two drift */
+          /* the email lives on the AUTH record, not the profile row */
           email: user.email ?? cur.email,
           photoUri: p.photoUri ?? null,
         }));
@@ -308,13 +305,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /* ---------- RESOLVE THE PROFILE PHOTO ----------
-     A stored bucket path is not displayable; it has to be signed first. This
-     runs whenever the path changes — on load, and again after a new upload.
-
-     A value that's ALREADY displayable (a local file straight from the camera,
-     or a URL) is passed through untouched. That's what makes a new photo
-     appear instantly: setAvatar puts the local file here, and the signed URL
-     quietly replaces it a moment later. */
+     A stored bucket path is not displayable; it has to be signed first. A
+     value that's ALREADY displayable (a local file straight from the camera)
+     passes through untouched, which is what makes a new photo appear
+     instantly. */
   useEffect(() => {
     const stored = profile.photoUri;
 
@@ -335,13 +329,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   /* ---------- THE STREAK ----------
      COMPUTED from logged days, never stored. A stored counter has to be
      updated correctly on every save, every delete, and every timezone edge —
-     and when it drifts, it stays drifted, with no way for the user to
-     understand why. Deriving it means it CANNOT disagree with the calendar
-     they're looking at.
-
-     It lives here rather than in any screen because one number feeds all of
-     them: the M's colour, the flame file, the tier name, the profile pill,
-     the calendar tiles, the leaderboard points. */
+     and when it drifts, it stays drifted. Deriving it means it CANNOT
+     disagree with the calendar the user is looking at. */
   useEffect(() => {
     if (!userId) { setRealStreak(0); return; }
     let cancelled = false;
@@ -354,20 +343,29 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   /* Logging today's first meal takes the streak from 3 to 4 — and possibly
      from Hot to Red-hot. Without this the flame stays wrong until the next
-     restart, which reads as the app not noticing what you just did. */
+     restart. */
   const refreshStreak = useCallback(() => setStreakTick((k) => k + 1), []);
 
   const toggleDevMode = useCallback(() => setDevMode((v) => !v), []);
 
-  /* Keep userId in step with sign-in and sign-out anywhere in the app, so
-     nothing has to remember to tell AppState.
+  /* ---------- AUTH CHANGES, AND THE MISSING-PROFILE REPAIR ----------
+     ⚠️ THREE AUTH USERS, ONE PROFILE ROW. Signups were reaching the app with no
+     profile row at all — no region, no plan, no leaderboard entry, invisible
+     to every other user. Two causes, both fixed:
 
-     SIGNING IN reloads the profile from scratch. This one is load-bearing and
-     was a real bug: the effect above only runs ONCE on mount, so after a
-     sign-out → sign-in cycle nothing re-fetched, and the app showed
-     placeholder numbers while the real row sat in the database.
+       1. A RACE. savePlan fired its write without being awaited, then
+          router.replace() unmounted onboarding on the next line. If the
+          request hadn't been sent yet, it died with the component.
 
-     SIGNING OUT clears back to defaults — leaving the last user's weight or
+       2. A HANDLE COLLISION. Onboarding hardcoded `name: "Dion"`, the handle
+          derives from the name, and profiles.handle is UNIQUE — so every
+          account after the first was rejected outright by Postgres.
+
+     This is the SAFETY NET for whatever comes third: any sign-in that finds no
+     profile row writes one from whatever is in memory. It only ever CREATES —
+     a row that exists is never touched, so it can't overwrite real data.
+
+     SIGNING OUT clears back to defaults. Leaving the last user's weight or
      FACE visible for whoever signs in next would be a genuine privacy leak. */
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -386,6 +384,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
       if (event === "SIGNED_IN") {
         const { profile: p, plan: pl } = await loadProfile(id);
+
         if (p) {
           setProfile((cur) => ({
             ...cur,
@@ -394,11 +393,21 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
             photoUri: p.photoUri ?? null,
           }));
           setIsPro(!!p.isPro);
+          if (pl) {
+            setPlan(pl);
+            setRecommended(pl);
+          }
+          return;
         }
-        if (pl) {
-          setPlan(pl);
-          setRecommended(pl);
-        }
+
+        /* NO ROW. Write one rather than leaving them stranded.
+
+           The defaults are EMPTY now, so this writes only what's genuinely
+           known — it can no longer try to claim somebody else's handle, which
+           is how this repair used to fail with the same constraint error it
+           was meant to rescue people from. */
+        console.log("PROFILE: no row for this account — writing one now");
+        await saveProfile(id, forDatabase(profileRef.current), planRef.current);
       }
     });
     return () => data.subscription.unsubscribe();
@@ -418,29 +427,42 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setSettings((s) => ({ ...s, [key]: value }));
   }, []);
 
-  /* MERGES rather than replaces. Onboarding only knows about the fields it
-     asked for, so replacing the whole object wiped everything else — handle,
-     email, dob — and the first screen to read one of them crashed.
+  /* ---------- THE END OF ONBOARDING ----------
+     ⚠️ THIS IS AWAITED NOW, AND THAT WAS HALF THE BUG.
 
-     Now ALSO writes to Supabase. The local state updates first so the UI never
-     waits on the network; the write happens after and is deliberately not
-     awaited — onboarding shouldn't stall on a slow connection.
+     It used to update local state and fire the database write WITHOUT waiting,
+     deliberately — so a slow connection couldn't stall the last screen. Then
+     finish() called router.replace() on the very next line, which unmounts
+     onboarding. If the request hadn't left the device yet, it went with it.
 
-     `explicitId` exists because onboarding calls this in the same moment the
-     account is created, before the auth listener above has caught up.
+     A second or two of waiting on a bad connection is a fine price for knowing
+     the account is actually complete. Onboarding shows "Saving your plan…"
+     while it happens.
 
-     NO `as any` HERE ANY MORE — see the note on UserProfile. The cast was
-     hiding four fields that were being written and could never be read. */
-  const savePlan = useCallback((p: Plan, prof: Partial<UserProfile>, explicitId?: string) => {
-    setPlan(p);
-    setRecommended(p);
-    setProfile((cur) => {
-      const next = { ...cur, ...prof };
+     MERGES rather than replaces — onboarding only knows the fields it asked
+     for, and replacing wiped everything else: handle, email, dob. */
+  const savePlan = useCallback(
+    async (p: Plan, prof: Partial<UserProfile>, explicitId?: string) => {
+      const next = { ...profileRef.current, ...prof };
+
+      setPlan(p);
+      setRecommended(p);
+      setProfile(next);
+
+      /* explicitId exists because onboarding calls this moments after creating
+         the account, before the auth listener has caught up */
       const id = explicitId || userId;
-      if (id) saveProfile(id, next, p);
-      return next;
-    });
-  }, [userId]);
+      if (!id) return;
+
+      const { error } = await saveProfile(id, forDatabase(next), p);
+      if (error) {
+        /* the caller can't do much about it, but a silent failure here is what
+           produced the missing rows in the first place */
+        console.log("PROFILE: save failed —", error);
+      }
+    },
+    [userId]
+  );
 
   /* Patch a few profile fields without touching the plan. Weight calibration
      and the Profile edit screens use this — going through savePlan would reset
@@ -448,7 +470,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const updateProfile = useCallback((patch: Partial<UserProfile>) => {
     setProfile((p) => {
       const next = { ...p, ...patch };
-      if (userId) saveProfile(userId, next);
+      if (userId) saveProfile(userId, forDatabase(next));
       return next;
     });
   }, [userId]);
@@ -462,7 +484,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     if (localUri) setPhotoUrl(localUri);
     setProfile((p) => {
       const next = { ...p, photoUri: path };
-      if (userId) saveProfile(userId, next);
+      if (userId) saveProfile(userId, forDatabase(next));
       return next;
     });
   }, [userId]);
@@ -471,17 +493,16 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setPhotoUrl(null);
     setProfile((p) => {
       const next = { ...p, photoUri: null };
-      if (userId) saveProfile(userId, next);
+      if (userId) saveProfile(userId, forDatabase(next));
       return next;
     });
   }, [userId]);
 
   /* Toggle a plan flag without touching the calorie target. `addBurned` is the
-     only one so far — flipped from Profile → Daily calories, and read by Home
-     to decide whether today's goal includes what you burned.
+     only one so far — flipped from Profile → Daily calories, and read by Home.
 
-     The empty profile object is deliberate: saveProfile strips undefined
-     fields, so passing {} touches nothing but the plan columns. */
+     The empty profile object is deliberate: saveProfile strips undefined and
+     empty fields, so passing {} touches nothing but the plan columns. */
   const updatePlanFlag = useCallback(<K extends keyof Plan>(key: K, value: Plan[K]) => {
     setPlan((p) => {
       const next = { ...p, [key]: value };

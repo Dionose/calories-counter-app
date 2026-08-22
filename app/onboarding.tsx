@@ -10,9 +10,7 @@
 //   and the referral code were all collected and then dropped before finish().
 //
 //   TWO SCREENS ASKED THE SAME QUESTION. Workouts-per-week and how-active-are-
-//   you both fed the same multiplier. The DAY-TO-DAY question survives: it
-//   drives the base multiplier (1.2 → 1.725, most of the range) while workouts
-//   only added a bump of up to 0.1.
+//   you both fed the same multiplier. The DAY-TO-DAY question survives.
 //
 //   THE 2× HISTOGRAM made a claim we'd have to defend, and "MOTION is built
 //   around you" was assembled from two of the deleted screens.
@@ -24,21 +22,30 @@
 //
 //   THE LANGUAGE PICKER WENT ENTIRELY — see the note on Welcome below.
 //
+// ⚠️ AND THE CUT CAUSED THE WORST BUG OF THE PROJECT. It removed the NAME
+// question, so finish() wrote `name: "Dion"` hardcoded. The handle derives
+// from the name and profiles.handle is UNIQUE, so every account after the
+// first was rejected outright — Postgres throws away the WHOLE row on a
+// constraint failure. Two of three signups reached the app with no profile at
+// all: no region, no plan, invisible on every leaderboard, and nothing on
+// screen said so. See AccountStep and finish().
+//
 // ⚠️ NO FULL-SCREEN TAP-TO-DISMISS WRAPPER. One was added and it FROZE THE
 // BIRTHDAY WHEEL solid — a TouchableWithoutFeedback covering the screen claims
-// the touch before any ScrollView inside it can, and the outer handler always
-// wins. Tapping the background already dismisses the keyboard on its own:
-// that's what keyboardShouldPersistTaps="handled" does.
+// the touch before any ScrollView inside it can.
 import { useRouter } from "expo-router";
 import { AlertTriangle, Check, ChevronLeft, Crown, Eye, EyeOff, Sparkles } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Keyboard, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Keyboard, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
+import HandleField, { HandleState } from "../components/HandleField";
 import Icon, { IconName } from "../components/Icon";
 import IsoM, { IsoMGlow } from "../components/IsoM";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
 import { signIn, signUp } from "../constants/auth";
+import { handleFromName } from "../constants/handles";
+import { isHealthAvailable, loadActivity, requestHealthPermission } from "../constants/health";
 import { nameForIso } from "../constants/regions";
 import { DARK, FONTS } from "../constants/theme";
 
@@ -109,7 +116,9 @@ const STEPS: Step[] = [
 
   /* LAST, DELIBERATELY. Useless to the user, valuable to Dion once he's paying
      for ads — so it goes AFTER the paywall, where it can't delay anyone
-     reaching the app they just signed up for. */
+     reaching the app they just signed up for. Read it back with:
+       select heard_from, count(*) from profiles
+       where heard_from is not null group by heard_from order by count(*) desc; */
   { kind: "heard", id: "heard" },
 ];
 
@@ -136,18 +145,15 @@ const HEARD_CHOICES: Choice[] = [
    ⚠️ RETURNS A COUNTRY NAME, NOT A CODE. The first version stored the phone's
    raw ISO code — "CA" — while Profile → Region stored "Canada". The
    leaderboard groups on the exact string, so two people in the same country
-   ended up on two DIFFERENT Regional boards depending on which path set their
-   region. Both sides now go through constants/regions.ts.
+   ended up on two DIFFERENT Regional boards.
 
-   ⚠️ NO EXTRA PACKAGE, and that's deliberate. expo-localization is the obvious
-   tool and it FAILED here: it ships a native module, and a native module only
-   exists in the app after a full EAS rebuild. Installing it gave
-   "Cannot find native module 'ExpoLocalization'" and the whole app refused to
-   start — and uninstalling left an orphan entry in app.json that broke it
-   again.
+   ⚠️ NO EXTRA PACKAGE. expo-localization is the obvious tool and it FAILED
+   here: it ships a native module, and a native module only exists in the app
+   after a full EAS rebuild. Installing it gave "Cannot find native module
+   'ExpoLocalization'" and the whole app refused to start.
 
    THE GENERAL RULE: any package with a native part needs a new dev build
-   before it works at all. Installing it is only half the job. */
+   before it works at all. */
 function deviceRegion(): string | null {
   try {
     const raw =
@@ -205,9 +211,7 @@ function buildPlan(a: Record<string, any>) {
     ? 10 * kg + 6.25 * cm - 5 * age - 161
     : 10 * kg + 6.25 * cm - 5 * age + 5;
 
-  /* ONE MULTIPLIER, from one question. The old flow added a second bump from
-     workouts-per-week on top of this — both questions asking the same thing,
-     which is why one of them went.
+  /* ONE MULTIPLIER, from one question.
 
      ⚠️ Profile → Goal REBUILDS the plan with the same formula. If this changes,
      ACTIVITY_MULT in components/GoalScreens.tsx has to change with it, or the
@@ -267,9 +271,24 @@ export default function Onboarding() {
   const [dir, setDir] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
 
-  /* set by AccountStep once a NEW account exists. finish() needs it to write
-     the profile row — no account, nowhere to attach the plan. */
+  /* set by AccountStep once a NEW account exists. finish() needs all of it to
+     write the profile row.
+
+     ⚠️ THE NAME AND HANDLE COME FROM THE USER NOW — see the note at the top of
+     this file for what the hardcoded name did.
+
+     ⚠️ AND THE EMAIL TRAVELS WITH THEM, because nothing else sets it during
+     onboarding. AppState fills it from the auth record on SIGNED_IN, but that
+     event doesn't reach this flow — so a fresh account showed a BLANK email on
+     its own profile screen until the next launch. */
   const [userId, setUserId] = useState<string | null>(null);
+  const [account, setAccount] = useState<{ name: string; handle: string; email: string }>({
+    name: "", handle: "", email: "",
+  });
+
+  /* the last screen shows a spinner while the profile is written — see
+     finish() for why that write is now waited on */
+  const [saving, setSaving] = useState(false);
 
   /* read ONCE, at the start. The phone's region doesn't change mid-signup. */
   const region = useMemo(() => deviceRegion(), []);
@@ -278,8 +297,7 @@ export default function Onboarding() {
   const total = STEPS.length;
 
   /* MOVING ON ALWAYS CLOSES THE KEYBOARD. Without this it can survive the
-     transition and hang over the next screen, which looks like the app has
-     lost track of itself. */
+     transition and hang over the next screen. */
   const goNext = () => {
     Keyboard.dismiss();
     if (i < total - 1) { setDir(1); setI(i + 1); }
@@ -295,12 +313,26 @@ export default function Onboarding() {
      is what finish() needs. */
   const proChoice = useRef(false);
 
-  const finish = (pro: boolean) => {
+  /** ---------- THE END OF ONBOARDING ----------
+      ⚠️ IT WAITS FOR THE WRITE NOW, AND THAT WAS HALF THE ORPHANED-ACCOUNT BUG.
+
+      This used to call savePlan() without awaiting it and then immediately
+      router.replace() — which unmounts onboarding. savePlan fired its database
+      write and didn't wait either, so if the request hadn't left the device
+      yet, it died with the screen.
+
+      The other half was the hardcoded name at the top of this file. Both are
+      fixed; AppState also repairs a missing row on sign-in, but a safety net
+      is not a reason to keep falling. */
+  const finish = async (pro: boolean) => {
+    if (saving) return;
+    setSaving(true);
+
     const p = buildPlan(answers);
     const tl = goalTimeline(answers);
     const b = answers.about?.birthday || { d: 12, m: 2, y: 2001 };
 
-    savePlan(
+    await savePlan(
       {
         calories: p.calories,
         protein: p.protein,
@@ -312,7 +344,13 @@ export default function Onboarding() {
         addBurned: false,
       },
       {
-        name: "Dion",
+        /* what they typed, not a hardcoded name */
+        name: account.name || "there",
+        handle: account.handle || undefined,
+        /* DISPLAY ONLY — forDatabase() strips it before the write, since the
+           email belongs to the auth record and has no column here. It's
+           carried so Profile shows the right address immediately. */
+        email: account.email,
         /* SEX and HEIGHT are stored because Profile → Goal recomputes BMR from
            the body when you change your goal. The female constant differs by
            166 calories, so guessing isn't an option. */
@@ -340,6 +378,7 @@ export default function Onboarding() {
          explicitly means the profile write can't miss. */
       userId || undefined
     );
+
     setIsPro(pro);
     router.replace("/(tabs)");
   };
@@ -352,11 +391,8 @@ export default function Onboarding() {
       the welcome screen, run the whole flow, and reach here. Their answers
       are FRESH GUESSES; the account holds months of real tracking. Doing what
       finish() does would overwrite their true starting weight, target and
-      plan with those guesses — destroying their history in the exact moment
-      they were trying to recover it.
-
-      So the answers are discarded. AppState's auth listener loads their real
-      profile the moment the session appears. */
+      plan — destroying their history in the exact moment they were trying to
+      recover it. */
   const enterExisting = () => {
     router.replace("/(tabs)");
   };
@@ -377,6 +413,20 @@ export default function Onboarding() {
         onNext={goNext}
         onSignIn={() => router.replace("/signin")}
       />
+    );
+  }
+
+  /* ---------- WRITING THE ACCOUNT ----------
+     Its own screen rather than a spinner on a button, because this is the one
+     moment the app genuinely cannot be interrupted: the account exists, the
+     profile doesn't yet, and leaving now is what produced the orphaned
+     accounts in the first place. */
+  if (saving) {
+    return (
+      <View style={[styles.screen, { alignItems: "center", justifyContent: "center", gap: 22 }]}>
+        <IsoMGlow size={104} />
+        <Text style={styles.sub}>Saving your plan…</Text>
+      </View>
     );
   }
 
@@ -401,7 +451,13 @@ export default function Onboarding() {
         {step.kind === "health" && <HealthStep value={answers.health} onChange={(v: any) => set("health", v)} onNext={goNext} />}
         {step.kind === "notifications" && <NotificationsStep value={answers.notifications} onChange={(v: any) => set("notifications", v)} onNext={goNext} />}
         {step.kind === "plan" && <PlanStep answers={answers} onNext={goNext} />}
-        {step.kind === "signin" && <AccountStep onNext={goNext} onAccount={setUserId} onExisting={enterExisting} />}
+        {step.kind === "signin" && (
+          <AccountStep
+            onNext={goNext}
+            onAccount={(id, name, handle, email) => { setUserId(id); setAccount({ name, handle, email }); }}
+            onExisting={enterExisting}
+          />
+        )}
         {step.kind === "building" && <BuildingStep step={step} />}
         {step.kind === "paywall" && (
           <TrialPaywall
@@ -425,20 +481,12 @@ export default function Onboarding() {
    oversight.
 
    It listed fifteen languages and changed nothing — the value it set was never
-   read by anything. Translating MOTION means every string in the app moving
-   into a file fifteen times over, and this app is unusually wordy: the voice
-   instructions alone run to several hundred words. That's weeks of work, not
-   days, and Dion's call was to ship English and add languages when the app can
-   afford it.
+   read. Translating MOTION means every string moving into a file fifteen times
+   over, and this app is unusually wordy: the voice instructions alone run to
+   several hundred words. Weeks of work, not days.
 
-   Which leaves the question of what to do with the control in the meantime,
-   and removing it is the honest answer. A dropdown that opens nothing is worse
-   than no dropdown: someone taps it, nothing happens, and that's their FIRST
-   interaction with the app — before they've seen anything work. Promising
-   fifteen languages on screen one and delivering one is a worse first
-   impression than never mentioning it.
-
-   Putting it back is trivial when there's something behind it. */
+   A dropdown that opens nothing is worse than no dropdown: someone taps it,
+   nothing happens, and that's their FIRST interaction with the app. */
 function Welcome({
   onNext, onSignIn,
 }: {
@@ -478,20 +526,14 @@ function Welcome({
 }
 
 /* ===================== ABOUT YOU — SEX + BIRTHDAY =====================
-   Two questions on one screen. Both feed the same BMR formula, both are a
-   single tap or a spin, and neither justified a screen of its own.
-
-   ⚠️ THIS SCREEN DOES NOT SCROLL, and that's the fix for a real problem. It
-   was a ScrollView out of habit, and the wheel scrolls too — so when a finger
-   landed slightly off the wheel, the PAGE moved instead of the dates. Two
-   scrollable things fighting over one finger, and the page usually won.
+   ⚠️ THIS SCREEN DOES NOT SCROLL. It was a ScrollView out of habit, and the
+   wheel scrolls too — so when a finger landed slightly off the wheel, the PAGE
+   moved instead of the dates. Two scrollable things fighting over one finger.
 
    THE WHEEL WORKS BEFORE THE SEX IS PICKED. Only the Continue button waits on
-   that — someone's eye can easily go to the birthday first, and a picker that
-   ignores you until you've answered something else feels broken. */
+   that — someone's eye can easily go to the birthday first. */
 /* 40 rather than 44 — five rows of 44 is 220 points, and with the page no
-   longer scrolling that pushed Continue toward the bottom edge on a small
-   phone. Four points a row buys back 20 without the wheel feeling cramped. */
+   longer scrolling that pushed Continue toward the bottom edge. */
 const ITEM_H = 40;
 /* FIVE ROWS. It was briefly three, to guarantee the button fit — but three
    reads as a cramped little box rather than a date picker. */
@@ -576,10 +618,9 @@ function AboutStep({ value, onChange, onNext }: any) {
       </View>
 
       <Text style={[styles.micro, { marginTop: 20, marginBottom: 2 }]}>WHEN WERE YOU BORN?</Text>
-      {/* SAY THAT IT SCROLLS, and say it in green so it reads as an
-          instruction rather than fine print. A wheel looks tappable, and
-          someone tapping a month that won't respond has no way to know
-          they're meant to drag — they'll assume it's broken. */}
+      {/* SAY THAT IT SCROLLS, in green so it reads as an instruction rather
+          than fine print. A wheel looks tappable, and someone tapping a month
+          that won't respond will assume it's broken. */}
       <Text style={styles.scrollHint}>Scroll each column to set your date</Text>
 
       <View style={styles.wheelWrap}>
@@ -591,8 +632,7 @@ function AboutStep({ value, onChange, onNext }: any) {
         </View>
       </View>
 
-      {/* pushes the button to the bottom whatever the phone's height, so it's
-          never floating awkwardly mid-screen */}
+      {/* pushes the button to the bottom whatever the phone's height */}
       <View style={{ flex: 1 }} />
 
       <Pressable onPress={ready ? onNext : undefined} style={[styles.primaryBtn, !ready && styles.btnDisabled]}>
@@ -620,13 +660,11 @@ function UnitToggle({ options, value, onPick, compact }: { options: string[]; va
 }
 
 /* ===================== YOUR BODY — HEIGHT + WEIGHT =====================
-   Two number entries on one screen. This one DOES scroll, unlike the birthday
-   screen — a keyboard covers half the display, and without scrolling the
-   second field would be unreachable. No wheel here to fight over the finger.
+   This one DOES scroll, unlike the birthday screen — a keyboard covers half
+   the display, and without scrolling the second field would be unreachable.
 
-   NO returnKeyType ON THE NUMBER FIELDS. It was briefly set to "done", which
-   put a bulky Done key on a numeric keypad — not something iOS apps do, and
-   it looked wrong. keyboardDismissMode="on-drag" covers it instead. */
+   NO returnKeyType ON THE NUMBER FIELDS. It was briefly "done", which put a
+   bulky Done key on a numeric keypad — not something iOS apps do. */
 function BodyStep({ value, onChange, onNext }: any) {
   const v = value || { hUnit: "cm", cm: "", ft: "", inch: "", wUnit: "kg", weight: "" };
   const set = (patch: any) => onChange({ ...v, ...patch });
@@ -818,7 +856,7 @@ function DesiredStep({ step, value, body, goal, onChange, onNext }: any) {
 
 /* ===================== THE OUTLOOK — DATE + GRAPH =====================
    These were two screens: one stated the date, the other drew the line to it.
-   The same fact told twice, and the second made the first redundant. */
+   The same fact told twice. */
 function OutlookStep({ answers, onNext }: any) {
   const { unit, cur, target, rate, diff, weeks, losing, maintaining } = goalTimeline(answers);
   const fade = useRef(new Animated.Value(0)).current;
@@ -926,11 +964,69 @@ function OutlookStep({ answers, onNext }: any) {
 }
 
 /* ===================== HEALTH SYNC =====================
-   UI + explanation only. The real HealthKit / Health Connect call needs a
-   development build — wired at build phase. Stats has its own Connect prompt
-   for anyone who skips here. */
+   ⚠️ THIS BUTTON USED TO DO NOTHING. It recorded "yes" and moved on — no iOS
+   sheet, no permission asked, nothing connected. Someone tapped "Connect Apple
+   Health", saw the screen advance, and would later find Stats empty and swear
+   they'd connected it. The same shape of lie the password screen told.
+
+   It now calls the SAME functions Stats calls, so there's one permission path
+   in the app rather than two that can drift.
+
+   ⚠️ AND IT VERIFIES BY READING, because iOS won't say. HealthKit deliberately
+   does NOT report whether read access was granted — Apple treats "this app
+   knows you declined" as itself a privacy leak. requestAuthorization always
+   resolves true. So the only honest check is to ask for data and see whether
+   anything arrives.
+
+   A WEEK, not today. Someone sitting down all morning has no steps yet, and
+   reading only today would call that a refusal. */
 function HealthStep({ value, onChange, onNext }: any) {
   const connected = value === "yes";
+
+  const [checking, setChecking] = useState(true);
+  const [available, setAvailable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  /* is there anything to connect TO? False on a simulator and in Expo Go —
+     and offering a button that cannot work is how a working app looks
+     broken. */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const ok = await isHealthAvailable();
+      if (!cancelled) { setAvailable(ok); setChecking(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const connect = async () => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+
+    /* the iOS sheet appears here — or Health Connect's screen on Android */
+    await requestHealthPermission();
+
+    const from = new Date();
+    from.setDate(from.getDate() - 7);
+    const rows = await loadActivity(from, new Date());
+
+    setBusy(false);
+
+    const gotSomething = rows.some((r) => r.steps > 0 || r.burnedCalories > 0);
+
+    if (!gotSomething) {
+      /* Could be a refusal, could be a phone with genuinely no data. We can't
+         tell, so we don't claim to — and they can continue either way. */
+      setFailed(true);
+      onChange("no");
+      return;
+    }
+
+    onChange("yes");
+    setTimeout(onNext, 400);
+  };
 
   /* each row shows what it actually reads. The heart stays RED — health data
      is red across all of iOS, and a green heart beside "Apple Health" fights
@@ -946,7 +1042,9 @@ function HealthStep({ value, onChange, onNext }: any) {
       <View style={styles.permIcon}><Icon name="heartRed" size={38} mode="loop" /></View>
       <Text style={[styles.title, { fontSize: 26, marginTop: 20 }]}>Connect Apple Health</Text>
       <Text style={styles.sub}>
-        MOTION reads your steps, active minutes and calories burned so your daily numbers reflect what you actually did.
+        MOTION reads your steps, active minutes and calories burned so your daily numbers reflect
+        what you actually did. Your phone has been counting since the day you got it — so this
+        fills in straight away, not from today onward.
       </Text>
 
       <View style={styles.permCard}>
@@ -965,22 +1063,70 @@ function HealthStep({ value, onChange, onNext }: any) {
         MOTION only reads this data. It never writes to Health, and it never shares it with anyone.
       </Text>
 
+      {/* NOTHING TO CONNECT TO. Rather than a button that silently fails, say
+          why — this is the normal state on a simulator. */}
+      {!checking && !available && (
+        <View style={styles.noticeRow}>
+          <AlertTriangle size={14} color="#FBBF24" />
+          <Text style={styles.noticeText}>
+            This phone doesn't have health data available. You can carry on — MOTION works without
+            it, and Stats will offer to connect if that changes.
+          </Text>
+        </View>
+      )}
+
+      {/* COULDN'T READ ANYTHING, and we genuinely can't tell why. */}
+      {failed && (
+        <View style={styles.noticeRow}>
+          <AlertTriangle size={14} color="#FBBF24" />
+          <Text style={styles.noticeText}>
+            MOTION couldn't read anything from Health. If you declined the prompt, you can turn it
+            on later in Profile — and if your phone simply hasn't recorded anything yet, it'll
+            start working on its own.
+          </Text>
+        </View>
+      )}
+
       <Pressable
-        onPress={() => { onChange("yes"); setTimeout(onNext, 260); }}
-        style={[styles.primaryBtn, { marginTop: 24 }, connected && { backgroundColor: T.cardHi }]}
+        onPress={available && !connected ? connect : undefined}
+        style={[
+          styles.primaryBtn,
+          { marginTop: 24 },
+          connected && { backgroundColor: T.cardHi },
+          (!available || busy) && styles.btnDisabled,
+        ]}
       >
-        <Text style={[styles.primaryBtnText, connected && { color: T.green }]}>
-          {connected ? "Connected ✓" : "Connect Apple Health"}
-        </Text>
+        {busy ? (
+          <ActivityIndicator size="small" color={T.micro} />
+        ) : (
+          <Text
+            style={[
+              styles.primaryBtnText,
+              connected && { color: T.green },
+              !available && styles.btnTextDisabled,
+            ]}
+          >
+            {connected ? "Connected ✓" : checking ? "Checking…" : "Connect Apple Health"}
+          </Text>
+        )}
       </Pressable>
+
       <Pressable onPress={() => { onChange("no"); onNext(); }} style={{ alignItems: "center", marginTop: 14 }}>
-        <Text style={styles.skipText}>Not now — I'll do it later</Text>
+        <Text style={styles.skipText}>
+          {failed || !available ? "Continue without it" : "Not now — I'll do it later"}
+        </Text>
       </Pressable>
     </ScrollView>
   );
 }
 
-/* ===================== NOTIFICATIONS ===================== */
+/* ===================== NOTIFICATIONS =====================
+   ⚠️ THE TOGGLE SAVES A PREFERENCE; NOTHING SENDS ANYTHING YET. Notifications
+   need a native module and therefore a full EAS build, alongside Apple sign-in
+   and RevenueCat. The triggers discussed so far — streak reminders, meal
+   nudges, milestones, and a nudge for anyone who hasn't set a region after a
+   week — need writing down in one place before that work starts, or it'll ship
+   with three of them and the rest will surface as "didn't we say…". */
 function NotificationsStep({ value, onChange, onNext }: any) {
   return (
     <ScrollView contentContainerStyle={styles.body}>
@@ -1032,32 +1178,47 @@ function NotificationsStep({ value, onChange, onNext }: any) {
 /* ===================== ACCOUNT — CREATE OR SIGN IN =====================
    The first REAL backend write in the flow. Everything before this is held in
    memory; this is where the user becomes a row in auth.users.
-   The account is created HERE but the profile row is written by finish(),
-   after the paywall — so the account and its plan land together.
 
-   ⚠️ IT SIGNS IN TOO, and that's not decoration. Someone who deletes the app
-   and reinstalls it can easily miss the "Sign in" link on the welcome screen,
-   run the whole flow, and arrive here — where the old version told them
-   "there's already an account with that email, try signing in instead" and
-   then gave them no way to do it. Naming the fix without providing it is the
-   worst version of an error message.
+   ⚠️ IT ASKS FOR A NAME AND A USERNAME NOW, and that isn't a nicety.
+   Onboarding never asked, so finish() wrote `name: "Dion"` — hardcoded — and
+   derived the handle from it. profiles.handle has a UNIQUE INDEX, because the
+   leaderboard can't show two @dions. So the second account collided, Postgres
+   rejected the entire row, and that account reached the app with no profile at
+   all. Silently. Two of three test accounts were in that state.
 
-   SIGNING IN DISCARDS THE ANSWERS. See enterExisting() in the parent for why:
-   their account's real history has to win over fifteen screens of fresh
-   guesses.
+   THE USERNAME IS FREE HERE, and Pro-gated in Profile. Setting it once at
+   signup is different from changing it whenever you like — and a signup screen
+   that demands payment to fill in a field is a signup screen people abandon.
+   (A trial user counts as Pro, so the crown only appears once the trial
+   lapses.)
 
-   THE RETURN KEYS STAY HERE. Unlike the numeric screens, these are ordinary
-   text keyboards where "next" and "go" are exactly what iOS users expect. */
+   ⚠️ THE AVAILABILITY CHECK GOES THROUGH A DATABASE FUNCTION, not a query —
+   see constants/handles.ts. A direct select silently reported every handle as
+   free, because the RLS policy only lets you read your own row.
+
+   ⚠️ IT SIGNS IN TOO. Someone who reinstalls the app can easily miss the "Sign
+   in" link on the welcome screen, run the whole flow, and arrive here — where
+   the old version told them "there's already an account with that email, try
+   signing in instead" and gave them no way to do it. */
 function AccountStep({
   onNext, onAccount, onExisting,
 }: {
   onNext: () => void;
-  onAccount: (id: string) => void;
+  onAccount: (id: string, name: string, handle: string, email: string) => void;
   onExisting: () => void;
 }) {
   const [mode, setMode] = useState<"create" | "signin">("create");
   const [agreed, setAgreed] = useState(false);
   const [tips, setTips] = useState(true);
+
+  const [name, setName] = useState("");
+  const [handle, setHandle] = useState("");
+  /* true once they've edited the username themselves — after that the name
+     stops steering it, or fixing a typo in "Davd" would silently rewrite a
+     username they'd deliberately chosen */
+  const [handleTouched, setHandleTouched] = useState(false);
+  const [handleState, setHandleState] = useState<HandleState>("empty");
+
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
@@ -1067,11 +1228,26 @@ function AccountStep({
      rather than a dead end */
   const [offerSignIn, setOfferSignIn] = useState(false);
 
-  /* so the keyboard's "next" can jump from email to password */
   const pwRef = useRef<TextInput>(null);
 
   const creating = mode === "create";
-  const ready = email.trim().length > 3 && pw.length >= 6 && (creating ? agreed : true);
+
+  /* THE USERNAME FOLLOWS THE NAME until they touch it. Typing "David" fills in
+     @david, which is right most of the time and saves a field — but the moment
+     they edit it themselves, it's theirs. */
+  const onName = (t: string) => {
+    setName(t);
+    setErr(null);
+    if (!handleTouched) setHandle(handleFromName(t));
+  };
+
+  const ready = creating
+    ? name.trim().length > 0 &&
+      handleState === "free" &&
+      email.trim().length > 3 &&
+      pw.length >= 6 &&
+      agreed
+    : email.trim().length > 3 && pw.length >= 6;
 
   const swapMode = (to: "create" | "signin") => {
     setMode(to);
@@ -1101,12 +1277,13 @@ function AccountStep({
         return;
       }
 
-      onAccount(userId);
+      /* name, username AND email travel up to finish(), which writes them with
+         the rest of the profile */
+      onAccount(userId, name.trim(), handle.trim().toLowerCase(), email.trim().toLowerCase());
       onNext();
       return;
     }
 
-    /* ---- signing in to something that already exists ---- */
     const { userId, error } = await signIn(email, pw);
 
     if (error || !userId) {
@@ -1115,7 +1292,6 @@ function AccountStep({
       return;
     }
 
-    /* straight to the app, answers discarded — see the note above */
     onExisting();
   };
 
@@ -1184,7 +1360,41 @@ function AccountStep({
         <View style={styles.orLine} />
       </View>
 
-      <View style={styles.emailBox}>
+      {/* ---------- NAME AND USERNAME, creating only ----------
+          Signing in needs neither — that account already has both. */}
+      {creating && (
+        <>
+          <Text style={[styles.micro, { marginTop: 22, marginBottom: 8 }]}>YOUR NAME</Text>
+          <View style={[styles.emailBox, { marginTop: 0 }]}>
+            <Icon name="profile" size={18} mode="loop" />
+            <TextInput
+              value={name}
+              onChangeText={onName}
+              placeholder="David"
+              placeholderTextColor={T.micro}
+              autoCapitalize="words"
+              autoCorrect={false}
+              style={styles.emailInput}
+              returnKeyType="next"
+            />
+          </View>
+          <Text style={styles.fieldNote}>Just how MOTION greets you. Nobody else sees it.</Text>
+
+          <Text style={[styles.micro, { marginTop: 20, marginBottom: 8 }]}>USERNAME</Text>
+          <HandleField
+            value={handle}
+            onChange={(v) => { setHandle(v); setHandleTouched(true); setErr(null); }}
+            onStateChange={setHandleState}
+            placeholder="david"
+          />
+          <Text style={styles.fieldNote}>
+            This is what other people see on the leaderboard. You can change it later.
+          </Text>
+        </>
+      )}
+
+      <Text style={[styles.micro, { marginTop: creating ? 22 : 4, marginBottom: 8 }]}>EMAIL</Text>
+      <View style={[styles.emailBox, { marginTop: 0 }]}>
         <Icon name="email" size={18} mode="loop" />
         <TextInput
           value={email}
@@ -1196,7 +1406,7 @@ function AccountStep({
           autoCorrect={false}
           style={styles.emailInput}
           /* the keyboard's return key moves to the password rather than
-             closing — one less tap in a two-field form */
+             closing — one less tap */
           returnKeyType="next"
           onSubmitEditing={() => pwRef.current?.focus()}
         />
@@ -1267,7 +1477,23 @@ function AccountStep({
         </Text>
       </Pressable>
 
-      {creating && !agreed && <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>}
+      {/* WHY THE BUTTON IS OFF, one reason at a time. A disabled button with no
+          explanation is the most frustrating control in any app. */}
+      {creating && !ready && (
+        <Text style={styles.agreeHint}>
+          {!name.trim()
+            ? "Add your name to continue."
+            : handleState === "taken"
+              ? "That username is taken — pick another."
+              : handleState === "invalid"
+                ? "Check your username."
+                : handleState !== "free"
+                  ? "Choose a username to continue."
+                  : !agreed
+                    ? "Tick the terms box to continue."
+                    : "Fill in your email and password to continue."}
+        </Text>
+      )}
 
       {/* the way between the two modes, always available */}
       <Pressable
@@ -1537,7 +1763,7 @@ function TrialPaywall({ onStartTrial, onSkip }: { onStartTrial: () => void; onSk
       <Pressable onPress={onSkip} style={{ alignItems: "center", marginTop: 14 }}>
         <Text style={styles.skipText}>Continue with the free version</Text>
       </Pressable>
-    </ScrollView>
+          </ScrollView>
   );
 }
 
@@ -1598,6 +1824,8 @@ const styles = StyleSheet.create({
   orText: { fontSize: 12, color: T.micro, fontFamily: FONTS.body },
   emailBox: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 14, marginTop: 22 },
   emailInput: { flex: 1, color: T.text, fontFamily: FONTS.body, fontSize: 14.5, padding: 0 },
+  /* the one-line explanation under a field — what it's for, who sees it */
+  fieldNote: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6, marginLeft: 2, lineHeight: 16 },
   pwHint: { fontSize: 11, color: T.micro, fontFamily: FONTS.body, marginTop: 6, marginLeft: 2 },
   agreeRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },
   agreeText: { flex: 1, fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 18 },
@@ -1608,7 +1836,7 @@ const styles = StyleSheet.create({
   errAction: { marginTop: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 10, paddingVertical: 10, alignItems: "center" },
   errActionText: { fontSize: 12.5, color: T.green, fontFamily: FONTS.headingMed },
 
-  /* the "your answers won't be used" heads-up on the sign-in side */
+  /* used by the sign-in heads-up AND the two Health notices */
   noticeRow: {
     flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 16,
     backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
