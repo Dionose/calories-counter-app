@@ -1,19 +1,26 @@
 // components/CameraSheet.tsx
 // The capture widget. NOT a full screen — a card that rises over whatever
 // screen opened it, with the app still visible behind. Used everywhere in the
-// app that needs a camera: meal logging, barcode scanning, and now the profile
+// app that needs a camera: meal logging, barcode scanning, and the profile
 // photo.
 //
 // WHERE IT SITS DEPENDS ON WHAT IT'S POINTING AT. `anchor` decides:
 //
 //   "bottom" (the default) — a plate on a table. You hold the phone over the
-//     food and look down, so the widget sits low and your thumb reaches the
-//     shutter without shifting your grip.
+//     food and look down, so a compact card low on the screen keeps the
+//     shutter under your thumb without shifting your grip.
 //
-//   "top" — your own face. You hold the phone UP and look at it straight on,
-//     and a preview pinned near the bottom means watching one part of the
-//     screen while your face is framed in another. It also gets a taller
-//     preview, because a portrait needs vertical room that a plate doesn't.
+//   "top" — your own face. This one is BIG: nearly the full width and about
+//     four fifths of the height. That size isn't decoration, it's the whole
+//     point. A small card high up frames your face but puts the shutter out of
+//     thumb reach; a small card low down is easy to press but you're looking
+//     down while your face is up. Stretching one card across both ends solves
+//     both — the preview reaches high enough to see yourself, and the shutter
+//     still sits near the bottom of the phone.
+//
+//     The alternative was the volume button as a shutter, which is how you'd
+//     really do this one-handed. That needs a native module and therefore a
+//     full EAS rebuild, so it's parked with Apple sign-in and notifications.
 //
 // THE CAMERA IS REAL NOW. expo-camera needs a development build, which is why
 // this was a gradient placeholder for so long. Three ways in:
@@ -39,10 +46,16 @@ import TravelBorder from "./TravelBorder";
 const { height: SCREEN_H } = Dimensions.get("window");
 
 const PREVIEW_H = 300;
-/* TALLER FOR A FACE. A plate is wide and shallow; a head and shoulders needs
-   vertical room, and 300px crops people at the chin on a phone held at arm's
-   length. */
-const PREVIEW_H_TALL = 380;
+
+/* ---------- THE TALL ONE ----------
+   The whole widget takes about 80% of the screen, so the preview is whatever
+   is left after the header and the controls. Measured rather than guessed:
+   header ≈ 44, controls ≈ 100, plus the border's own inset.
+
+   The floor matters on a small phone — below about 360 a face gets cropped at
+   the chin, which defeats the reason this mode exists. */
+const TOP_CHROME = 150;
+const PREVIEW_H_TALL = Math.max(360, Math.round(SCREEN_H * 0.8) - TOP_CHROME);
 
 /* the formats worth reading. Food packaging is EAN-13 almost everywhere and
    UPC-A in North America; the rest are here because they cost nothing to
@@ -161,8 +174,9 @@ export default function CameraSheet({
   locked?: boolean;
   /** the amber "1 photo left" bar, shown to free users BEFORE they shoot */
   showFreeBar?: boolean;
-  /** where the widget sits, and how tall the preview is — see the note at the
-      top of this file. Default is bottom, which is every existing caller. */
+  /** how the widget sits: a compact card low down, or the tall near-full-screen
+      one. See the note at the top of this file. Default is bottom, which is
+      every existing caller. */
   anchor?: "bottom" | "top";
   /** which camera to open on. A profile photo wants the front one; opening on
       the back camera means everyone's first sight of this screen is their own
@@ -220,13 +234,15 @@ export default function CameraSheet({
     }
   }, [visible, permission?.granted]);
 
-  /* a top-anchored widget drops DOWN into place; a bottom one rises up. Coming
-     from the wrong direction reads as the animation being broken. */
+  /* the tall one settles DOWNWARD into place; the compact one rises up. A
+     card arriving from the wrong direction reads as a broken animation. The
+     travel is short for the tall one because it's already nearly full-screen —
+     a long slide on something that big feels sluggish. */
   const translateY = rise.interpolate({
     inputRange: [0, 1],
-    outputRange: [top ? -SCREEN_H * 0.4 : SCREEN_H * 0.5, 0],
+    outputRange: [top ? -60 : SCREEN_H * 0.5, 0],
   });
-  const scale = rise.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
+  const scale = rise.interpolate({ inputRange: [0, 1], outputRange: [top ? 0.98 : 0.96, 1] });
 
   /* THE REAL SHUTTER. quality 0.9 rather than 1: the difference is invisible
      at any size this gets displayed, and photos.ts resizes on upload anyway —
@@ -481,18 +497,23 @@ const s0 = StyleSheet.create({
 
 const styles = (T: any, top: boolean) =>
   StyleSheet.create({
-    /* the widget floats over a dimmed screen — low for a plate, high for a
-       face. See the note at the top of the file. */
+    /* THE TALL ONE FILLS THE SCREEN and the compact one floats low. The
+       narrow side margins on the tall one are deliberate: every pixel of
+       width is a pixel of face, and the traveling border still needs somewhere
+       to run. */
     backdropWrap: {
       flex: 1,
       backgroundColor: "rgba(0,0,0,0.55)",
       alignItems: "center",
       justifyContent: top ? "flex-start" : "flex-end",
-      paddingHorizontal: 18,
-      paddingTop: top ? SCREEN_H * 0.07 : 0,
+      paddingHorizontal: top ? 8 : 18,
+      paddingTop: top ? SCREEN_H * 0.055 : 0,
       paddingBottom: top ? 0 : SCREEN_H * 0.2,
     },
-    widgetWrap: { width: "100%", maxWidth: 344 },
+    /* NO maxWidth on the tall one — 344 was sized for a card floating over a
+       screen, and capping the width here would leave the shutter marooned in
+       the middle with dead space either side. */
+    widgetWrap: top ? { width: "100%" } : { width: "100%", maxWidth: 344 },
     inner: { borderRadius: 23, overflow: "hidden", backgroundColor: "#000000" },
 
     head: {
@@ -540,9 +561,13 @@ const styles = (T: any, top: boolean) =>
       textAlign: "center", lineHeight: 16.5, maxWidth: 240,
     },
 
+    /* the tall one spreads its controls WIDER — a full-width row with the
+       buttons pushed toward the edges puts the shutter where a thumb already
+       is, which is the entire reason this mode is shaped the way it is */
     controls: {
       flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-      paddingHorizontal: 26, paddingTop: 16, paddingBottom: 20,
+      paddingHorizontal: top ? 44 : 26,
+      paddingTop: 16, paddingBottom: top ? 24 : 20,
       backgroundColor: "#000000",
     },
     sideBtn: {
