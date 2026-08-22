@@ -1,9 +1,9 @@
 // app/(tabs)/index.tsx
 // Home — the daily command centre.
 //
-// THE LEADERBOARD LIVES IN ITS OWN FILES NOW. It used to be several hundred
-// lines of invented names and a modal in the middle of this screen, which made
-// Home hard to read and made the board impossible to grow. It's now
+// THE LEADERBOARD LIVES IN ITS OWN FILES. It used to be several hundred lines
+// of invented names and a modal in the middle of this screen, which made Home
+// hard to read and made the board impossible to grow. It's now
 // <LeaderboardCard> and <LeaderboardSheet>, both reading real standings from
 // the database — same split as MealSheet, and for the same reason.
 import { LinearGradient } from "expo-linear-gradient";
@@ -133,9 +133,22 @@ export default function Home() {
       (async () => {
         await loadToday();
         if (cancelled) return;
+
+        /* AND THE STREAK, every time Home is entered.
+
+           It's computed once in AppState when the user id arrives — which is
+           right on a cold start and WRONG when someone signs in during
+           onboarding: the app navigates to the tabs before the auth listener
+           has set the id, so the streak computes against nobody and never
+           recomputes. Dion hit exactly that — 0 days against a real 2-day
+           streak, corrected only by signing out and back in, while Stats
+           showed the right number because it runs its own query on focus.
+
+           Recomputing here means it no longer matters how someone arrived. */
+        refreshStreak();
       })();
       return () => { cancelled = true; };
-    }, [loadToday])
+    }, [loadToday, refreshStreak])
   );
 
   /* Refetched on focus, which is what picks up a weigh-in saved over in Stats

@@ -1,101 +1,77 @@
 // app/onboarding.tsx
+// Fifteen screens, down from twenty-eight.
+//
+// WHY THE CUT. Onboarding is the only screen every single user meets before
+// they've decided whether they like the app — a long one is where people
+// quietly leave. Dion's friend called it too long, and the audit agreed:
+//
+//   FOUR SCREENS ASKED THINGS NOTHING READ. "Have you tried other calorie
+//   apps", "do you work with a trainer", "what would you like to accomplish"
+//   and the referral code were all collected and then dropped before finish().
+//
+//   TWO SCREENS ASKED THE SAME QUESTION. Workouts-per-week and how-active-are-
+//   you both fed the same multiplier. The DAY-TO-DAY question survives: it
+//   drives the base multiplier (1.2 → 1.725, most of the range) while workouts
+//   only added a bump of up to 0.1.
+//
+//   THE 2× HISTOGRAM made a claim we'd have to defend, and "MOTION is built
+//   around you" was assembled from two of the deleted screens.
+//
+//   GOAL DATE AND THE GRAPH MERGED. Same information twice.
+//
+//   DIET AND BURNED CALORIES MOVED TO PROFILE.
+//
+// ⚠️ NO FULL-SCREEN TAP-TO-DISMISS WRAPPER. One was added and it FROZE THE
+// BIRTHDAY WHEEL solid — a TouchableWithoutFeedback covering the screen claims
+// the touch before any ScrollView inside it can, and the outer handler always
+// wins. Tapping the background already dismisses the keyboard on its own:
+// that's what keyboardShouldPersistTaps="handled" does. The wrapper was
+// solving a problem that didn't exist and created a real one.
 import { useRouter } from "expo-router";
 import { AlertTriangle, Check, ChevronLeft, Crown, Eye, EyeOff, Sparkles } from "lucide-react-native";
-import React, { useEffect, useRef, useState } from "react";
-import { Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Animated, Easing, Keyboard, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
-import AppleFruit from "../components/AppleFruit";
-import BroccoliIcon from "../components/BroccoliIcon";
-import CutleryIcon from "../components/CutleryIcon";
-import EggIcon from "../components/EggIcon";
 import Icon, { IconName } from "../components/Icon";
 import IsoM, { IsoMGlow } from "../components/IsoM";
-import SheenIcon from "../components/SheenIcon";
-import SteakIcon from "../components/SteakIcon";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
-import { signUp } from "../constants/auth";
+import { signIn, signUp } from "../constants/auth";
 import { DARK, FONTS } from "../constants/theme";
 
 const T = DARK;
 
-/* A choice's icon can come from three places, because no single source covers
-   everything the app needs:
-     icon        — one of our Lottie animations
-     lucide      — a Lucide icon, wrapped in SheenIcon so it still has life
-     lucideColor — a colour for that Lucide icon
-     custom      — a component of its own, for real artwork. The diet rows all
-                   use this: food reads far better as food than as a tinted
-                   line drawing. */
 type Choice = {
   key: string;
   label: string;
   sub?: string;
   icon?: IconName;
-  lucide?: any;
-  lucideColor?: string;
-  custom?: any;
 };
 
 type Step =
   | { kind: "welcome"; id: string }
+  | { kind: "about"; id: string }
+  | { kind: "body"; id: string }
   | { kind: "single"; id: string; title: string; sub?: string; choices: Choice[] }
-  | { kind: "multi"; id: string; title: string; sub?: string; choices: Choice[] }
-  | { kind: "wheel"; id: string; title: string; sub?: string }
-  | { kind: "height"; id: string; title: string; sub?: string }
-  | { kind: "weight"; id: string; title: string; sub?: string }
   | { kind: "desired"; id: string; title: string; sub?: string }
-  | { kind: "goaldate"; id: string }
-  | { kind: "graph"; id: string }
-  | { kind: "histogram"; id: string }
-  | { kind: "personalize"; id: string }
+  | { kind: "outlook"; id: string }
   | { kind: "health"; id: string }
   | { kind: "notifications"; id: string }
-  | { kind: "referral"; id: string }
   | { kind: "building"; id: string; title: string; sub?: string }
   | { kind: "plan"; id: string }
   | { kind: "signin"; id: string }
-  | { kind: "message"; id: string; title: string; sub?: string; cta: string }
-  | { kind: "paywall"; id: string };
+  | { kind: "paywall"; id: string }
+  | { kind: "heard"; id: string };
 
 const STEPS: Step[] = [
   { kind: "welcome", id: "welcome" },
 
-  { kind: "single", id: "sex", title: "What's your sex?", sub: "This helps us calculate your daily energy needs accurately.", choices: [
-    { key: "male", label: "Male", icon: "male" },
-    { key: "female", label: "Female", icon: "female" },
-  ]},
+  /* SEX AND BIRTHDAY TOGETHER. Two quick answers that don't each need a
+     screen — and both feed the same BMR formula. */
+  { kind: "about", id: "about" },
 
-  { kind: "single", id: "workouts", title: "How many workouts do you do per week?", sub: "This will be used to calibrate your custom plan.", choices: [
-    { key: "0-2", label: "0 – 2", sub: "Workouts now and then", icon: "dumbbell" },
-    { key: "3-5", label: "3 – 5", sub: "A few workouts per week", icon: "dumbbell" },
-    { key: "6+", label: "6 +", sub: "Dedicated athlete", icon: "dumbbell" },
-  ]},
-
-  { kind: "wheel", id: "birthday", title: "When were you born?", sub: "This helps us calculate your daily energy needs accurately." },
-
-  /* the brand logos keep their OWN colours — a green Google or Instagram is
-     wrong, and for Google it breaches their guidelines */
-  { kind: "single", id: "heard", title: "Where did you hear about us?", choices: [
-    { key: "tv", label: "TV", icon: "tv" },
-    { key: "youtube", label: "YouTube", icon: "youtube" },
-    { key: "google", label: "Google", icon: "google" },
-    { key: "facebook", label: "Facebook", icon: "facebook" },
-    { key: "x", label: "X", icon: "xTwitter" },
-    { key: "tiktok", label: "TikTok", icon: "tiktok" },
-    { key: "instagram", label: "Instagram", icon: "instagram" },
-    { key: "appstore", label: "App Store", icon: "appStore" },
-    { key: "friends", label: "Friends / Family", icon: "friendsFamily" },
-    { key: "other", label: "Other", icon: "otherDots" },
-  ]},
-
-  { kind: "single", id: "tried", title: "Have you tried other calorie apps?", choices: [
-    { key: "no", label: "No", sub: "This is my first one", icon: "no" },
-    { key: "yes", label: "Yes", sub: "I've used one before", icon: "yes" },
-  ]},
-
-  { kind: "height", id: "height", title: "How tall are you?", sub: "We use this to work out your daily energy needs." },
-  { kind: "weight", id: "weight", title: "What's your weight?", sub: "Be honest — this shapes your whole plan. You can update it anytime." },
+  /* HEIGHT AND WEIGHT TOGETHER, same reasoning */
+  { kind: "body", id: "body" },
 
   { kind: "single", id: "goal", title: "What's your goal?", sub: "We'll shape your whole plan around this — you can change it anytime.", choices: [
     { key: "lose", label: "Lose weight", icon: "goalChartDown" },
@@ -103,11 +79,13 @@ const STEPS: Step[] = [
     { key: "gain", label: "Gain weight", icon: "goalChartUp" },
   ]},
 
-  { kind: "single", id: "activity", title: "How active are you?", sub: "Outside of workouts, day to day.", choices: [
-    { key: "low", label: "Little to no exercise" },
-    { key: "light", label: "Light — 1–3 days/week" },
-    { key: "mod", label: "Moderate — 3–5 days/week" },
-    { key: "high", label: "Very active — 6–7 days/week" },
+  { kind: "desired", id: "desired", title: "What's your desired weight?", sub: "Pick a target that feels realistic — you can change it later." },
+
+  { kind: "single", id: "activity", title: "How active are you?", sub: "Day to day, counting work and everything else — not just the gym.", choices: [
+    { key: "low", label: "Mostly sitting", sub: "Desk job, little exercise" },
+    { key: "light", label: "Lightly active", sub: "On your feet some of the day, or 1–3 workouts a week" },
+    { key: "mod", label: "Moderately active", sub: "Moving most of the day, or 3–5 workouts a week" },
+    { key: "high", label: "Very active", sub: "Physical job, or training 6–7 days a week" },
   ]},
 
   { kind: "single", id: "pace", title: "How fast do you want to go?", sub: "You can change this anytime.", choices: [
@@ -116,62 +94,20 @@ const STEPS: Step[] = [
     { key: "fast", label: "Aggressive", sub: "Faster results · 0.75 kg a week" },
   ]},
 
-  { kind: "single", id: "trainer", title: "Do you work with a personal trainer or dietitian?", sub: "We'll keep your plan in step with their advice.", choices: [
-    { key: "no", label: "No", sub: "Just me", icon: "no" },
-    { key: "yes", label: "Yes", sub: "I work with someone", icon: "yes" },
-  ]},
-
-  { kind: "desired", id: "desired", title: "What's your desired weight?", sub: "Pick a target that feels realistic — you can change it later." },
-  { kind: "goaldate", id: "goaldate" },
-  { kind: "graph", id: "graph" },
-  { kind: "histogram", id: "histogram" },
-
-  /* NO ICONS HERE, deliberately. "Unhealthy eating habits" and "lack of
-     support" are things people find hard to admit — a cheerful animated icon
-     beside them would read as the app being breezy about it. */
-  { kind: "multi", id: "stopping", title: "What's stopping you from reaching your goal?", sub: "Pick all that apply — we'll build around them.", choices: [
-    { key: "consistency", label: "Staying consistent", sub: "Starting is easy, keeping it up isn't" },
-    { key: "habits", label: "Unhealthy eating habits", sub: "Snacking, late meals, portion creep" },
-    { key: "support", label: "Lack of support", sub: "Nobody keeping you accountable" },
-    { key: "busy", label: "A busy schedule", sub: "No time to weigh and log everything" },
-    { key: "inspiration", label: "Not knowing what to eat", sub: "Same meals on repeat" },
-  ]},
-
-  /* every option carries real artwork. Broccoli for vegetarian rather than a
-     second carrot — vegan already has one, and two carrots in one list is a
-     coin-flip for the user rather than a choice. */
-  { kind: "single", id: "diet", title: "Do you follow a specific diet?", choices: [
-    { key: "none", label: "No specific diet", custom: CutleryIcon },
-    { key: "balanced", label: "Balanced", icon: "dietSalad" },
-    { key: "wholefood", label: "Wholefood", custom: AppleFruit },
-    { key: "lowcarb", label: "Low carb", custom: SteakIcon },
-    { key: "keto", label: "Keto", custom: EggIcon },
-    { key: "vegetarian", label: "Vegetarian", custom: BroccoliIcon },
-    { key: "vegan", label: "Vegan", icon: "dietVegan" },
-    { key: "pescatarian", label: "Pescatarian", icon: "dietFish" },
-  ]},
-
-  { kind: "multi", id: "accomplish", title: "What would you like to accomplish?", sub: "Pick all that apply.", choices: [
-    { key: "healthier", label: "Eat healthier", icon: "heart" },
-    { key: "energy", label: "Boost my energy", icon: "strongArm" },
-    { key: "body", label: "Feel better about my body", icon: "accomplishSmile" },
-    { key: "consistent", label: "Stay consistent", icon: "accomplishCalendar" },
-  ]},
+  { kind: "outlook", id: "outlook" },
 
   { kind: "health", id: "health" },
-
-  { kind: "single", id: "burned", title: "Add burned calories back to your day?", sub: "When you train, MOTION can top up your target by what you burned.", choices: [
-    { key: "yes", label: "Yes, add them back", sub: "Train hard, eat a little more that day", icon: "yes" },
-    { key: "no", label: "No, keep it fixed", sub: "Same target every day — simpler to follow", icon: "no" },
-  ]},
-
   { kind: "notifications", id: "notifications" },
-  { kind: "referral", id: "referral" },
-  { kind: "personalize", id: "personalize" },
+
   { kind: "building", id: "building", title: "Building your plan", sub: "Motion is crunching your numbers…" },
   { kind: "plan", id: "plan" },
   { kind: "signin", id: "signin" },
   { kind: "paywall", id: "paywall" },
+
+  /* LAST, DELIBERATELY. Useless to the user, valuable to Dion once he's paying
+     for ads — so it goes AFTER the paywall, where it can't delay anyone
+     reaching the app they just signed up for. */
+  { kind: "heard", id: "heard" },
 ];
 
 const LANGUAGES = [
@@ -182,39 +118,91 @@ const LANGUAGES = [
 
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
 
+const HEARD_CHOICES: Choice[] = [
+  { key: "tiktok", label: "TikTok", icon: "tiktok" },
+  { key: "instagram", label: "Instagram", icon: "instagram" },
+  { key: "youtube", label: "YouTube", icon: "youtube" },
+  { key: "x", label: "X", icon: "xTwitter" },
+  { key: "facebook", label: "Facebook", icon: "facebook" },
+  { key: "google", label: "Google", icon: "google" },
+  { key: "appstore", label: "App Store", icon: "appStore" },
+  { key: "tv", label: "TV", icon: "tv" },
+  { key: "friends", label: "Friends / Family", icon: "friendsFamily" },
+  { key: "other", label: "Other", icon: "otherDots" },
+];
+
+/* ---------- WHERE THEY ARE ----------
+   Read from the device, never asked — it's what the Regional leaderboard
+   groups on, and asking a question the phone can already answer is exactly
+   the kind of screen this pass exists to remove.
+
+   ⚠️ NO EXTRA PACKAGE, and that's deliberate. expo-localization is the obvious
+   tool and it FAILED here: it ships a native module, and a native module only
+   exists in the app after a full EAS rebuild. Installing it gave
+   "Cannot find native module 'ExpoLocalization'" and the whole app refused to
+   start — and uninstalling left an orphan entry in app.json that broke it
+   again.
+
+   THE GENERAL RULE: any package with a native part needs a new dev build
+   before it works at all. Installing it is only half the job. */
+function deviceRegion(): string | null {
+  try {
+    const raw =
+      Platform.OS === "ios"
+        ? NativeModules.SettingsManager?.settings?.AppleLocale ||
+          NativeModules.SettingsManager?.settings?.AppleLanguages?.[0]
+        : NativeModules.I18nManager?.localeIdentifier;
+
+    if (!raw) return null;
+
+    /* "en_CA" → CA, "en-GB" → GB */
+    const parts = String(raw).replace("-", "_").split("_");
+    const code = parts.length > 1 ? parts[1] : null;
+
+    return code && code.length === 2 ? code.toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ===================== THE PLAN CALCULATION =====================
    The NUMBER comes from a formula (Mifflin-St Jeor + activity factor),
    not from the AI — same inputs always give the same target, and it's
    clinically grounded. Motion supplies the coaching around it. */
 function buildPlan(a: Record<string, any>) {
-  const wUnit = a.weight?.unit || "kg";
-  const wRaw = parseFloat(a.weight?.val) || 75;
+  const wUnit = a.body?.wUnit || "kg";
+  const wRaw = parseFloat(a.body?.weight) || 75;
   const kg = wUnit === "kg" ? wRaw : wRaw / 2.20462;
 
   let cm = 175;
-  if (a.height?.unit === "cm") {
-    cm = parseFloat(a.height.cm) || 175;
-  } else if (a.height) {
-    const ft = parseFloat(a.height.ft) || 5;
-    const inch = parseFloat(a.height.inch) || 0;
+  if (a.body?.hUnit === "cm") {
+    cm = parseFloat(a.body.cm) || 175;
+  } else if (a.body) {
+    const ft = parseFloat(a.body.ft) || 5;
+    const inch = parseFloat(a.body.inch) || 0;
     cm = (ft * 12 + inch) * 2.54;
   }
 
   let age = 28;
-  if (a.birthday) {
+  if (a.about?.birthday) {
+    const b = a.about.birthday;
     const now = new Date();
-    age = now.getFullYear() - a.birthday.y;
-    const had = now.getMonth() > a.birthday.m || (now.getMonth() === a.birthday.m && now.getDate() >= a.birthday.d);
+    age = now.getFullYear() - b.y;
+    const had = now.getMonth() > b.m || (now.getMonth() === b.m && now.getDate() >= b.d);
     if (!had) age -= 1;
   }
 
-  const bmr = a.sex === "female"
+  const sex = a.about?.sex || "male";
+
+  const bmr = sex === "female"
     ? 10 * kg + 6.25 * cm - 5 * age - 161
     : 10 * kg + 6.25 * cm - 5 * age + 5;
 
+  /* ONE MULTIPLIER, from one question. The old flow added a second bump from
+     workouts-per-week on top of this — both questions asking the same thing,
+     which is why one of them went. */
   const base: Record<string, number> = { low: 1.2, light: 1.375, mod: 1.55, high: 1.725 };
-  const bump: Record<string, number> = { "0-2": 0, "3-5": 0.05, "6+": 0.1 };
-  const mult = (base[a.activity] || 1.375) + (bump[a.workouts] || 0);
+  const mult = base[a.activity] || 1.375;
   const tdee = bmr * mult;
 
   const rate = PACE_RATE[a.pace] || 0.5;
@@ -223,7 +211,7 @@ function buildPlan(a: Record<string, any>) {
   if (a.goal === "lose") target = tdee - dailyShift;
   if (a.goal === "gain") target = tdee + dailyShift;
 
-  const floor = a.sex === "female" ? 1200 : 1500;
+  const floor = sex === "female" ? 1200 : 1500;
   target = Math.max(floor, target);
   const hitFloor = target === floor && a.goal === "lose";
 
@@ -232,14 +220,12 @@ function buildPlan(a: Record<string, any>) {
   const fat = Math.round((calories * 0.25) / 9);
   const carbs = Math.round((calories - protein * 4 - fat * 9) / 4);
 
-  // cm is returned so finish() can store it — Profile's Goal screen needs
-  // height to recompute BMR later without guessing
   return { calories, protein, carbs, fat, tdee: Math.round(tdee), hitFloor, kg, cm: Math.round(cm) };
 }
 
 function goalTimeline(a: Record<string, any>) {
-  const unit = a.weight?.unit || "kg";
-  const cur = parseFloat(a.weight?.val) || 0;
+  const unit = a.body?.wUnit || "kg";
+  const cur = parseFloat(a.body?.weight) || 0;
   const target = parseFloat(a.desired?.val) || cur;
   const rateKg = PACE_RATE[a.pace] || 0.5;
   const rate = unit === "kg" ? rateKg : rateKg * 2.20462;
@@ -266,24 +252,38 @@ export default function Onboarding() {
   const [dir, setDir] = useState(1);
   const [answers, setAnswers] = useState<Record<string, any>>({});
 
-  /* set by SignInStep once the account exists. finish() needs it to write the
-     profile row — no account, nowhere to attach the plan. */
+  /* set by AccountStep once a NEW account exists. finish() needs it to write
+     the profile row — no account, nowhere to attach the plan. */
   const [userId, setUserId] = useState<string | null>(null);
+
+  /* read ONCE, at the start. The phone's region doesn't change mid-signup. */
+  const region = useMemo(() => deviceRegion(), []);
 
   const step = STEPS[i];
   const total = STEPS.length;
 
+  /* MOVING ON ALWAYS CLOSES THE KEYBOARD. Without this it can survive the
+     transition and hang over the next screen, which looks like the app has
+     lost track of itself. */
   const goNext = () => {
+    Keyboard.dismiss();
     if (i < total - 1) { setDir(1); setI(i + 1); }
     else finish(false);
   };
-  const goBack = () => { if (i > 0) { setDir(-1); setI(i - 1); } };
+  const goBack = () => {
+    Keyboard.dismiss();
+    if (i > 0) { setDir(-1); setI(i - 1); }
+  };
+
+  /* remembered from the paywall so the LAST screen doesn't have to know about
+     it — the attribution question comes after the decision, but the decision
+     is what finish() needs. */
+  const proChoice = useRef(false);
 
   const finish = (pro: boolean) => {
-    // hand the generated plan to the rest of the app before we leave onboarding
     const p = buildPlan(answers);
     const tl = goalTimeline(answers);
-    const b = answers.birthday || { d: 12, m: 2, y: 2001 };
+    const b = answers.about?.birthday || { d: 12, m: 2, y: 2001 };
 
     savePlan(
       {
@@ -292,16 +292,18 @@ export default function Onboarding() {
         carbs: p.carbs,
         fat: p.fat,
         tdee: p.tdee,
-        addBurned: answers.burned === "yes",
+        /* OFF BY DEFAULT now that onboarding doesn't ask. Profile → Daily
+           calories turns it on, writing the same flag. */
+        addBurned: false,
       },
       {
         name: "Dion",
         /* SEX and HEIGHT are stored because Profile → Goal recomputes BMR from
-           the body when you change your goal. Without them it would have to
-           guess, and the female constant differs by 166 calories. */
-        sex: (answers.sex || "male") as "male" | "female",
+           the body when you change your goal. The female constant differs by
+           166 calories, so guessing isn't an option. */
+        sex: (answers.about?.sex || "male") as "male" | "female",
         heightCm: p.cm,
-        heightUnit: (answers.height?.unit === "cm" ? "cm" : "ft") as "cm" | "ft",
+        heightUnit: (answers.body?.hUnit === "cm" ? "cm" : "ft") as "cm" | "ft",
         dobDay: b.d,
         dobMonth: b.m,
         dobYear: b.y,
@@ -311,21 +313,34 @@ export default function Onboarding() {
         targetWeight: tl.target,
         paceRate: PACE_RATE[answers.pace] || 0.5,
         goalWeeks: tl.weeks,
-        /* the answers that don't feed the formula but do belong on the record:
-           diet shapes food suggestions, and heardFrom is the attribution that
-           tells us which ad channel actually converts */
-        diet: answers.diet,
         activity: answers.activity,
-        workouts: answers.workouts,
+        region: region || undefined,
         heardFrom: answers.heard,
         isPro: pro,
       } as any,
-      /* THE ID MATTERS HERE. SignInStep created the account moments ago and
+      /* THE ID MATTERS HERE. AccountStep created the account moments ago and
          AppState's auth listener may not have caught up yet — passing it
          explicitly means the profile write can't miss. */
       userId || undefined
     );
     setIsPro(pro);
+    router.replace("/(tabs)");
+  };
+
+  /** ---------- THEY SIGNED IN TO AN ACCOUNT THAT ALREADY EXISTS ----------
+      STRAIGHT TO THE APP, AND NOTHING IS WRITTEN. This is the whole reason
+      the sign-in path is separate from finish().
+
+      Someone who reinstalled the app can easily miss the "Sign in" link on
+      the welcome screen, run the whole flow, and reach here. Their answers
+      are FRESH GUESSES; the account holds months of real tracking. Doing what
+      finish() does would overwrite their true starting weight, target and
+      plan with those guesses — destroying their history in the exact moment
+      they were trying to recover it.
+
+      So the answers are discarded. AppState's auth listener loads their real
+      profile the moment the session appears. */
+  const enterExisting = () => {
     router.replace("/(tabs)");
   };
 
@@ -363,24 +378,28 @@ export default function Onboarding() {
       </View>
 
       <StepTransition stepKey={step.id} dir={dir}>
+        {step.kind === "about" && <AboutStep value={answers.about} onChange={(v: any) => set("about", v)} onNext={goNext} />}
+        {step.kind === "body" && <BodyStep value={answers.body} onChange={(v: any) => set("body", v)} onNext={goNext} />}
         {step.kind === "single" && <SingleStep step={step} value={answers[step.id]} onPick={(k: string) => { set(step.id, k); setTimeout(goNext, 180); }} />}
-        {step.kind === "multi" && <MultiStep step={step} value={answers[step.id] || []} onChange={(v: string[]) => set(step.id, v)} onNext={goNext} />}
-        {step.kind === "wheel" && <BirthdayStep step={step} value={answers[step.id]} onChange={(v: any) => set(step.id, v)} onNext={goNext} />}
-        {step.kind === "height" && <HeightStep step={step} value={answers[step.id]} onChange={(v: any) => set(step.id, v)} onNext={goNext} />}
-        {step.kind === "weight" && <WeightStep step={step} value={answers[step.id]} onChange={(v: any) => set(step.id, v)} onNext={goNext} />}
-        {step.kind === "desired" && <DesiredStep step={step} value={answers[step.id]} current={answers.weight} goal={answers.goal} onChange={(v: any) => set(step.id, v)} onNext={goNext} />}
-        {step.kind === "goaldate" && <GoalDateStep answers={answers} onNext={goNext} />}
-        {step.kind === "graph" && <GraphStep answers={answers} onNext={goNext} />}
-        {step.kind === "histogram" && <HistogramStep onNext={goNext} />}
+        {step.kind === "desired" && <DesiredStep step={step} value={answers[step.id]} body={answers.body} goal={answers.goal} onChange={(v: any) => set(step.id, v)} onNext={goNext} />}
+        {step.kind === "outlook" && <OutlookStep answers={answers} onNext={goNext} />}
         {step.kind === "health" && <HealthStep value={answers.health} onChange={(v: any) => set("health", v)} onNext={goNext} />}
         {step.kind === "notifications" && <NotificationsStep value={answers.notifications} onChange={(v: any) => set("notifications", v)} onNext={goNext} />}
-        {step.kind === "referral" && <ReferralStep value={answers.referral} onChange={(v: any) => set("referral", v)} onNext={goNext} />}
-        {step.kind === "personalize" && <PersonalizeStep answers={answers} onNext={goNext} />}
         {step.kind === "plan" && <PlanStep answers={answers} onNext={goNext} />}
-        {step.kind === "signin" && <SignInStep onNext={goNext} onAccount={setUserId} />}
-        {step.kind === "message" && <MessageStep step={step} onNext={goNext} />}
+        {step.kind === "signin" && <AccountStep onNext={goNext} onAccount={setUserId} onExisting={enterExisting} />}
         {step.kind === "building" && <BuildingStep step={step} />}
-        {step.kind === "paywall" && <TrialPaywall onStartTrial={() => finish(true)} onSkip={() => finish(false)} />}
+        {step.kind === "paywall" && (
+          <TrialPaywall
+            onStartTrial={() => { proChoice.current = true; goNext(); }}
+            onSkip={() => { proChoice.current = false; goNext(); }}
+          />
+        )}
+        {step.kind === "heard" && (
+          <HeardStep
+            onPick={(k: string) => { set("heard", k); setTimeout(() => finish(proChoice.current), 200); }}
+            onSkip={() => finish(proChoice.current)}
+          />
+        )}
       </StepTransition>
     </KeyboardAvoidingView>
   );
@@ -421,8 +440,9 @@ function Welcome({
           <Text style={styles.primaryBtnText}>Get started</Text>
         </Pressable>
 
-        {/* returning users cross straight to sign-in — nobody with an account
-            should have to answer thirty questions to get back in */}
+        {/* returning users cross straight to sign-in — though plenty will miss
+            this and run the whole flow anyway, which is why the account screen
+            can sign in too */}
         <Pressable onPress={onSignIn} style={{ alignItems: "center", marginTop: 16 }} hitSlop={8}>
           <Text style={styles.signInText}>Already have an account? <Text style={{ color: T.green }}>Sign in</Text></Text>
         </Pressable>
@@ -450,9 +470,459 @@ function Welcome({
   );
 }
 
+/* ===================== ABOUT YOU — SEX + BIRTHDAY =====================
+   Two questions on one screen. Both feed the same BMR formula, both are a
+   single tap or a spin, and neither justified a screen of its own.
+
+   ⚠️ THIS SCREEN DOES NOT SCROLL, and that's the fix for a real problem. It
+   was a ScrollView out of habit, and the wheel scrolls too — so when a finger
+   landed slightly off the wheel, the PAGE moved instead of the dates. Two
+   scrollable things fighting over one finger, and the page usually won.
+
+   THE WHEEL WORKS BEFORE THE SEX IS PICKED. Only the Continue button waits on
+   that — someone's eye can easily go to the birthday first, and a picker that
+   ignores you until you've answered something else feels broken. */
+/* 40 rather than 44 — five rows of 44 is 220 points, and with the page no
+   longer scrolling that pushed Continue toward the bottom edge on a small
+   phone. Four points a row buys back 20 without the wheel feeling cramped. */
+const ITEM_H = 40;
+/* FIVE ROWS. It was briefly three, to guarantee the button fit — but three
+   reads as a cramped little box rather than a date picker. */
+const VISIBLE = 5;
+const WHEEL_PAD = Math.floor(VISIBLE / 2);
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const YEARS: number[] = [];
+for (let y = 2012; y >= 1940; y--) YEARS.push(y);
+
+function WheelColumn({ data, index, onIndex, width }: { data: string[]; index: number; onIndex: (i: number) => void; width: number }) {
+  const ref = useRef<ScrollView>(null);
+  useEffect(() => {
+    const t = setTimeout(() => ref.current?.scrollTo({ y: index * ITEM_H, animated: false }), 0);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <ScrollView
+      ref={ref}
+      style={{ width, height: ITEM_H * VISIBLE }}
+      showsVerticalScrollIndicator={false}
+      snapToInterval={ITEM_H}
+      decelerationRate="fast"
+      /* the padding centres the first and last items in the band — it has to
+         match WHEEL_PAD or the selected row sits off-centre */
+      contentContainerStyle={{ paddingVertical: ITEM_H * WHEEL_PAD }}
+      onMomentumScrollEnd={(e) => {
+        const raw = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
+        onIndex(Math.max(0, Math.min(data.length - 1, raw)));
+      }}
+    >
+      {data.map((label, k) => (
+        <View key={k} style={styles.wheelCell}>
+          <Text style={[styles.wheelItem, k === index && styles.wheelItemOn]} numberOfLines={1}>{label}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function AboutStep({ value, onChange, onNext }: any) {
+  const v = value || { sex: null, birthday: { m: 5, d: 14, y: 1998 } };
+  const b = v.birthday;
+
+  const setSex = (sex: string) => onChange({ ...v, sex });
+  const setBirthday = (patch: any) => {
+    const next = { ...b, ...patch };
+    const max = new Date(next.y, next.m + 1, 0).getDate();
+    if (next.d > max) next.d = max;
+    onChange({ ...v, birthday: next });
+  };
+
+  const daysInMonth = new Date(b.y, b.m + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, k) => String(k + 1));
+
+  /* the sex has to be CHOSEN. The wheel has a sensible default and a birthday
+     a few years out barely moves the formula, but guessing someone's sex
+     wrong is a 166-calorie error and an insult. */
+  const ready = !!v.sex;
+
+  return (
+    /* a plain View — see the note above about why this screen doesn't scroll */
+    <View style={[styles.body, { flex: 1 }]}>
+      <Text style={styles.title}>A bit about you</Text>
+      <Text style={styles.sub}>Both of these feed the formula that works out how much energy your body needs.</Text>
+
+      <Text style={[styles.micro, { marginTop: 22, marginBottom: 10 }]}>SEX</Text>
+      <View style={{ flexDirection: "row", gap: 10 }}>
+        {[
+          { key: "male", label: "Male", icon: "male" as IconName },
+          { key: "female", label: "Female", icon: "female" as IconName },
+        ].map((c) => {
+          const on = v.sex === c.key;
+          return (
+            <Pressable key={c.key} onPress={() => setSex(c.key)} style={[styles.sexTile, on && styles.choiceOn]}>
+              <Icon name={c.icon} size={26} mode="loop" />
+              <Text style={[styles.sexLabel, on && { color: T.green }]}>{c.label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={[styles.micro, { marginTop: 20, marginBottom: 2 }]}>WHEN WERE YOU BORN?</Text>
+      {/* SAY THAT IT SCROLLS, and say it in green so it reads as an
+          instruction rather than fine print. A wheel looks tappable, and
+          someone tapping a month that won't respond has no way to know
+          they're meant to drag — they'll assume it's broken. */}
+      <Text style={styles.scrollHint}>Scroll each column to set your date</Text>
+
+      <View style={styles.wheelWrap}>
+        <View style={styles.wheelBand} pointerEvents="none" />
+        <View style={styles.wheelRow}>
+          <WheelColumn data={MONTHS} index={b.m} onIndex={(k) => setBirthday({ m: k })} width={124} />
+          <WheelColumn data={days} index={Math.min(b.d - 1, daysInMonth - 1)} onIndex={(k) => setBirthday({ d: k + 1 })} width={60} />
+          <WheelColumn data={YEARS.map(String)} index={Math.max(0, YEARS.indexOf(b.y))} onIndex={(k) => setBirthday({ y: YEARS[k] })} width={80} />
+        </View>
+      </View>
+
+      {/* pushes the button to the bottom whatever the phone's height, so it's
+          never floating awkwardly mid-screen */}
+      <View style={{ flex: 1 }} />
+
+      <Pressable onPress={ready ? onNext : undefined} style={[styles.primaryBtn, !ready && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !ready && styles.btnTextDisabled]}>Continue</Text>
+      </Pressable>
+      {!ready && <Text style={styles.agreeHint}>Pick your sex above to continue.</Text>}
+    </View>
+  );
+}
+
+/* ===================== UNIT TOGGLE ===================== */
+function UnitToggle({ options, value, onPick, compact }: { options: string[]; value: string; onPick: (v: string) => void; compact?: boolean }) {
+  return (
+    <View style={[styles.unitToggle, compact && { marginTop: 0 }]}>
+      {options.map((o) => {
+        const on = o === value;
+        return (
+          <Pressable key={o} onPress={() => onPick(o)} style={[styles.unitPill, compact && styles.unitPillSmall, on && styles.unitPillOn]}>
+            <Text style={[styles.unitPillText, on && styles.unitPillTextOn]}>{o}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/* ===================== YOUR BODY — HEIGHT + WEIGHT =====================
+   Two number entries on one screen. This one DOES scroll, unlike the birthday
+   screen — a keyboard covers half the display, and without scrolling the
+   second field would be unreachable. No wheel here to fight over the finger.
+
+   NO returnKeyType ON THE NUMBER FIELDS. It was briefly set to "done", which
+   put a bulky Done key on a numeric keypad — not something iOS apps do, and
+   it looked wrong. keyboardDismissMode="on-drag" covers it instead: start
+   scrolling and the keyboard gets out of the way. */
+function BodyStep({ value, onChange, onNext }: any) {
+  const v = value || { hUnit: "cm", cm: "", ft: "", inch: "", wUnit: "kg", weight: "" };
+  const set = (patch: any) => onChange({ ...v, ...patch });
+
+  /* ---- height ---- */
+  const cmNum = parseFloat(v.cm);
+  const ftNum = parseFloat(v.ft);
+  const inNum = parseFloat(v.inch || "0");
+
+  let hOk = false;
+  let hWarn = "";
+  if (v.hUnit === "cm") {
+    hOk = !isNaN(cmNum) && cmNum >= 90 && cmNum <= 250;
+    if (v.cm.length > 0 && !hOk) hWarn = "Enter a height between 90 and 250 cm.";
+  } else {
+    const totalIn = (isNaN(ftNum) ? 0 : ftNum) * 12 + (isNaN(inNum) ? 0 : inNum);
+    hOk = !isNaN(ftNum) && totalIn >= 36 && totalIn <= 98;
+    if (v.ft.length > 0 && !hOk) hWarn = "Enter a height between 3'0\" and 8'2\".";
+  }
+
+  /* ---- weight ---- */
+  const wNum = parseFloat(v.weight);
+  const wMin = v.wUnit === "kg" ? 25 : 55;
+  const wMax = v.wUnit === "kg" ? 300 : 660;
+  const wOk = !isNaN(wNum) && wNum >= wMin && wNum <= wMax;
+  const wWarn = v.weight.length > 0 && !wOk
+    ? `Expected between ${wMin} and ${wMax} ${v.wUnit}.`
+    : "";
+
+  const ready = hOk && wOk;
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.body}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+    >
+      <Text style={styles.title}>Your height and weight</Text>
+      <Text style={styles.sub}>Be honest with the weight — it shapes your whole plan, and you can update it any time.</Text>
+
+      {/* ---------- HEIGHT ---------- */}
+      <View style={styles.fieldHead}>
+        <Text style={styles.micro}>HEIGHT</Text>
+        <UnitToggle
+          compact
+          options={["cm", "ft + in"]}
+          value={v.hUnit === "cm" ? "cm" : "ft + in"}
+          onPick={(u) => set({ hUnit: u === "cm" ? "cm" : "ft" })}
+        />
+      </View>
+
+      {v.hUnit === "cm" ? (
+        <View style={styles.entryRowTight}>
+          <TextInput value={v.cm} onChangeText={(t) => set({ cm: t.replace(/[^0-9.]/g, "") })} keyboardType="number-pad" placeholder="175" placeholderTextColor={T.micro} style={styles.midInput} maxLength={3} />
+          <Text style={styles.entryUnit}>cm</Text>
+        </View>
+      ) : (
+        <View style={styles.entryRowTight}>
+          <TextInput value={v.ft} onChangeText={(t) => set({ ft: t.replace(/[^0-9]/g, "") })} keyboardType="number-pad" placeholder="5" placeholderTextColor={T.micro} style={[styles.midInput, { minWidth: 58 }]} maxLength={1} />
+          <Text style={styles.entryUnit}>ft</Text>
+          <TextInput value={v.inch} onChangeText={(t) => set({ inch: t.replace(/[^0-9]/g, "") })} keyboardType="number-pad" placeholder="9" placeholderTextColor={T.micro} style={[styles.midInput, { minWidth: 58, marginLeft: 14 }]} maxLength={2} />
+          <Text style={styles.entryUnit}>in</Text>
+        </View>
+      )}
+
+      {hWarn ? (
+        <View style={styles.warnRow}>
+          <AlertTriangle size={14} color="#FBBF24" />
+          <Text style={styles.warnText}>{hWarn}</Text>
+        </View>
+      ) : null}
+
+      {/* ---------- WEIGHT ---------- */}
+      <View style={[styles.fieldHead, { marginTop: 30 }]}>
+        <Text style={styles.micro}>WEIGHT</Text>
+        <UnitToggle compact options={["kg", "lbs"]} value={v.wUnit} onPick={(u) => set({ wUnit: u })} />
+      </View>
+
+      <View style={styles.entryRowTight}>
+        <TextInput
+          value={v.weight}
+          onChangeText={(t) => set({ weight: t.replace(/[^0-9.]/g, "") })}
+          keyboardType="decimal-pad"
+          placeholder={v.wUnit === "kg" ? "78" : "172"}
+          placeholderTextColor={T.micro}
+          style={styles.midInput}
+          maxLength={5}
+        />
+        <Text style={styles.entryUnit}>{v.wUnit}</Text>
+      </View>
+
+      {wWarn ? (
+        <View style={styles.warnRow}>
+          <AlertTriangle size={14} color="#FBBF24" />
+          <Text style={styles.warnText}>{wWarn}</Text>
+        </View>
+      ) : null}
+
+      <Pressable onPress={ready ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !ready && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !ready && styles.btnTextDisabled]}>Continue</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+/* ===================== DESIRED WEIGHT =====================
+   A target that contradicts the stated goal is a HARD BLOCK, not a note —
+   letting it through would make the plan, the timeline and the graph all
+   disagree with each other. */
+function DesiredStep({ step, value, body, goal, onChange, onNext }: any) {
+  const unit = body?.wUnit || "kg";
+  const cur = parseFloat(body?.weight) || (unit === "kg" ? 78 : 172);
+  const v = value || { val: "" };
+  const n = parseFloat(v.val);
+
+  const min = unit === "kg" ? 35 : 77;
+  const max = unit === "kg" ? 300 : 660;
+  const inRange = !isNaN(n) && n >= min && n <= max;
+
+  const change = inRange ? n - cur : 0;
+  const pctChange = inRange ? Math.abs(change) / cur : 0;
+
+  const contradictsGain = inRange && goal === "gain" && change <= 0;
+  const contradictsLose = inRange && goal === "lose" && change >= 0;
+  const contradicts = contradictsGain || contradictsLose;
+
+  const canContinue = inRange && !contradicts;
+
+  let note = "";
+  if (v.val.length > 0 && !inRange) {
+    note = `Enter a target between ${min} and ${max} ${unit}.`;
+  } else if (contradictsGain) {
+    note = `You chose to gain weight, so your target has to be above ${cur} ${unit}. Enter a higher number, or go back and change your goal.`;
+  } else if (contradictsLose) {
+    note = `You chose to lose weight, so your target has to be below ${cur} ${unit}. Enter a lower number, or go back and change your goal.`;
+  } else if (inRange && pctChange > 0.25) {
+    note = "That's a big change from where you are now. It's doable, but it'll take a while — you can always adjust later.";
+  } else if (inRange) {
+    note = `That's ${Math.abs(change).toFixed(1)} ${unit} ${change < 0 ? "below" : change > 0 ? "above" : "from"} where you are now — a healthy target.`;
+  }
+
+  const noteOk = inRange && !contradicts && pctChange <= 0.25;
+
+  return (
+    <ScrollView
+      contentContainerStyle={styles.body}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+    >
+      {/* the bullseye stays — this screen is about aiming at something */}
+      <View style={styles.stepHero}><Icon name="targetBullseye" size={46} mode="loop" /></View>
+
+      <Text style={styles.title}>{step.title}</Text>
+      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
+
+      <View style={styles.currentChip}>
+        <Text style={styles.currentChipText}>
+          Right now: {cur} {unit}
+          {goal === "lose" ? " · aiming lower" : goal === "gain" ? " · aiming higher" : ""}
+        </Text>
+      </View>
+
+      <View style={styles.entryRow}>
+        <TextInput
+          value={v.val}
+          onChangeText={(t) => onChange({ val: t.replace(/[^0-9.]/g, "") })}
+          keyboardType="decimal-pad"
+          placeholder={goal === "gain" ? String(Math.round(cur + (unit === "kg" ? 6 : 13))) : goal === "lose" ? String(Math.round(cur - (unit === "kg" ? 6 : 13))) : String(Math.round(cur))}
+          placeholderTextColor={T.micro}
+          style={styles.bigInput}
+          maxLength={5}
+        />
+        <Text style={styles.entryUnit}>{unit}</Text>
+      </View>
+
+      {note ? (
+        <View style={[styles.warnRow, noteOk && styles.noteRowOk]}>
+          {noteOk ? <Check size={14} color={T.green} /> : <AlertTriangle size={14} color="#FBBF24" />}
+          <Text style={[styles.warnText, noteOk && { color: T.green }]}>{note}</Text>
+        </View>
+      ) : null}
+
+      <Pressable onPress={canContinue ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !canContinue && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !canContinue && styles.btnTextDisabled]}>Continue</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+/* ===================== THE OUTLOOK — DATE + GRAPH =====================
+   These were two screens: one stated the date, the other drew the line to it.
+   The same fact told twice, and the second made the first redundant. */
+function OutlookStep({ answers, onNext }: any) {
+  const { unit, cur, target, rate, diff, weeks, losing, maintaining } = goalTimeline(answers);
+  const fade = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fade, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, []);
+
+  const td = new Date();
+  td.setDate(td.getDate() + weeks * 7);
+  const dateLabel = `${MONTHS_SHORT[td.getMonth()]} ${td.getDate()}, ${td.getFullYear()}`;
+
+  const X0 = 44, X1 = 272;
+  const YHI = 18, YLO = 104, YMID = 62;
+  const midX = (X0 + X1) / 2;
+  const midWeek = Math.max(1, Math.round(weeks / 2));
+
+  const YSTART = maintaining ? YMID : losing ? YHI : YLO;
+  const YEND = maintaining ? YMID : losing ? YLO : YHI;
+  const d = YEND - YSTART;
+
+  const greenPath = maintaining
+    ? `M${X0} ${YMID} C 110 ${YMID}, 180 ${YMID}, ${X1} ${YMID}`
+    : `M${X0} ${YSTART} C 100 ${YSTART + d * 0.25}, 150 ${YEND - d * 0.30}, 200 ${YEND} C 225 ${YEND}, 250 ${YEND}, ${X1} ${YEND}`;
+
+  const greyPath = maintaining
+    ? `M${X0} ${YMID} C 110 ${YMID - 8}, 170 ${YMID - 24}, ${X1} ${YMID - 34}`
+    : `M${X0} ${YSTART} C 90 ${YSTART + d * 0.20}, 120 ${YSTART + d * 0.50}, 152 ${YSTART + d * 0.55} C 195 ${YSTART + d * 0.62}, 225 ${YSTART + d * 0.30}, ${X1} ${YSTART + d * 0.16}`;
+
+  const goalLabelY = maintaining ? YMID - 9 : losing ? YEND - 9 : YEND + 17;
+
+  return (
+    <ScrollView contentContainerStyle={[styles.body, { paddingBottom: 40 }]}>
+      <Text style={[styles.title, { fontSize: 26 }]}>
+        {maintaining ? "You're already there" : `You'll reach ${target} ${unit} by`}
+      </Text>
+      {!maintaining && <Text style={styles.goalDate}>{dateLabel}</Text>}
+
+      <Text style={[styles.sub, { marginTop: maintaining ? 8 : 10 }]}>
+        {maintaining
+          ? "Your plan will hold you steady at your current weight."
+          : `${diff.toFixed(1)} ${unit} to ${losing ? "lose" : "gain"}, at about ${rate.toFixed(2)} ${unit} a week — roughly ${weeks} ${weeks === 1 ? "week" : "weeks"} of steady logging.`}
+      </Text>
+
+      <Animated.View style={{ marginTop: 18, opacity: fade }}>
+        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
+          <View style={{ padding: 16, paddingTop: 14 }}>
+            <Text style={styles.chartAxisTitle}>WEIGHT ({unit.toUpperCase()})</Text>
+            <Svg width="100%" height={150} viewBox="0 0 280 150">
+              <SvgLine x1={X0} y1={maintaining ? YMID : YEND} x2={X1} y2={maintaining ? YMID : YEND} stroke="#2E2E2E" strokeWidth={1} strokeDasharray="4 4" />
+
+              <SvgText x={38} y={YSTART + 4} fontSize={10} fill={T.sub} fontFamily={FONTS.body} textAnchor="end">{cur}</SvgText>
+              {!maintaining && (
+                <SvgText x={38} y={YEND + 4} fontSize={10} fill={T.green} fontFamily={FONTS.body} textAnchor="end">{target}</SvgText>
+              )}
+
+              <Path d={greyPath} stroke="#4A4A4A" strokeWidth={3} fill="none" strokeLinecap="round" />
+              <Path d={greenPath} stroke="#22C55E" strokeWidth={3.5} fill="none" strokeLinecap="round" />
+
+              <SvgText x={X0} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="start">Now</SvgText>
+              <SvgText x={midX} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="middle">Week {midWeek}</SvgText>
+              <SvgText x={X1} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="end">Week {weeks}</SvgText>
+
+              <SvgText x={X1} y={goalLabelY} fontSize={9.5} fill={T.green} fontFamily={FONTS.body} textAnchor="end">
+                {maintaining ? "staying here" : "your goal"}
+              </SvgText>
+            </Svg>
+          </View>
+        </TravelBorder>
+      </Animated.View>
+
+      <View style={styles.explainCard}>
+        <View style={styles.explainRow}>
+          <View style={[styles.explainDash, { backgroundColor: T.green }]} />
+          <Text style={styles.explainText}>
+            <Text style={styles.explainLead}>With MOTION. </Text>
+            {maintaining
+              ? `You log every day, and your weight holds steady at ${cur} ${unit}.`
+              : `You log every day, so your weight moves ${losing ? "down" : "up"} at a steady pace and settles at ${target} ${unit}.`}
+          </Text>
+        </View>
+
+        <View style={styles.explainDivider} />
+
+        <View style={styles.explainRow}>
+          <View style={[styles.explainDash, { backgroundColor: "#4A4A4A" }]} />
+          <Text style={[styles.explainText, { color: T.sub }]}>
+            <Text style={[styles.explainLead, { color: T.sub }]}>Without tracking. </Text>
+            {maintaining
+              ? "The usual pattern — without keeping an eye on it, the weight slowly creeps up."
+              : `The usual pattern — a strong start, then it stalls, and the weight drifts back toward ${cur} ${unit}.`}
+          </Text>
+        </View>
+      </View>
+
+      <Text style={[styles.sub, { marginTop: 14 }]}>
+        This is an estimate from what you've told us. Your plan updates as you log real weigh-ins.
+      </Text>
+
+      <Pressable onPress={onNext} style={[styles.primaryBtn, { marginTop: 22 }]}>
+        <Text style={styles.primaryBtnText}>Continue</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
 /* ===================== HEALTH SYNC =====================
    UI + explanation only. The real HealthKit / Health Connect call needs a
-   development build (it does NOT work in Expo Go) — wire at backend phase. */
+   development build — wired at build phase. Stats has its own Connect prompt
+   for anyone who skips here. */
 function HealthStep({ value, onChange, onNext }: any) {
   const connected = value === "yes";
 
@@ -553,41 +1023,33 @@ function NotificationsStep({ value, onChange, onNext }: any) {
   );
 }
 
-/* ===================== REFERRAL ===================== */
-function ReferralStep({ value, onChange, onNext }: any) {
-  const code = value || "";
-  return (
-    <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-      <Text style={[styles.title, { fontSize: 26 }]}>Got a referral code?</Text>
-      <Text style={styles.sub}>Enter it here if someone shared one with you. If not, skip straight past.</Text>
-
-      <TextInput
-        value={code}
-        onChangeText={(t) => onChange(t.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-        placeholder="MOTION25"
-        placeholderTextColor={T.micro}
-        autoCapitalize="characters"
-        style={styles.codeInput}
-        maxLength={12}
-      />
-
-      <Pressable onPress={onNext} style={[styles.primaryBtn, { marginTop: 26 }]}>
-        <Text style={styles.primaryBtnText}>{code.length > 0 ? "Apply code" : "Continue"}</Text>
-      </Pressable>
-      <Pressable onPress={onNext} style={{ alignItems: "center", marginTop: 14 }}>
-        <Text style={styles.skipText}>Skip — I don't have one</Text>
-      </Pressable>
-    </ScrollView>
-  );
-}
-
-/* ===================== CREATE ACCOUNT =====================
+/* ===================== ACCOUNT — CREATE OR SIGN IN =====================
    The first REAL backend write in the flow. Everything before this is held in
    memory; this is where the user becomes a row in auth.users.
    The account is created HERE but the profile row is written by finish(),
-   after the paywall decision — so the account and its plan land together and
-   there's never an account with no plan attached. */
-function SignInStep({ onNext, onAccount }: { onNext: () => void; onAccount: (id: string) => void }) {
+   after the paywall — so the account and its plan land together.
+
+   ⚠️ IT SIGNS IN TOO, and that's not decoration. Someone who deletes the app
+   and reinstalls it can easily miss the "Sign in" link on the welcome screen,
+   run the whole flow, and arrive here — where the old version told them
+   "there's already an account with that email, try signing in instead" and
+   then gave them no way to do it. Naming the fix without providing it is the
+   worst version of an error message.
+
+   SIGNING IN DISCARDS THE ANSWERS. See enterExisting() in the parent for why:
+   their account's real history has to win over fifteen screens of fresh
+   guesses.
+
+   THE RETURN KEYS STAY HERE. Unlike the numeric screens, these are ordinary
+   text keyboards where "next" and "go" are exactly what iOS users expect. */
+function AccountStep({
+  onNext, onAccount, onExisting,
+}: {
+  onNext: () => void;
+  onAccount: (id: string) => void;
+  onExisting: () => void;
+}) {
+  const [mode, setMode] = useState<"create" | "signin">("create");
   const [agreed, setAgreed] = useState(false);
   const [tips, setTips] = useState(true);
   const [email, setEmail] = useState("");
@@ -595,47 +1057,106 @@ function SignInStep({ onNext, onAccount }: { onNext: () => void; onAccount: (id:
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  /* set when the email is already taken — turns the error into a button
+     rather than a dead end */
+  const [offerSignIn, setOfferSignIn] = useState(false);
 
-  const ready = agreed && email.trim().length > 3 && pw.length >= 6;
+  /* so the keyboard's "next" can jump from email to password */
+  const pwRef = useRef<TextInput>(null);
 
-  const create = async () => {
-    if (!ready || busy) return;
+  const creating = mode === "create";
+  const ready = email.trim().length > 3 && pw.length >= 6 && (creating ? agreed : true);
+
+  const swapMode = (to: "create" | "signin") => {
+    setMode(to);
     setErr(null);
+    setOfferSignIn(false);
+    /* the EMAIL SURVIVES the swap — they've just typed it, and clearing it
+       would be the second annoyance in a row */
+  };
+
+  const submit = async () => {
+    if (!ready || busy) return;
+    Keyboard.dismiss();
+    setErr(null);
+    setOfferSignIn(false);
     setBusy(true);
 
-    const { userId, error } = await signUp(email, pw);
+    if (creating) {
+      const { userId, error } = await signUp(email, pw);
 
-    if (error || !userId) {
-      /* stay on the screen with the reason — bouncing away loses what they
-         typed and hides why it failed */
-      setBusy(false);
-      setErr(error || "Couldn't create your account. Try again.");
+      if (error || !userId) {
+        setBusy(false);
+        setErr(error || "Couldn't create your account. Try again.");
+        /* the exact wording comes from auth.ts's humanize() */
+        if (error && error.toLowerCase().includes("already an account")) {
+          setOfferSignIn(true);
+        }
+        return;
+      }
+
+      onAccount(userId);
+      onNext();
       return;
     }
 
-    onAccount(userId);
-    onNext();
+    /* ---- signing in to something that already exists ---- */
+    const { userId, error } = await signIn(email, pw);
+
+    if (error || !userId) {
+      setBusy(false);
+      setErr(error || "Couldn't sign you in. Try again.");
+      return;
+    }
+
+    /* straight to the app, answers discarded — see the note above */
+    onExisting();
   };
 
   if (busy) {
     return (
       <View style={[styles.body, { flex: 1, alignItems: "center", justifyContent: "center", gap: 22 }]}>
         <IsoMGlow size={104} />
-        <Text style={[styles.sub, { marginTop: 0 }]}>Creating your account…</Text>
+        <Text style={[styles.sub, { marginTop: 0 }]}>
+          {creating ? "Creating your account…" : "Signing you in…"}
+        </Text>
       </View>
     );
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-      <Text style={[styles.title, { fontSize: 26 }]}>Save your plan</Text>
-      <Text style={styles.sub}>Create an account so your plan, streak and history follow you to any device.</Text>
+    <ScrollView
+      contentContainerStyle={styles.body}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+    >
+      <Text style={[styles.title, { fontSize: 26 }]}>
+        {creating ? "Save your plan" : "Welcome back"}
+      </Text>
+      <Text style={styles.sub}>
+        {creating
+          ? "Create an account so your plan, streak and history follow you to any device."
+          : "Sign in and MOTION picks up exactly where you left off — your streak, your history, your plan."}
+      </Text>
 
-      <View style={{ marginTop: 26, gap: 10 }}>
+      {/* SIGNING IN COSTS THEM THE ANSWERS. Said before they commit, not
+          after — finding out afterwards would feel like the app threw their
+          work away without asking. */}
+      {!creating && (
+        <View style={styles.noticeRow}>
+          <AlertTriangle size={14} color="#FBBF24" />
+          <Text style={styles.noticeText}>
+            Your existing plan will be used, not the answers you just gave. Nothing on your account
+            changes.
+          </Text>
+        </View>
+      )}
+
+      <View style={{ marginTop: 22, gap: 10 }}>
         {/* Apple and Google need native SDKs and a development build — neither
             runs in Expo Go, so they're wired alongside that */}
         <Pressable
-          onPress={() => setErr("Apple sign-up isn't wired yet — use your email for now.")}
+          onPress={() => setErr("Apple sign-in isn't wired yet — use your email for now.")}
           style={[styles.authBtn, { backgroundColor: "#FFFFFF" }]}
         >
           <Icon name="appleDark" size={20} mode="loop" />
@@ -643,7 +1164,7 @@ function SignInStep({ onNext, onAccount }: { onNext: () => void; onAccount: (id:
         </Pressable>
 
         <Pressable
-          onPress={() => setErr("Google sign-up isn't wired yet — use your email for now.")}
+          onPress={() => setErr("Google sign-in isn't wired yet — use your email for now.")}
           style={[styles.authBtn, { backgroundColor: T.card, borderWidth: 1, borderColor: T.border }]}
         >
           <Icon name="google" size={19} mode="loop" />
@@ -661,235 +1182,109 @@ function SignInStep({ onNext, onAccount }: { onNext: () => void; onAccount: (id:
         <Icon name="email" size={18} mode="loop" />
         <TextInput
           value={email}
-          onChangeText={(t) => { setEmail(t); setErr(null); }}
+          onChangeText={(t) => { setEmail(t); setErr(null); setOfferSignIn(false); }}
           placeholder="name@email.com"
           placeholderTextColor={T.micro}
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
           style={styles.emailInput}
+          /* the keyboard's return key moves to the password rather than
+             closing — one less tap in a two-field form */
+          returnKeyType="next"
+          onSubmitEditing={() => pwRef.current?.focus()}
         />
       </View>
 
       <View style={[styles.emailBox, { marginTop: 10 }]}>
         <Icon name="password" size={18} mode="loop" />
         <TextInput
+          ref={pwRef}
           value={pw}
-          onChangeText={(t) => { setPw(t); setErr(null); }}
-          placeholder="Create a password"
+          onChangeText={(t) => { setPw(t); setErr(null); setOfferSignIn(false); }}
+          placeholder={creating ? "Create a password" : "Your password"}
           placeholderTextColor={T.micro}
           secureTextEntry={!show}
           autoCapitalize="none"
           autoCorrect={false}
           style={styles.emailInput}
+          /* and from the password, return submits — but only when everything
+             is filled in, including the terms box */
+          returnKeyType="go"
+          onSubmitEditing={() => { if (ready) submit(); else Keyboard.dismiss(); }}
         />
         <Pressable onPress={() => setShow((x) => !x)} hitSlop={10}>
           {show ? <EyeOff size={17} color={T.sub} /> : <Eye size={17} color={T.sub} />}
         </Pressable>
       </View>
 
-      {pw.length > 0 && pw.length < 6 && (
+      {creating && pw.length > 0 && pw.length < 6 && (
         <Text style={styles.pwHint}>At least 6 characters.</Text>
       )}
 
       {err ? (
         <View style={styles.errRow}>
           <AlertTriangle size={14} color={T.red} />
-          <Text style={styles.errText}>{err}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.errText}>{err}</Text>
+
+            {/* THE FIX, NOT JUST THE DIAGNOSIS. The email is already typed, so
+                this is one tap from being signed in. */}
+            {offerSignIn && (
+              <Pressable onPress={() => swapMode("signin")} style={styles.errAction}>
+                <Text style={styles.errActionText}>Sign in to that account instead</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
       ) : null}
 
-      <View style={{ marginTop: 20, gap: 12 }}>
-        <Pressable onPress={() => setAgreed(!agreed)} style={styles.agreeRow}>
-          <View style={[styles.checkbox, agreed && styles.checkboxOn]}>{agreed && <Check size={13} color="#0A0A0A" />}</View>
-          <Text style={styles.agreeText}>
-            I agree to MOTION's <Text style={{ color: T.green }}>Terms</Text> and <Text style={{ color: T.green }}>Privacy Policy</Text>
-          </Text>
-        </Pressable>
+      {creating && (
+        <View style={{ marginTop: 20, gap: 12 }}>
+          <Pressable onPress={() => setAgreed(!agreed)} style={styles.agreeRow}>
+            <View style={[styles.checkbox, agreed && styles.checkboxOn]}>{agreed && <Check size={13} color="#0A0A0A" />}</View>
+            <Text style={styles.agreeText}>
+              I agree to MOTION's <Text style={{ color: T.green }}>Terms</Text> and <Text style={{ color: T.green }}>Privacy Policy</Text>
+            </Text>
+          </Pressable>
 
-        <Pressable onPress={() => setTips(!tips)} style={styles.agreeRow}>
-          <View style={[styles.checkbox, tips && styles.checkboxOn]}>{tips && <Check size={13} color="#0A0A0A" />}</View>
-          <Text style={styles.agreeText}>Send me occasional tips and updates</Text>
-        </Pressable>
-      </View>
+          <Pressable onPress={() => setTips(!tips)} style={styles.agreeRow}>
+            <View style={[styles.checkbox, tips && styles.checkboxOn]}>{tips && <Check size={13} color="#0A0A0A" />}</View>
+            <Text style={styles.agreeText}>Send me occasional tips and updates</Text>
+          </Pressable>
+        </View>
+      )}
 
-      <Pressable onPress={create} style={[styles.primaryBtn, { marginTop: 24 }, !ready && styles.btnDisabled]}>
-        <Text style={[styles.primaryBtnText, !ready && styles.btnTextDisabled]}>Create account</Text>
+      <Pressable onPress={submit} style={[styles.primaryBtn, { marginTop: 24 }, !ready && styles.btnDisabled]}>
+        <Text style={[styles.primaryBtnText, !ready && styles.btnTextDisabled]}>
+          {creating ? "Create account" : "Sign in"}
+        </Text>
       </Pressable>
 
-      {!agreed && <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>}
-    </ScrollView>
-  );
-}
+      {creating && !agreed && <Text style={styles.agreeHint}>Tick the terms box to continue.</Text>}
 
-/* ===================== YOUR WEIGHT OVER TIME ===================== */
-function GraphStep({ answers, onNext }: any) {
-  const { unit, cur, target, weeks, losing, maintaining } = goalTimeline(answers);
-  const fade = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(fade, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
-  }, []);
-
-  const X0 = 44, X1 = 272;
-  const YHI = 18, YLO = 104, YMID = 62;
-  const midX = (X0 + X1) / 2;
-  const midWeek = Math.max(1, Math.round(weeks / 2));
-
-  const YSTART = maintaining ? YMID : losing ? YHI : YLO;
-  const YEND = maintaining ? YMID : losing ? YLO : YHI;
-  const d = YEND - YSTART;
-
-  const greenPath = maintaining
-    ? `M${X0} ${YMID} C 110 ${YMID}, 180 ${YMID}, ${X1} ${YMID}`
-    : `M${X0} ${YSTART} C 100 ${YSTART + d * 0.25}, 150 ${YEND - d * 0.30}, 200 ${YEND} C 225 ${YEND}, 250 ${YEND}, ${X1} ${YEND}`;
-
-  const greyPath = maintaining
-    ? `M${X0} ${YMID} C 110 ${YMID - 8}, 170 ${YMID - 24}, ${X1} ${YMID - 34}`
-    : `M${X0} ${YSTART} C 90 ${YSTART + d * 0.20}, 120 ${YSTART + d * 0.50}, 152 ${YSTART + d * 0.55} C 195 ${YSTART + d * 0.62}, 225 ${YSTART + d * 0.30}, ${X1} ${YSTART + d * 0.16}`;
-
-  const goalLabelY = maintaining ? YMID - 9 : losing ? YEND - 9 : YEND + 17;
-
-  return (
-    <ScrollView contentContainerStyle={styles.body}>
-      <Text style={[styles.title, { fontSize: 26 }]}>
-        {maintaining ? "Your weight from here" : `Your weight over the\nnext ${weeks} ${weeks === 1 ? "week" : "weeks"}`}
-      </Text>
-
-      <View style={styles.explainCard}>
-        <View style={styles.explainRow}>
-          <View style={[styles.explainDash, { backgroundColor: T.green }]} />
-          <Text style={styles.explainText}>
-            <Text style={styles.explainLead}>With MOTION. </Text>
-            {maintaining
-              ? `You log every day, and your weight holds steady at ${cur} ${unit} — no creeping up, no sliding down.`
-              : `You log every day, so your weight moves ${losing ? "down" : "up"} at a steady pace and settles at your goal of ${target} ${unit}.`}
-          </Text>
-        </View>
-
-        <View style={styles.explainDivider} />
-
-        <View style={styles.explainRow}>
-          <View style={[styles.explainDash, { backgroundColor: "#4A4A4A" }]} />
-          <Text style={[styles.explainText, { color: T.sub }]}>
-            <Text style={[styles.explainLead, { color: T.sub }]}>Without tracking. </Text>
-            {maintaining
-              ? "The usual pattern — without keeping an eye on it, the weight slowly creeps up over the months."
-              : `The usual pattern — a strong start, then it stalls, and the weight drifts back toward ${cur} ${unit}.`}
-          </Text>
-        </View>
-      </View>
-
-      <Animated.View style={{ marginTop: 12, opacity: fade }}>
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
-          <View style={{ padding: 16, paddingTop: 14 }}>
-            <Text style={styles.chartAxisTitle}>WEIGHT ({unit.toUpperCase()})</Text>
-            <Svg width="100%" height={150} viewBox="0 0 280 150">
-              <SvgLine x1={X0} y1={maintaining ? YMID : YEND} x2={X1} y2={maintaining ? YMID : YEND} stroke="#2E2E2E" strokeWidth={1} strokeDasharray="4 4" />
-
-              <SvgText x={38} y={YSTART + 4} fontSize={10} fill={T.sub} fontFamily={FONTS.body} textAnchor="end">{cur}</SvgText>
-              {!maintaining && (
-                <SvgText x={38} y={YEND + 4} fontSize={10} fill={T.green} fontFamily={FONTS.body} textAnchor="end">{target}</SvgText>
-              )}
-
-              <Path d={greyPath} stroke="#4A4A4A" strokeWidth={3} fill="none" strokeLinecap="round" />
-              <Path d={greenPath} stroke="#22C55E" strokeWidth={3.5} fill="none" strokeLinecap="round" />
-
-              <SvgText x={X0} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="start">Now</SvgText>
-              <SvgText x={midX} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="middle">Week {midWeek}</SvgText>
-              <SvgText x={X1} y={132} fontSize={10} fill={T.micro} fontFamily={FONTS.body} textAnchor="end">Week {weeks}</SvgText>
-
-              <SvgText x={X1} y={goalLabelY} fontSize={9.5} fill={T.green} fontFamily={FONTS.body} textAnchor="end">
-                {maintaining ? "staying here" : "your goal"}
-              </SvgText>
-            </Svg>
-          </View>
-        </TravelBorder>
-      </Animated.View>
-
-      <Pressable onPress={onNext} style={[styles.primaryBtn, { marginTop: 22 }]}>
-        <Text style={styles.primaryBtnText}>Continue</Text>
+      {/* the way between the two modes, always available */}
+      <Pressable
+        onPress={() => swapMode(creating ? "signin" : "create")}
+        style={{ alignItems: "center", marginTop: 18 }}
+        hitSlop={8}
+      >
+        <Text style={styles.signInText}>
+          {creating ? (
+            <>Already have an account? <Text style={{ color: T.green }}>Sign in</Text></>
+          ) : (
+            <>Need a new account? <Text style={{ color: T.green }}>Create one</Text></>
+          )}
+        </Text>
       </Pressable>
     </ScrollView>
-  );
-}
-
-/* ===================== WITH / WITHOUT HISTOGRAM ===================== */
-function HistogramStep({ onNext }: { onNext: () => void }) {
-  const grow = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(grow, { toValue: 1, duration: 800, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
-  }, []);
-  const withH = grow.interpolate({ inputRange: [0, 1], outputRange: [0, 168] });
-  const withoutH = grow.interpolate({ inputRange: [0, 1], outputRange: [0, 66] });
-
-  return (
-    <View style={[styles.body, { flex: 1 }]}>
-      <Text style={[styles.title, { fontSize: 27 }]}>You're twice as likely{"\n"}to stick with it</Text>
-      <Text style={styles.sub}>People who log daily hold on to their results far longer than people who don't track at all.</Text>
-
-      <View style={styles.histRow}>
-        <View style={styles.histCol}>
-          <Animated.View style={[styles.histBar, { height: withoutH, backgroundColor: "#2A2A2A" }]} />
-          <Text style={styles.histLabel}>Without{"\n"}a tracker</Text>
-        </View>
-        <View style={styles.histCol}>
-          <View style={styles.histTag}><Text style={styles.histTagText}>2× better</Text></View>
-          <Animated.View style={[styles.histBar, { height: withH, backgroundColor: T.green }]} />
-          <Text style={[styles.histLabel, { color: T.green }]}>With{"\n"}MOTION</Text>
-        </View>
-      </View>
-
-      <View style={{ flex: 1 }} />
-      <Pressable onPress={onNext} style={styles.primaryBtn}>
-        <Text style={styles.primaryBtnText}>Continue</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-/* ===================== PERSONALIZE ===================== */
-function PersonalizeStep({ answers, onNext }: any) {
-  const lines: string[] = [];
-  if (answers.goal === "lose") lines.push("A daily calorie target set for steady weight loss");
-  else if (answers.goal === "gain") lines.push("A daily calorie target set for steady gains");
-  else lines.push("A daily calorie target that holds you steady");
-
-  if (answers.workouts === "6+") lines.push("Protein raised to match your training load");
-  else lines.push("A macro split matched to your body and activity");
-
-  if (answers.burned === "yes") lines.push("Burned calories added back on the days you train");
-  if ((answers.stopping || []).includes("busy")) lines.push("One-photo logging, because your schedule is full");
-  if ((answers.stopping || []).includes("consistency")) lines.push("Streaks and reminders to keep you showing up");
-  if ((answers.diet || "none") !== "none") lines.push("Food suggestions that respect your diet");
-  if (lines.length < 4) lines.push("A plan that adjusts as you log real weigh-ins");
-
-  return (
-    <View style={[styles.body, { flex: 1 }]}>
-      <Text style={[styles.title, { fontSize: 27 }]}>MOTION is built{"\n"}around you</Text>
-      <Text style={styles.sub}>Here's what we're setting up from your answers.</Text>
-
-      <View style={{ marginTop: 26, gap: 12 }}>
-        {lines.slice(0, 4).map((l, k) => (
-          <View key={k} style={styles.personalRow}>
-            <View style={styles.personalCheck}><Check size={13} color="#0A0A0A" /></View>
-            <Text style={styles.personalText}>{l}</Text>
-          </View>
-        ))}
-      </View>
-
-      <View style={{ flex: 1 }} />
-      <Pressable onPress={onNext} style={styles.primaryBtn}>
-        <Text style={styles.primaryBtnText}>Build my plan</Text>
-      </Pressable>
-    </View>
   );
 }
 
 /* ===================== YOUR PLAN ===================== */
 function PlanStep({ answers, onNext }: any) {
   const plan = buildPlan(answers);
-  const unit = answers.weight?.unit || "kg";
+  const unit = answers.body?.wUnit || "kg";
   const target = answers.desired?.val;
 
   let coaching = "";
@@ -931,16 +1326,6 @@ function PlanStep({ answers, onNext }: any) {
         <Text style={styles.coachText}>{coaching}</Text>
       </View>
 
-      {answers.burned === "yes" && (
-        <View style={styles.coachCard}>
-          {/* the rainbow flame — this line is about earning more food */}
-          <Icon name="flameUltimate" size={20} mode="loop" />
-          <Text style={styles.coachText}>
-            On days you train, MOTION adds your burned calories on top of this — so a hard session earns you a little more food.
-          </Text>
-        </View>
-      )}
-
       {plan.hitFloor && (
         <View style={styles.warnRow}>
           <AlertTriangle size={14} color="#FBBF24" />
@@ -963,337 +1348,12 @@ function PlanStep({ answers, onNext }: any) {
   );
 }
 
-/* ===================== BIRTHDAY WHEEL ===================== */
-const ITEM_H = 44;
-const VISIBLE = 5;
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const YEARS: number[] = [];
-for (let y = 2012; y >= 1940; y--) YEARS.push(y);
-
-function WheelColumn({ data, index, onIndex, width }: { data: string[]; index: number; onIndex: (i: number) => void; width: number }) {
-  const ref = useRef<ScrollView>(null);
-  useEffect(() => {
-    const t = setTimeout(() => ref.current?.scrollTo({ y: index * ITEM_H, animated: false }), 0);
-    return () => clearTimeout(t);
-  }, []);
-  return (
-    <ScrollView
-      ref={ref}
-      style={{ width, height: ITEM_H * VISIBLE }}
-      showsVerticalScrollIndicator={false}
-      snapToInterval={ITEM_H}
-      decelerationRate="fast"
-      contentContainerStyle={{ paddingVertical: ITEM_H * 2 }}
-      onMomentumScrollEnd={(e) => {
-        const raw = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
-        onIndex(Math.max(0, Math.min(data.length - 1, raw)));
-      }}
-    >
-      {data.map((label, k) => (
-        <View key={k} style={styles.wheelCell}>
-          <Text style={[styles.wheelItem, k === index && styles.wheelItemOn]} numberOfLines={1}>{label}</Text>
-        </View>
-      ))}
-    </ScrollView>
-  );
-}
-
-function BirthdayStep({ step, value, onChange, onNext }: any) {
-  const v = value || { m: 5, d: 14, y: 1998 };
-  const monthIdx = v.m;
-  const yearIdx = Math.max(0, YEARS.indexOf(v.y));
-  const daysInMonth = new Date(v.y, v.m + 1, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, k) => String(k + 1));
-  const dayIdx = Math.min(v.d - 1, daysInMonth - 1);
-
-  const set = (patch: any) => {
-    const next = { ...v, ...patch };
-    const max = new Date(next.y, next.m + 1, 0).getDate();
-    if (next.d > max) next.d = max;
-    onChange(next);
-  };
-
-  return (
-    <View style={[styles.body, { flex: 1 }]}>
-      <Text style={styles.title}>{step.title}</Text>
-      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
-      <View style={styles.wheelWrap}>
-        <View style={styles.wheelBand} pointerEvents="none" />
-        <View style={styles.wheelRow}>
-          <WheelColumn data={MONTHS} index={monthIdx} onIndex={(k) => set({ m: k })} width={128} />
-          <WheelColumn data={days} index={dayIdx} onIndex={(k) => set({ d: k + 1 })} width={64} />
-          <WheelColumn data={YEARS.map(String)} index={yearIdx} onIndex={(k) => set({ y: YEARS[k] })} width={84} />
-        </View>
-      </View>
-      <View style={{ flex: 1 }} />
-      <Pressable onPress={onNext} style={styles.primaryBtn}>
-        <Text style={styles.primaryBtnText}>Continue</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-/* ===================== UNIT TOGGLE ===================== */
-function UnitToggle({ options, value, onPick }: { options: string[]; value: string; onPick: (v: string) => void }) {
-  return (
-    <View style={styles.unitToggle}>
-      {options.map((o) => {
-        const on = o === value;
-        return (
-          <Pressable key={o} onPress={() => onPick(o)} style={[styles.unitPill, on && styles.unitPillOn]}>
-            <Text style={[styles.unitPillText, on && styles.unitPillTextOn]}>{o}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-/* ===================== HEIGHT =====================
-   No hero icon here. These two screens are a number and a keyboard — an icon
-   above them adds nothing and pushes the input further from the thumb. */
-function HeightStep({ step, value, onChange, onNext }: any) {
-  const v = value || { unit: "cm", cm: "", ft: "", inch: "" };
-  const set = (patch: any) => onChange({ ...v, ...patch });
-
-  const cmNum = parseFloat(v.cm);
-  const ftNum = parseFloat(v.ft);
-  const inNum = parseFloat(v.inch || "0");
-
-  let ok = false;
-  let warn = "";
-  if (v.unit === "cm") {
-    ok = !isNaN(cmNum) && cmNum >= 90 && cmNum <= 250;
-    if (v.cm.length > 0 && !ok) warn = "Enter a height between 90 and 250 cm.";
-  } else {
-    const totalIn = (isNaN(ftNum) ? 0 : ftNum) * 12 + (isNaN(inNum) ? 0 : inNum);
-    ok = !isNaN(ftNum) && totalIn >= 36 && totalIn <= 98;
-    if (v.ft.length > 0 && !ok) warn = "Enter a height between 3'0\" and 8'2\".";
-  }
-
-  return (
-    <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>{step.title}</Text>
-      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
-
-      <UnitToggle options={["cm", "ft + in"]} value={v.unit === "cm" ? "cm" : "ft + in"} onPick={(u) => set({ unit: u === "cm" ? "cm" : "ft" })} />
-
-      {v.unit === "cm" ? (
-        <View style={styles.entryRow}>
-          <TextInput value={v.cm} onChangeText={(t) => set({ cm: t.replace(/[^0-9.]/g, "") })} keyboardType="number-pad" placeholder="175" placeholderTextColor={T.micro} style={styles.bigInput} maxLength={3} />
-          <Text style={styles.entryUnit}>cm</Text>
-        </View>
-      ) : (
-        <View style={styles.entryRow}>
-          <TextInput value={v.ft} onChangeText={(t) => set({ ft: t.replace(/[^0-9]/g, "") })} keyboardType="number-pad" placeholder="5" placeholderTextColor={T.micro} style={[styles.bigInput, { minWidth: 62 }]} maxLength={1} />
-          <Text style={styles.entryUnit}>ft</Text>
-          <TextInput value={v.inch} onChangeText={(t) => set({ inch: t.replace(/[^0-9]/g, "") })} keyboardType="number-pad" placeholder="9" placeholderTextColor={T.micro} style={[styles.bigInput, { minWidth: 62, marginLeft: 14 }]} maxLength={2} />
-          <Text style={styles.entryUnit}>in</Text>
-        </View>
-      )}
-
-      {warn ? (
-        <View style={styles.warnRow}>
-          <AlertTriangle size={14} color="#FBBF24" />
-          <Text style={styles.warnText}>{warn}</Text>
-        </View>
-      ) : null}
-
-      <Pressable onPress={ok ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !ok && styles.btnDisabled]}>
-        <Text style={[styles.primaryBtnText, !ok && styles.btnTextDisabled]}>Continue</Text>
-      </Pressable>
-    </ScrollView>
-  );
-}
-
-/* ===================== WEIGHT ===================== */
-function WeightStep({ step, value, onChange, onNext }: any) {
-  const v = value || { unit: "kg", val: "" };
-  const set = (patch: any) => onChange({ ...v, ...patch });
-
-  const n = parseFloat(v.val);
-  const min = v.unit === "kg" ? 25 : 55;
-  const max = v.unit === "kg" ? 300 : 660;
-  const ok = !isNaN(n) && n >= min && n <= max;
-  const warn = v.val.length > 0 && !ok
-    ? `Please enter your real weight — this shapes your whole plan. Expected between ${min} and ${max} ${v.unit}.`
-    : "";
-
-  return (
-    <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>{step.title}</Text>
-      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
-
-      <UnitToggle options={["kg", "lbs"]} value={v.unit} onPick={(u) => set({ unit: u })} />
-
-      <View style={styles.entryRow}>
-        <TextInput value={v.val} onChangeText={(t) => set({ val: t.replace(/[^0-9.]/g, "") })} keyboardType="decimal-pad" placeholder={v.unit === "kg" ? "78" : "172"} placeholderTextColor={T.micro} style={styles.bigInput} maxLength={5} />
-        <Text style={styles.entryUnit}>{v.unit}</Text>
-      </View>
-
-      {warn ? (
-        <View style={styles.warnRow}>
-          <AlertTriangle size={14} color="#FBBF24" />
-          <Text style={styles.warnText}>{warn}</Text>
-        </View>
-      ) : null}
-
-      <Pressable onPress={ok ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !ok && styles.btnDisabled]}>
-        <Text style={[styles.primaryBtnText, !ok && styles.btnTextDisabled]}>Continue</Text>
-      </Pressable>
-    </ScrollView>
-  );
-}
-
-/* ===================== DESIRED WEIGHT =====================
-   A target that contradicts the stated goal is a HARD BLOCK, not a note —
-   letting it through would make the plan, the timeline and the graph all
-   disagree with each other. */
-function DesiredStep({ step, value, current, goal, onChange, onNext }: any) {
-  const unit = current?.unit || "kg";
-  const cur = parseFloat(current?.val) || (unit === "kg" ? 78 : 172);
-  const v = value || { val: "" };
-  const n = parseFloat(v.val);
-
-  const min = unit === "kg" ? 35 : 77;
-  const max = unit === "kg" ? 300 : 660;
-  const inRange = !isNaN(n) && n >= min && n <= max;
-
-  const change = inRange ? n - cur : 0;
-  const pctChange = inRange ? Math.abs(change) / cur : 0;
-
-  const contradictsGain = inRange && goal === "gain" && change <= 0;
-  const contradictsLose = inRange && goal === "lose" && change >= 0;
-  const contradicts = contradictsGain || contradictsLose;
-
-  const canContinue = inRange && !contradicts;
-
-  let note = "";
-  if (v.val.length > 0 && !inRange) {
-    note = `Enter a target between ${min} and ${max} ${unit}.`;
-  } else if (contradictsGain) {
-    note = `You chose to gain weight, so your target has to be above ${cur} ${unit}. Enter a higher number, or go back and change your goal.`;
-  } else if (contradictsLose) {
-    note = `You chose to lose weight, so your target has to be below ${cur} ${unit}. Enter a lower number, or go back and change your goal.`;
-  } else if (inRange && pctChange > 0.25) {
-    note = "That's a big change from where you are now. It's doable, but it'll take a while — you can always adjust later.";
-  } else if (inRange) {
-    note = `That's ${Math.abs(change).toFixed(1)} ${unit} ${change < 0 ? "below" : change > 0 ? "above" : "from"} where you are now — a healthy target.`;
-  }
-
-  const noteOk = inRange && !contradicts && pctChange <= 0.25;
-
-  return (
-    <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-      {/* the bullseye stays — this screen is about aiming at something */}
-      <View style={styles.stepHero}><Icon name="targetBullseye" size={46} mode="loop" /></View>
-
-      <Text style={styles.title}>{step.title}</Text>
-      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
-
-      <View style={styles.currentChip}>
-        <Text style={styles.currentChipText}>
-          Right now: {cur} {unit}
-          {goal === "lose" ? " · aiming lower" : goal === "gain" ? " · aiming higher" : ""}
-        </Text>
-      </View>
-
-      <View style={styles.entryRow}>
-        <TextInput
-          value={v.val}
-          onChangeText={(t) => onChange({ val: t.replace(/[^0-9.]/g, "") })}
-          keyboardType="decimal-pad"
-          placeholder={goal === "gain" ? String(Math.round(cur + (unit === "kg" ? 6 : 13))) : goal === "lose" ? String(Math.round(cur - (unit === "kg" ? 6 : 13))) : String(Math.round(cur))}
-          placeholderTextColor={T.micro}
-          style={styles.bigInput}
-          maxLength={5}
-        />
-        <Text style={styles.entryUnit}>{unit}</Text>
-      </View>
-
-      {note ? (
-        <View style={[styles.warnRow, noteOk && styles.noteRowOk]}>
-          {noteOk ? <Check size={14} color={T.green} /> : <AlertTriangle size={14} color="#FBBF24" />}
-          <Text style={[styles.warnText, noteOk && { color: T.green }]}>{note}</Text>
-        </View>
-      ) : null}
-
-      <Pressable onPress={canContinue ? onNext : undefined} style={[styles.primaryBtn, { marginTop: 30 }, !canContinue && styles.btnDisabled]}>
-        <Text style={[styles.primaryBtnText, !canContinue && styles.btnTextDisabled]}>Continue</Text>
-      </Pressable>
-    </ScrollView>
-  );
-}
-
-/* ===================== GOAL DATE ===================== */
-function GoalDateStep({ answers, onNext }: any) {
-  const { unit, target, rate, diff, weeks, losing, maintaining } = goalTimeline(answers);
-  const td = new Date();
-  td.setDate(td.getDate() + weeks * 7);
-  const dateLabel = `${MONTHS_SHORT[td.getMonth()]} ${td.getDate()}, ${td.getFullYear()}`;
-
-  return (
-    <View style={[styles.body, { flex: 1 }]}>
-      <Text style={[styles.title, { fontSize: 26 }]}>
-        {maintaining ? "You're already there" : `You'll reach ${target} ${unit} by`}
-      </Text>
-      {!maintaining && <Text style={styles.goalDate}>{dateLabel}</Text>}
-
-      <View style={{ marginTop: 22 }}>
-        <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
-          <View style={{ padding: 18 }}>
-            <View style={styles.goalRow}>
-              <Icon
-                name={maintaining ? "goalFlat" : losing ? "goalChartDown" : "goalChartUp"}
-                size={22}
-                mode="loop"
-              />
-              <Text style={styles.goalRowText}>
-                {maintaining
-                  ? "Your plan will hold you steady at your current weight."
-                  : `${diff.toFixed(1)} ${unit} to ${losing ? "lose" : "gain"}, at about ${rate.toFixed(2)} ${unit} a week.`}
-              </Text>
-            </View>
-            <View style={[styles.goalRow, { marginTop: 12 }]}>
-              <Icon name="accomplishCalendar" size={22} mode="loop" />
-              <Text style={styles.goalRowText}>
-                That's roughly {weeks} {weeks === 1 ? "week" : "weeks"} of steady logging. MOTION keeps you on pace.
-              </Text>
-            </View>
-          </View>
-        </TravelBorder>
-      </View>
-
-      <Text style={[styles.sub, { marginTop: 18 }]}>
-        This is an estimate based on what you've told us. Your plan updates as you log real weigh-ins.
-      </Text>
-
-      <View style={{ flex: 1 }} />
-      <Pressable onPress={onNext} style={styles.primaryBtn}>
-        <Text style={styles.primaryBtnText}>Continue</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-/* ===================== SHARED STEPS =====================
-   A choice's icon comes from whichever source suits it: an animation, a
-   sheened Lucide icon, a component of its own, or nothing at all when the
-   screen is deliberately plain. The sheen is staggered by row so a list
-   doesn't sweep in lockstep. */
-function ChoiceIcon({ c, idx }: { c: Choice; idx: number }) {
-  if (!c.icon && !c.lucide && !c.custom) return null;
-  const Custom = c.custom;
+/* ===================== SHARED STEPS ===================== */
+function ChoiceIcon({ c }: { c: Choice }) {
+  if (!c.icon) return null;
   return (
     <View style={styles.choiceIcon}>
-      {c.icon ? (
-        <Icon name={c.icon} size={23} mode="loop" />
-      ) : Custom ? (
-        <Custom size={24} />
-      ) : (
-        <SheenIcon icon={c.lucide} size={20} color={c.lucideColor} delay={idx * 240} />
-      )}
+      <Icon name={c.icon} size={23} mode="loop" />
     </View>
   );
 }
@@ -1304,11 +1364,11 @@ function SingleStep({ step, value, onPick }: any) {
       <Text style={styles.title}>{step.title}</Text>
       {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
       <View style={{ marginTop: 24, gap: 10 }}>
-        {step.choices.map((c: Choice, idx: number) => {
+        {step.choices.map((c: Choice) => {
           const on = value === c.key;
           return (
             <Pressable key={c.key} onPress={() => onPick(c.key)} style={[styles.choice, on && styles.choiceOn]}>
-              <ChoiceIcon c={c} idx={idx} />
+              <ChoiceIcon c={c} />
               <View style={{ flex: 1 }}>
                 <Text style={[styles.choiceLabel, on && { color: T.green }]}>{c.label}</Text>
                 {c.sub ? <Text style={styles.choiceSub}>{c.sub}</Text> : null}
@@ -1322,46 +1382,6 @@ function SingleStep({ step, value, onPick }: any) {
   );
 }
 
-function MultiStep({ step, value, onChange, onNext }: any) {
-  const toggle = (k: string) => value.includes(k) ? onChange(value.filter((x: string) => x !== k)) : onChange([...value, k]);
-  return (
-    <ScrollView contentContainerStyle={styles.body}>
-      <Text style={styles.title}>{step.title}</Text>
-      {step.sub ? <Text style={styles.sub}>{step.sub}</Text> : null}
-      <View style={{ marginTop: 24, gap: 10 }}>
-        {step.choices.map((c: Choice, idx: number) => {
-          const on = value.includes(c.key);
-          return (
-            <Pressable key={c.key} onPress={() => toggle(c.key)} style={[styles.choice, on && styles.choiceOn]}>
-              <ChoiceIcon c={c} idx={idx} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.choiceLabel, on && { color: T.green }]}>{c.label}</Text>
-                {c.sub ? <Text style={styles.choiceSub}>{c.sub}</Text> : null}
-              </View>
-              <View style={[styles.checkbox, on && styles.checkboxOn]}>{on && <Check size={13} color="#0A0A0A" />}</View>
-            </Pressable>
-          );
-        })}
-      </View>
-      <Pressable onPress={onNext} style={[styles.primaryBtn, { marginTop: 24 }]}>
-        <Text style={styles.primaryBtnText}>Continue</Text>
-      </Pressable>
-    </ScrollView>
-  );
-}
-
-function MessageStep({ step, onNext }: any) {
-  return (
-    <View style={[styles.body, { flex: 1, justifyContent: "center", alignItems: "center" }]}>
-      <Text style={[styles.title, { textAlign: "center", fontSize: 26 }]}>{step.title}</Text>
-      {step.sub ? <Text style={[styles.sub, { textAlign: "center", marginTop: 12, lineHeight: 22 }]}>{step.sub}</Text> : null}
-      <Pressable onPress={onNext} style={[styles.primaryBtn, { marginTop: 32, alignSelf: "stretch" }]}>
-        <Text style={styles.primaryBtnText}>{step.cta}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 function BuildingStep({ step }: any) {
   return (
     <View style={[styles.body, { flex: 1, justifyContent: "center", alignItems: "center" }]}>
@@ -1372,14 +1392,36 @@ function BuildingStep({ step }: any) {
   );
 }
 
+/* ===================== WHERE DID YOU HEAR ABOUT US =====================
+   LAST IN THE FLOW, and skippable. It does nothing for the user — it's
+   attribution, so Dion can see which channel actually converts once he's
+   paying for ads. After the paywall means it can't cost a signup. */
+function HeardStep({ onPick, onSkip }: { onPick: (k: string) => void; onSkip: () => void }) {
+  return (
+    <ScrollView contentContainerStyle={[styles.body, { paddingBottom: 40 }]}>
+      <Text style={[styles.title, { fontSize: 26 }]}>One last thing</Text>
+      <Text style={styles.sub}>Where did you hear about MOTION? It helps us know where to find people like you.</Text>
+
+      <View style={{ marginTop: 24, gap: 10 }}>
+        {HEARD_CHOICES.map((c) => (
+          <Pressable key={c.key} onPress={() => onPick(c.key)} style={styles.choice}>
+            <ChoiceIcon c={c} />
+            <Text style={[styles.choiceLabel, { flex: 1 }]}>{c.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <Pressable onPress={onSkip} style={{ alignItems: "center", marginTop: 20 }}>
+        <Text style={styles.skipText}>Skip</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
 /* ===================== TRIAL PAYWALL =====================
-   Every feature carries the icon it maps to in the app, so the list reads as
-   "these exact things" rather than generic ticks.
-   The PLANS are shown but not required: whichever is selected is what the
-   trial rolls into on day 4. NO CARD FORM — on iOS, subscriptions must go
-   through Apple's IAP sheet, so "Start free trial" hands off to StoreKit and
-   Apple charges the card already on the user's Apple ID. There is no screen
-   for us to build there; `onStartTrial` becomes the StoreKit call. */
+   NO CARD FORM — on iOS, subscriptions must go through Apple's IAP sheet, so
+   "Start free trial" hands off to StoreKit and Apple charges the card already
+   on the user's Apple ID. `onStartTrial` becomes the StoreKit call. */
 const PLANS = [
   { key: "monthly", name: "Pro · Monthly", price: "$9.99", per: "/mo", note: "3 days free, then $9.99/mo" },
   { key: "yearly", name: "Pro · Yearly", price: "$99.99", per: "/yr", note: "3 days free, then $99.99/yr", tag: "Popular" },
@@ -1522,6 +1564,19 @@ const styles = StyleSheet.create({
   langRowOn: { backgroundColor: T.greenBg },
   langRowText: { fontSize: 14.5, color: T.text, fontFamily: FONTS.body },
 
+  /* sex tiles — side by side, because two options in a column looks like the
+     start of a longer list */
+  sexTile: {
+    flex: 1, alignItems: "center", gap: 8,
+    backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+    borderRadius: 16, paddingVertical: 18,
+  },
+  sexLabel: { fontSize: 14.5, color: T.text, fontFamily: FONTS.headingMed },
+
+  /* a field's label and its unit toggle on one line — the two-question
+     screens have no room for a full-width toggle under each heading */
+  fieldHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 26 },
+
   permIcon: { width: 62, height: 62, borderRadius: 20, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, alignItems: "center", justifyContent: "center", marginTop: 8 },
   permCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 16, marginTop: 22, overflow: "hidden" },
   permRow: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
@@ -1537,10 +1592,7 @@ const styles = StyleSheet.create({
   notifTitle: { fontSize: 12, color: T.text, fontFamily: FONTS.heading },
   notifBody: { fontSize: 12, color: T.sub, fontFamily: FONTS.body, marginTop: 3, lineHeight: 17 },
 
-  codeInput: { fontSize: 26, color: T.text, fontFamily: FONTS.heading, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 18, textAlign: "center", letterSpacing: 3, marginTop: 28 },
-
   authBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 14, paddingVertical: 15 },
-  authDim: { opacity: 0.45 },
   authText: { fontSize: 14.5, fontFamily: FONTS.headingMed },
   orRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 22 },
   orLine: { flex: 1, height: 1, backgroundColor: T.border },
@@ -1553,26 +1605,25 @@ const styles = StyleSheet.create({
   agreeHint: { fontSize: 11.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", marginTop: 12 },
 
   errRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 14, backgroundColor: "rgba(239,68,68,0.10)", borderWidth: 1, borderColor: "rgba(239,68,68,0.35)", borderRadius: 12, padding: 12 },
-  errText: { flex: 1, fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
+  errText: { fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
+  errAction: { marginTop: 10, backgroundColor: T.card, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 10, paddingVertical: 10, alignItems: "center" },
+  errActionText: { fontSize: 12.5, color: T.green, fontFamily: FONTS.headingMed },
 
-  explainCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, padding: 16, marginTop: 20 },
+  /* the "your answers won't be used" heads-up on the sign-in side */
+  noticeRow: {
+    flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 16,
+    backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
+    borderColor: "rgba(251,191,36,0.35)", borderRadius: 12, padding: 12,
+  },
+  noticeText: { flex: 1, fontSize: 12, color: "#FBBF24", fontFamily: FONTS.body, lineHeight: 17.5 },
+
+  explainCard: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 18, padding: 16, marginTop: 16 },
   explainRow: { flexDirection: "row", alignItems: "flex-start", gap: 11 },
   explainDash: { width: 20, height: 4, borderRadius: 2, marginTop: 6 },
   explainText: { flex: 1, fontSize: 12.5, color: T.text, fontFamily: FONTS.body, lineHeight: 18.5 },
   explainLead: { fontFamily: FONTS.heading, color: T.green },
   explainDivider: { height: 1, backgroundColor: T.border, marginVertical: 13 },
   chartAxisTitle: { fontSize: 9, letterSpacing: 1, color: T.micro, fontFamily: FONTS.body, marginBottom: 2 },
-
-  histRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "center", gap: 40, marginTop: 40, height: 250 },
-  histCol: { alignItems: "center" },
-  histBar: { width: 78, borderTopLeftRadius: 14, borderTopRightRadius: 14 },
-  histLabel: { fontSize: 12, color: T.sub, fontFamily: FONTS.headingMed, textAlign: "center", marginTop: 12, lineHeight: 17 },
-  histTag: { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4, marginBottom: 8 },
-  histTagText: { fontSize: 11, color: T.green, fontFamily: FONTS.heading },
-
-  personalRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, padding: 15 },
-  personalCheck: { width: 22, height: 22, borderRadius: 7, backgroundColor: T.green, alignItems: "center", justifyContent: "center" },
-  personalText: { flex: 1, fontSize: 13.5, color: T.text, fontFamily: FONTS.body, lineHeight: 19 },
 
   planCalRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
   planCal: { fontSize: 46, color: T.text, fontFamily: FONTS.heading },
@@ -1584,22 +1635,34 @@ const styles = StyleSheet.create({
   coachCard: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, borderRadius: 14, padding: 14, marginTop: 14 },
   coachText: { flex: 1, fontSize: 12.5, color: T.text, fontFamily: FONTS.body, lineHeight: 18 },
 
-  wheelWrap: { marginTop: 34, alignItems: "center", justifyContent: "center", position: "relative" },
-  wheelBand: { position: "absolute", top: ITEM_H * 2, left: 0, right: 0, height: ITEM_H, borderRadius: 12, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, zIndex: 0 },
+  /* GREEN, not grey — it's an instruction, and grey fine print is exactly
+     what people skip past before deciding the wheel is broken */
+  scrollHint: { fontSize: 11.5, color: T.green, fontFamily: FONTS.bodyMed, marginTop: 4 },
+  wheelWrap: { marginTop: 8, alignItems: "center", justifyContent: "center", position: "relative" },
+  /* the band sits over the CENTRE row — its offset has to match WHEEL_PAD, or
+     the highlight and the selected value drift apart */
+  wheelBand: { position: "absolute", top: ITEM_H * WHEEL_PAD, left: 0, right: 0, height: ITEM_H, borderRadius: 12, backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder, zIndex: 0 },
   wheelRow: { flexDirection: "row", justifyContent: "center", gap: 4 },
   wheelCell: { height: ITEM_H, alignItems: "center", justifyContent: "center" },
-  wheelItem: { fontSize: 17, color: T.micro, fontFamily: FONTS.body },
-  wheelItemOn: { color: T.text, fontFamily: FONTS.heading, fontSize: 18.5 },
+  wheelItem: { fontSize: 16.5, color: T.micro, fontFamily: FONTS.body },
+  wheelItemOn: { color: T.text, fontFamily: FONTS.heading, fontSize: 18 },
 
   unitToggle: { flexDirection: "row", gap: 6, backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 12, padding: 4, marginTop: 26, alignSelf: "flex-start" },
   unitPill: { paddingHorizontal: 20, paddingVertical: 9, borderRadius: 9 },
+  unitPillSmall: { paddingHorizontal: 13, paddingVertical: 6 },
   unitPillOn: { backgroundColor: T.green },
   unitPillText: { fontSize: 13, color: T.sub, fontFamily: FONTS.headingMed },
   unitPillTextOn: { color: "#0A0A0A" },
+
   entryRow: { flexDirection: "row", alignItems: "baseline", marginTop: 30 },
+  entryRowTight: { flexDirection: "row", alignItems: "baseline", marginTop: 14 },
   bigInput: { fontSize: 54, color: T.text, fontFamily: FONTS.heading, minWidth: 130, padding: 0, borderBottomWidth: 2, borderBottomColor: T.greenBorder, textAlign: "center" },
-  entryUnit: { fontSize: 20, color: T.sub, fontFamily: FONTS.body, marginLeft: 10 },
-  warnRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 20, backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: "rgba(251,191,36,0.35)", borderRadius: 12, padding: 12 },
+  /* smaller than bigInput — two of these share a screen, and 54pt twice
+     pushes the button below the fold */
+  midInput: { fontSize: 40, color: T.text, fontFamily: FONTS.heading, minWidth: 110, padding: 0, borderBottomWidth: 2, borderBottomColor: T.greenBorder, textAlign: "center" },
+  entryUnit: { fontSize: 18, color: T.sub, fontFamily: FONTS.body, marginLeft: 10 },
+
+  warnRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 14, backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1, borderColor: "rgba(251,191,36,0.35)", borderRadius: 12, padding: 12 },
   noteRowOk: { backgroundColor: T.greenBg, borderColor: T.greenBorder },
   warnText: { flex: 1, fontSize: 12.5, color: "#FBBF24", fontFamily: FONTS.body, lineHeight: 18 },
   currentChip: { alignSelf: "flex-start", backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border, borderRadius: 99, paddingHorizontal: 13, paddingVertical: 7, marginTop: 22 },
@@ -1608,8 +1671,6 @@ const styles = StyleSheet.create({
   btnTextDisabled: { color: T.micro },
 
   goalDate: { fontSize: 34, color: T.green, fontFamily: FONTS.heading, marginTop: 6 },
-  goalRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  goalRowText: { flex: 1, fontSize: 13.5, color: T.text, fontFamily: FONTS.body, lineHeight: 20 },
 
   choice: { flexDirection: "row", alignItems: "center", gap: 13, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 16 },
   choiceOn: { borderColor: T.green, backgroundColor: T.greenBg },
