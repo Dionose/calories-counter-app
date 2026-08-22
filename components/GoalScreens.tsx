@@ -2,10 +2,19 @@
 // The four Goals editors from Profile: Goal, Daily calories, Target weight,
 // Units & height.
 //
-// The Goal flow asks four questions rather than one, because changing your
-// goal genuinely changes the maths — and the questions we ask are the ones the
-// formula actually uses. Asking about gym vs home would have been theatre; we
-// don't eat differently based on where we train.
+// ⚠️ THE GOAL FLOW ASKS THE SAME QUESTIONS AS ONBOARDING, AND USES THE SAME
+// MATHS. That sounds obvious and it wasn't true: when onboarding was cut from
+// twenty-eight screens to fifteen, the duplicate workouts-per-week question
+// was dropped there and left here — along with the WORKOUT_BUMP it fed into.
+//
+// So the same person, answering identically, got a different daily target
+// depending on which screen built it. Up to 0.1 on the multiplier, roughly
+// 150 calories, silently. Two screens computing one number two ways is
+// exactly the disagreement that cut was meant to remove.
+//
+// It's three questions now — goal, pace, activity — and the multiplier is the
+// activity factor alone, matching buildPlan() in onboarding line for line. If
+// one of them changes, the other has to change with it.
 import { Check, Flame, Minus, Plus, Ruler, TrendingDown, TrendingUp } from "lucide-react-native";
 import React, { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -23,8 +32,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /* the same rates onboarding uses — kg per week */
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
+
+/* AND THE SAME MULTIPLIERS. There used to be a WORKOUT_BUMP added on top of
+   these; it's gone, because onboarding never had one. See the note at the top
+   of the file. */
 const ACTIVITY_MULT: Record<string, number> = { low: 1.2, light: 1.375, mod: 1.55, high: 1.725 };
-const WORKOUT_BUMP: Record<string, number> = { "0-2": 0, "3-5": 0.05, "6+": 0.1 };
 
 /** Mifflin-St Jeor — what your body burns at rest.
     Computed FRESH from the body every time. The earlier version tried to
@@ -107,7 +119,7 @@ function Choices({
 }
 
 /* ================= GOAL ================= */
-type GoalStep = "goal" | "pace" | "activity" | "workouts" | "building" | "done";
+type GoalStep = "goal" | "pace" | "activity" | "building" | "done";
 
 export function GoalScreen({ onBack }: { onBack: () => void }) {
   const { T, profile, plan, savePlan, streakDays, freeLocked } = useApp();
@@ -119,8 +131,17 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
   const [pace, setPace] = useState<"slow" | "mod" | "fast">(
     profile.paceRate <= 0.3 ? "slow" : profile.paceRate >= 0.7 ? "fast" : "mod"
   );
-  const [activity, setActivity] = useState("mod");
-  const [workouts, setWorkouts] = useState("3-5");
+
+  /* ⚠️ SEEDED FROM WHAT THEY ACTUALLY SAVED. This used to start at "mod" every
+     time, whatever the profile said — so someone who told onboarding "mostly
+     sitting" opened this screen, saw "moderately active" already selected,
+     tapped through, and walked out with a target 400 calories higher than
+     they should have. They never chose it; the screen chose for them and
+     called it their answer.
+
+     Falls back to "mod" only when nothing was ever saved. */
+  const [activity, setActivity] = useState<string>(profile.activity || "mod");
+
   const [before] = useState(plan.calories);   // frozen so "from before" stays honest
   const [newCal, setNewCal] = useState(plan.calories);
 
@@ -136,7 +157,8 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
     const age = ageFrom(profile.dobDay, profile.dobMonth, profile.dobYear);
     const bmr = bmrFor(kg, profile.heightCm || 175, age, profile.sex || "male");
 
-    const mult = (ACTIVITY_MULT[activity] || 1.375) + (WORKOUT_BUMP[workouts] || 0);
+    /* ONE MULTIPLIER, exactly as onboarding does it */
+    const mult = ACTIVITY_MULT[activity] || 1.375;
     const tdee = Math.round(bmr * mult);
 
     const rate = PACE_RATE[pace];
@@ -154,7 +176,9 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
 
     savePlan(
       { calories, protein, carbs, fat, tdee, addBurned: plan.addBurned },
-      { goal, paceRate: rate }
+      /* ACTIVITY IS SAVED TOO, so the next visit opens on what they picked
+         rather than starting from a default again */
+      { goal, paceRate: rate, activity } as any
     );
     setNewCal(calories);
     H.success();
@@ -224,7 +248,7 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
     return (
       <ScrollView contentContainerStyle={s.page}>
         <BackRow title="Your goal" onBack={onBack} />
-        <Text style={s.qCount}>Question 1 of 4</Text>
+        <Text style={s.qCount}>Question 1 of 3</Text>
         <Text style={s.question}>What are you working toward?</Text>
         <Text style={s.note}>
           This sets the direction of your whole plan. Changing it rebuilds your daily target.
@@ -248,7 +272,7 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
     return (
       <ScrollView contentContainerStyle={s.page}>
         <BackRow title="Your goal" onBack={() => setStep("goal")} />
-        <Text style={s.qCount}>Question 2 of 4</Text>
+        <Text style={s.qCount}>Question 2 of 3</Text>
         <Text style={s.question}>
           {maintaining ? "How strictly do you want to hold?" : "How fast do you want to go?"}
         </Text>
@@ -271,48 +295,29 @@ export function GoalScreen({ onBack }: { onBack: () => void }) {
     );
   }
 
-  if (step === "activity") {
-    return (
-      <ScrollView contentContainerStyle={s.page}>
-        <BackRow title="Your goal" onBack={() => setStep("pace")} />
-        <Text style={s.qCount}>Question 3 of 4</Text>
-        <Text style={s.question}>How active are you day to day?</Text>
-        <Text style={s.note}>
-          Outside of workouts — walking, standing, moving about. This is the biggest single factor in
-          what your body burns.
-        </Text>
-
-        <Choices
-          value={activity}
-          onPick={(k) => { setActivity(k); setTimeout(() => setStep("workouts"), 200); }}
-          options={[
-            { key: "low", label: "Mostly sitting", sub: "Desk job, little walking" },
-            { key: "light", label: "Lightly active", sub: "On your feet some of the day" },
-            { key: "mod", label: "Moderately active", sub: "Walking or moving most days" },
-            { key: "high", label: "Very active", sub: "On your feet all day, or physical work" },
-          ]}
-        />
-      </ScrollView>
-    );
-  }
-
-  // workouts
+  /* ---------- activity — the LAST question now ----------
+     The wording matches onboarding's, including the workout counts folded into
+     the sub-lines. That's how one question can carry what used to be two:
+     someone who trains four times a week and someone on their feet all day
+     land on the same multiplier, which is what the formula actually wants. */
   return (
     <ScrollView contentContainerStyle={s.page}>
-      <BackRow title="Your goal" onBack={() => setStep("activity")} />
-      <Text style={s.qCount}>Question 4 of 4</Text>
-      <Text style={s.question}>How many workouts a week?</Text>
+      <BackRow title="Your goal" onBack={() => setStep("pace")} />
+      <Text style={s.qCount}>Question 3 of 3</Text>
+      <Text style={s.question}>How active are you?</Text>
       <Text style={s.note}>
-        Training on top of your daily activity. More sessions means a slightly higher target.
+        Day to day, counting work and everything else — not just the gym. This is the biggest single
+        factor in what your body burns.
       </Text>
 
       <Choices
-        value={workouts}
-        onPick={setWorkouts}
+        value={activity}
+        onPick={setActivity}
         options={[
-          { key: "0-2", label: "0 – 2", sub: "Now and then" },
-          { key: "3-5", label: "3 – 5", sub: "A few times a week" },
-          { key: "6+", label: "6 +", sub: "Most days" },
+          { key: "low", label: "Mostly sitting", sub: "Desk job, little exercise" },
+          { key: "light", label: "Lightly active", sub: "On your feet some of the day, or 1–3 workouts a week" },
+          { key: "mod", label: "Moderately active", sub: "Moving most of the day, or 3–5 workouts a week" },
+          { key: "high", label: "Very active", sub: "Physical job, or training 6–7 days a week" },
         ]}
       />
 
@@ -372,7 +377,12 @@ export function CaloriesScreen({ onBack }: { onBack: () => void }) {
         )}
       </View>
 
-      {/* the toggle that explains why Home can show a bigger number */}
+      {/* ---------- ADD BURNED CALORIES ----------
+          THE ONLY PLACE THIS CAN BE TURNED ON now that onboarding doesn't ask.
+          It defaults to off, which is the right default for something
+          confusing to be asked about before you've used the app once — but it
+          means Home's burned-calorie code sits dormant until someone finds
+          this toggle. Worth remembering if that feature ever looks dead. */}
       <View style={[s.card, { marginTop: 12, padding: 0 }]}>
         <View style={s.burnedRow}>
           <View style={s.unitIcon}>

@@ -59,6 +59,30 @@ export type UserProfile = {
   targetWeight: number;  // what they're aiming for
   paceRate: number;      // kg per week
   goalWeeks: number;     // how long the plan says it takes
+
+  /* ---------- THE FOUR THAT WENT MISSING ----------
+     All optional, because a profile can exist without them — someone who
+     skipped the last onboarding screen has no heardFrom, and diet isn't asked
+     at all yet.
+
+     ⚠️ THESE WERE COLLECTED, SAVED AND UNREADABLE. constants/profile.ts maps
+     every one of them to and from the database, and onboarding sends them —
+     but they were never declared HERE, so no screen could read them without
+     TypeScript objecting.
+
+     It stayed hidden because every call to saveProfile below was written
+     `next as any`, which switches off exactly the check that would have caught
+     it. Those casts are gone now: if a field drifts between this type and
+     profile.ts again, the compiler says so.
+
+     The cost was real — Profile → Goal couldn't read your saved activity, so
+     it defaulted everyone to "moderately active" and quietly rebuilt their
+     plan around an answer they never gave. */
+  activity?: string;     // low | light | mod | high — the TDEE multiplier
+  diet?: string;         // collected in Profile eventually; nothing reads it yet
+  workouts?: string;     // LEGACY. The question is gone from both flows — kept
+                         // so old rows still load rather than erroring
+  heardFrom?: string;    // attribution, asked once after the paywall
 };
 
 // the Profile toggles
@@ -81,7 +105,11 @@ const DEFAULT_PROFILE: UserProfile = {
   name: "Dion",
   handle: "dion",
   email: "dion@motion.app",
-  region: "Canada",
+  /* EMPTY, not "Canada". A default country would put every user with no region
+     onto Canada's Regional board — including people whose phone reported a
+     country we don't list. An empty region shows the "set your region" prompt
+     instead, which is the honest state. */
+  region: "",
   memberSince: "Aug 2026",
   photoUri: null,
   sex: "male",
@@ -346,14 +374,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
      awaited — onboarding shouldn't stall on a slow connection.
 
      `explicitId` exists because onboarding calls this in the same moment the
-     account is created, before the auth listener above has caught up. */
+     account is created, before the auth listener above has caught up.
+
+     NO `as any` HERE ANY MORE — see the note on UserProfile. The cast was
+     hiding four fields that were being written and could never be read. */
   const savePlan = useCallback((p: Plan, prof: Partial<UserProfile>, explicitId?: string) => {
     setPlan(p);
     setRecommended(p);
     setProfile((cur) => {
       const next = { ...cur, ...prof };
       const id = explicitId || userId;
-      if (id) saveProfile(id, next as any, p);
+      if (id) saveProfile(id, next, p);
       return next;
     });
   }, [userId]);
@@ -364,18 +395,21 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const updateProfile = useCallback((patch: Partial<UserProfile>) => {
     setProfile((p) => {
       const next = { ...p, ...patch };
-      if (userId) saveProfile(userId, next as any);
+      if (userId) saveProfile(userId, next);
       return next;
     });
   }, [userId]);
 
   /* Toggle a plan flag without touching the calorie target. `addBurned` is the
      only one so far — flipped from Profile → Daily calories, and read by Home
-     to decide whether today's goal includes what you burned. */
+     to decide whether today's goal includes what you burned.
+
+     The empty profile object is deliberate: saveProfile strips undefined
+     fields, so passing {} touches nothing but the plan columns. */
   const updatePlanFlag = useCallback(<K extends keyof Plan>(key: K, value: Plan[K]) => {
     setPlan((p) => {
       const next = { ...p, [key]: value };
-      if (userId) saveProfile(userId, {} as any, next);
+      if (userId) saveProfile(userId, {}, next);
       return next;
     });
   }, [userId]);
@@ -383,14 +417,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const setDailyCalories = useCallback((calories: number) => {
     setPlan((p) => {
       const next = { ...p, calories };
-      if (userId) saveProfile(userId, {} as any, next);
+      if (userId) saveProfile(userId, {}, next);
       return next;
     });
   }, [userId]);
 
   const resetToRecommended = useCallback(() => {
     setPlan(recommended);
-    if (userId) saveProfile(userId, {} as any, recommended);
+    if (userId) saveProfile(userId, {}, recommended);
   }, [recommended, userId]);
 
   const T = themeMode === "dark" ? DARK : LIGHT;
