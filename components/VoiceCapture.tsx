@@ -11,15 +11,10 @@
 // An earlier version of these tips used shorthand — 'Not "chicken" — "two
 // chicken breasts"' — and Dion, who wrote the app, couldn't parse it on first
 // read. If the author can't read it, nobody can. Everything here is now a
-// plain sentence, even where that takes three times the words. Length is not
-// the enemy; a person reads this properly once or twice and then never needs
-// it again, and two minutes of reading buys every future meal being right.
+// plain sentence, even where that takes three times the words.
 //
 // AND IT SAYS, LOUDLY, THAT NOT KNOWING IS FINE. That line earns its own card
 // rather than a footnote, because the failure mode is someone feeling tested.
-// Nobody knows how much oil McDonald's used. A person who thinks they have to
-// know will put the phone down instead of guessing, and a rough log beats no
-// log every single time.
 //
 // TWO MODES, one component. From "Describe a meal" there's nothing on screen
 // yet, so it asks what they ate. From the estimate screen the plate is already
@@ -44,10 +39,24 @@ import { FONTS } from "../constants/theme";
 import Icon from "./Icon";
 import Tap from "./Tap";
 
-/* how long before the recogniser is stopped automatically. Not a limit on what
-   someone can say — 45 seconds is far longer than anyone spends describing a
-   plate. It's a guard against a phone left listening in a pocket. */
-const MAX_SECONDS = 45;
+/* ---------- HOW LONG SOMEONE CAN TALK ----------
+   THREE MINUTES, and this was 45 SECONDS — which cut Dion off mid-sentence
+   while he was still describing a meal.
+
+   The old number came with a comment saying "45 seconds is far longer than
+   anyone spends describing a plate". That was simply wrong, and wrong in a
+   way this very screen causes: the instructions ask for amounts, for the oil,
+   for how it was cooked. Someone following that advice on a real dinner is
+   easily past a minute. The screen asked for detail and then punished the
+   people who gave it.
+
+   It's still a guard — a phone left listening in a pocket stops eventually —
+   but it's no longer a leash on the feature. */
+const MAX_SECONDS = 180;
+
+/* when to warn that it's approaching the limit. Being cut off without warning
+   is what made the old behaviour feel broken rather than bounded. */
+const WARN_AT = 150;
 
 export default function VoiceCapture({
   visible, meal, mode = "describe", onClose, onTranscript,
@@ -72,10 +81,31 @@ export default function VoiceCapture({
   const [showWords, setShowWords] = useState(true);
   const [live, setLive] = useState("");
 
-  /* the words so far. Kept in a ref as well as state because the ref is what
-     gets SENT — state updates are async, and a transcript read from state at
-     the moment recognition ends can be a word behind. */
-  const words = useRef("");
+  /* ---------- THE TRANSCRIPT, IN TWO PARTS ----------
+     iOS ENDS A RECOGNITION SESSION ON ITS OWN, at around a minute, whether or
+     not the person has stopped talking. Nothing in the app asked for that and
+     nothing can switch it off — so the session is restarted when it happens,
+     and the words carry over.
+
+     Which is why the transcript is two refs rather than one. Each restart
+     gives a FRESH transcript from the recogniser, so the finished segments
+     have to be kept separately and prepended — otherwise every restart would
+     silently throw away everything said before it.
+
+     Refs rather than state because these are read at the moment recognition
+     ends, and state updates are async — a transcript read from state there
+     can be a word behind. */
+  const committed = useRef("");   // everything from sessions already finished
+  const segment = useRef("");     // what the current session has heard
+
+  /** the whole thing, in order */
+  const fullText = () => `${committed.current} ${segment.current}`.trim();
+
+  /* WHO ENDED IT. The "end" event fires for a user tap, for our own timeout,
+     and for iOS's session limit — three different situations that need three
+     different responses, and the event itself can't tell them apart. */
+  const userStopped = useRef(false);
+  const closing = useRef(false);
 
   const pulse = useRef(new Animated.Value(1)).current;
   const level = useRef(new Animated.Value(0)).current;
@@ -88,37 +118,70 @@ export default function VoiceCapture({
   useSpeechRecognitionEvent("result", (e) => {
     const said = e.results?.[0]?.transcript;
     if (!said) return;
-    words.current = said;
-    if (showWords) setLive(said);
+    /* replaces THIS SESSION's text only — everything before a restart lives in
+       `committed` and isn't touched */
+    segment.current = said;
+    if (showWords) setLive(fullText());
   });
 
   useSpeechRecognitionEvent("error", (e) => {
     console.log("VOICE recognition error:", e.error, e.message);
-    setState("idle");
 
     /* NOT REALLY ERRORS. "aborted" is OUR OWN cleanup firing when the screen
        closes; "interrupted" is iOS taking the audio session for a call or
        another app. Showing an alarming message for either would make a working
        feature look broken to someone who did nothing wrong. */
-    if (e.error === "aborted" || e.error === "interrupted") return;
+    if (e.error === "aborted" || e.error === "interrupted") {
+      setState("idle");
+      return;
+    }
 
     if (e.error === "no-speech") {
+      setState("idle");
       setError("MOTION didn't hear anything. Tap the mic and describe your meal.");
       return;
     }
 
+    setState("idle");
     setError("Something went wrong listening. Try again?");
   });
 
   useSpeechRecognitionEvent("end", () => {
-    setState("idle");
-    /* hand it up ONLY if there's something in it — an empty result means they
-       stopped before saying anything */
-    const text = words.current.trim();
-    if (text.length >= 3) {
-      H.success();
-      onTranscript(text);
+    const text = fullText();
+
+    /* ---------- DID THE PERSON ACTUALLY FINISH? ----------
+       Only three things mean yes: they tapped stop, the screen is closing, or
+       the three-minute guard fired. Anything else is iOS ending its own
+       session while they're still mid-sentence — and treating THAT as "done"
+       is exactly the bug this fixes. */
+    const reallyDone = userStopped.current || closing.current || secs >= MAX_SECONDS;
+
+    if (reallyDone) {
+      setState("idle");
+      userStopped.current = false;
+      /* hand it up ONLY if there's something in it — an empty result means
+         they stopped before saying anything */
+      if (text.length >= 3) {
+        H.success();
+        onTranscript(text);
+      }
+      return;
     }
+
+    /* ---------- iOS CUT US OFF. CARRY ON. ----------
+       Bank what's been said, clear the segment, and start a new session. The
+       user sees nothing: the timer keeps running, the meter keeps moving, the
+       words stay on screen. */
+    committed.current = text;
+    segment.current = "";
+
+    ExpoSpeechRecognitionModule.start({
+      lang: "en-US",
+      interimResults: true,
+      continuous: true,
+      requiresOnDeviceRecognition: false,
+      addsPunctuation: true,
+    });
   });
 
   /* ---------- the timer and the animation ---------- */
@@ -128,11 +191,14 @@ export default function VoiceCapture({
 
     const id = setInterval(() => {
       setSecs((n) => {
-        if (n + 1 >= MAX_SECONDS) {
-          stop();
-          return n + 1;
+        const next = n + 1;
+        if (next >= MAX_SECONDS) {
+          /* the guard firing counts as finishing — deliver what they said
+             rather than throwing it away */
+          userStopped.current = true;
+          ExpoSpeechRecognitionModule.stop();
         }
-        return n + 1;
+        return next;
       });
     }, 1000);
 
@@ -174,24 +240,36 @@ export default function VoiceCapture({
 
   /* leaving the screen must stop the recogniser — a phone still listening
      after the sheet closed is both a battery drain and a privacy problem.
-     This is what produces the "aborted" the error handler ignores. */
+     `closing` is set FIRST so the "end" event doesn't mistake this for iOS
+     cutting out and restart a session on a screen nobody is looking at. */
   useEffect(() => {
     if (!visible) {
+      closing.current = true;
       ExpoSpeechRecognitionModule.abort();
       setState("idle");
       setSecs(0);
       setLive("");
-      words.current = "";
+      committed.current = "";
+      segment.current = "";
+      userStopped.current = false;
+      /* released after the abort has been handled, so the next open starts
+         clean */
+      setTimeout(() => { closing.current = false; }, 300);
     }
   }, [visible]);
 
   useEffect(() => {
-    return () => { ExpoSpeechRecognitionModule.abort(); };
+    return () => {
+      closing.current = true;
+      ExpoSpeechRecognitionModule.abort();
+    };
   }, []);
 
   const start = async () => {
     setError(null);
-    words.current = "";
+    committed.current = "";
+    segment.current = "";
+    userStopped.current = false;
     setLive("");
     setSecs(0);
 
@@ -221,12 +299,17 @@ export default function VoiceCapture({
 
   const stop = () => {
     H.tick();
+    /* THIS is what tells the "end" handler the person is genuinely finished,
+       rather than iOS having ended its own session mid-sentence. */
+    userStopped.current = true;
     /* stop, not abort — abort throws away the transcript, stop delivers it
        through the "end" event */
     ExpoSpeechRecognitionModule.stop();
   };
 
   const timer = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  const nearingLimit = state === "listening" && secs >= WARN_AT;
+  const secsLeft = Math.max(0, MAX_SECONDS - secs);
 
   /* the worked example. Deliberately LOADED with amounts, because the example
      is what people copy — a thin one teaches thin descriptions. */
@@ -279,7 +362,7 @@ export default function VoiceCapture({
         ) : state === "listening" ? (
           <View style={s.body}>
             <Text style={s.listeningLabel}>LISTENING</Text>
-            <Text style={s.timer}>{timer}</Text>
+            <Text style={[s.timer, nearingLimit && { color: T.gold }]}>{timer}</Text>
 
             {/* the level meter — five bars, breathing */}
             <View style={s.meter}>
@@ -288,6 +371,7 @@ export default function VoiceCapture({
                   key={i}
                   style={[
                     s.meterBar,
+                    nearingLimit && { backgroundColor: T.gold },
                     {
                       transform: [{
                         scaleY: level.interpolate({
@@ -303,9 +387,19 @@ export default function VoiceCapture({
               ))}
             </View>
 
-            <Text style={s.hint}>
-              Take your time — MOTION waits through pauses.
-            </Text>
+            {/* NEAR THE LIMIT, SAY SO. Being cut off with no warning is what
+                made the old 45-second version feel broken; a heads-up makes
+                the same event feel like a boundary rather than a failure. */}
+            {nearingLimit ? (
+              <Text style={[s.hint, { color: T.gold }]}>
+                About {secsLeft} {secsLeft === 1 ? "second" : "seconds"} left — MOTION will finish
+                up and use everything you've said so far.
+              </Text>
+            ) : (
+              <Text style={s.hint}>
+                Take your time — MOTION waits through pauses, and there's no rush.
+              </Text>
+            )}
           </View>
         ) : (
           /* ---------- THE INSTRUCTIONS ----------
@@ -524,6 +618,18 @@ export default function VoiceCapture({
                     else on your plate, and they're also the easiest things to forget about. If
                     something was fried, or there's a creamy sauce involved, that's the single most
                     useful thing you can tell MOTION.
+                  </Text>
+
+                  <View style={s.helpDivider} />
+
+                  <Text style={s.helpSubhead}>Take as long as you need</Text>
+                  <Text style={s.helpBody}>
+                    You have three minutes, which is far longer than any meal needs. MOTION keeps
+                    listening through pauses, so you can stop and think, remember something you
+                    forgot, or start a sentence again.
+                    {"\n\n"}
+                    Tap the button when you're done — it doesn't finish on its own until the three
+                    minutes are up, and it'll warn you before that happens.
                   </Text>
 
                   <View style={s.helpDivider} />
