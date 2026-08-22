@@ -19,7 +19,10 @@
 //
 //   GOAL DATE AND THE GRAPH MERGED. Same information twice.
 //
-//   DIET AND BURNED CALORIES MOVED TO PROFILE.
+//   DIET AND BURNED CALORIES MOVED TO PROFILE. Diet now lives at
+//   components/DietScreen.tsx with its original artwork intact.
+//
+//   THE LANGUAGE PICKER WENT ENTIRELY — see the note on Welcome below.
 //
 // ⚠️ NO FULL-SCREEN TAP-TO-DISMISS WRAPPER. One was added and it FROZE THE
 // BIRTHDAY WHEEL solid — a TouchableWithoutFeedback covering the screen claims
@@ -29,7 +32,7 @@
 import { useRouter } from "expo-router";
 import { AlertTriangle, Check, ChevronLeft, Crown, Eye, EyeOff, Sparkles } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Keyboard, KeyboardAvoidingView, Modal, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Animated, Easing, Keyboard, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Svg, { Path, Line as SvgLine, Text as SvgText } from "react-native-svg";
 import Icon, { IconName } from "../components/Icon";
 import IsoM, { IsoMGlow } from "../components/IsoM";
@@ -110,12 +113,6 @@ const STEPS: Step[] = [
   { kind: "heard", id: "heard" },
 ];
 
-const LANGUAGES = [
-  "English", "Español", "Français", "Deutsch", "Italiano", "Português",
-  "Nederlands", "Polski", "Türkçe", "Русский", "العربية", "हिन्दी",
-  "中文", "日本語", "한국어",
-];
-
 const PACE_RATE: Record<string, number> = { slow: 0.25, mod: 0.5, fast: 0.75 };
 
 const HEARD_CHOICES: Choice[] = [
@@ -140,8 +137,7 @@ const HEARD_CHOICES: Choice[] = [
    raw ISO code — "CA" — while Profile → Region stored "Canada". The
    leaderboard groups on the exact string, so two people in the same country
    ended up on two DIFFERENT Regional boards depending on which path set their
-   region. Invisible with one test user; broken the moment real people arrive
-   on both paths. Both sides now go through constants/regions.ts.
+   region. Both sides now go through constants/regions.ts.
 
    ⚠️ NO EXTRA PACKAGE, and that's deliberate. expo-localization is the obvious
    tool and it FAILED here: it ships a native module, and a native module only
@@ -211,7 +207,11 @@ function buildPlan(a: Record<string, any>) {
 
   /* ONE MULTIPLIER, from one question. The old flow added a second bump from
      workouts-per-week on top of this — both questions asking the same thing,
-     which is why one of them went. */
+     which is why one of them went.
+
+     ⚠️ Profile → Goal REBUILDS the plan with the same formula. If this changes,
+     ACTIVITY_MULT in components/GoalScreens.tsx has to change with it, or the
+     same person gets two different targets depending which screen they used. */
   const base: Record<string, number> = { low: 1.2, light: 1.375, mod: 1.55, high: 1.725 };
   const mult = base[a.activity] || 1.375;
   const tdee = bmr * mult;
@@ -245,7 +245,11 @@ function goalTimeline(a: Record<string, any>) {
   return { unit, cur, target, rate, diff, weeks, losing: target < cur, maintaining: diff < 0.05 };
 }
 
-/* ===================== SLIDE + FADE TRANSITION ===================== */
+/* ===================== SLIDE + FADE TRANSITION =====================
+   The original of what's now components/ViewTransition.tsx — that one was
+   lifted out of here so Stats, Profile and Calendar could stop snapping
+   between their own views. This stays because onboarding's version tracks a
+   step INDEX rather than a named view. */
 function StepTransition({ stepKey, dir, children }: { stepKey: string; dir: number; children: React.ReactNode }) {
   const anim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -372,8 +376,6 @@ export default function Onboarding() {
       <Welcome
         onNext={goNext}
         onSignIn={() => router.replace("/signin")}
-        lang={answers.lang || "English"}
-        setLang={(l: string) => set("lang", l)}
       />
     );
   }
@@ -418,25 +420,36 @@ export default function Onboarding() {
   );
 }
 
-/* ===================== WELCOME ===================== */
+/* ===================== WELCOME =====================
+   ⚠️ THE LANGUAGE PICKER IS GONE, and that's a decision rather than an
+   oversight.
+
+   It listed fifteen languages and changed nothing — the value it set was never
+   read by anything. Translating MOTION means every string in the app moving
+   into a file fifteen times over, and this app is unusually wordy: the voice
+   instructions alone run to several hundred words. That's weeks of work, not
+   days, and Dion's call was to ship English and add languages when the app can
+   afford it.
+
+   Which leaves the question of what to do with the control in the meantime,
+   and removing it is the honest answer. A dropdown that opens nothing is worse
+   than no dropdown: someone taps it, nothing happens, and that's their FIRST
+   interaction with the app — before they've seen anything work. Promising
+   fifteen languages on screen one and delivering one is a worse first
+   impression than never mentioning it.
+
+   Putting it back is trivial when there's something behind it. */
 function Welcome({
-  onNext, onSignIn, lang, setLang,
+  onNext, onSignIn,
 }: {
   onNext: () => void;
   onSignIn: () => void;
-  lang: string;
-  setLang: (l: string) => void;
 }) {
-  const [picker, setPicker] = useState(false);
   return (
     <View style={styles.screen}>
-      <View style={styles.welcomeTop}>
-        <Pressable onPress={() => setPicker(true)} style={styles.langChip} hitSlop={8}>
-          {/* the same globe the Region row uses in Profile */}
-          <Icon name="region" size={15} mode="loop" />
-          <Text style={styles.langText}>{lang}</Text>
-        </Pressable>
-      </View>
+      {/* the space where the language chip was — kept, so the mark doesn't
+          jump up toward the status bar */}
+      <View style={styles.welcomeTop} />
 
       <View style={styles.welcomeBody}>
         <View style={{ marginBottom: 20 }}>
@@ -460,25 +473,6 @@ function Welcome({
           <Text style={styles.signInText}>Already have an account? <Text style={{ color: T.green }}>Sign in</Text></Text>
         </Pressable>
       </View>
-
-      <Modal visible={picker} transparent animationType="fade" onRequestClose={() => setPicker(false)}>
-        <Pressable style={styles.overlay} onPress={() => setPicker(false)}>
-          <Pressable style={styles.langCard} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.langCardTitle}>Choose your language</Text>
-            <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
-              {LANGUAGES.map((l) => {
-                const on = l === lang;
-                return (
-                  <Pressable key={l} onPress={() => { setLang(l); setPicker(false); }} style={[styles.langRow, on && styles.langRowOn]}>
-                    <Text style={[styles.langRowText, on && { color: T.green }]}>{l}</Text>
-                    {on && <Check size={16} color={T.green} />}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -1560,21 +1554,14 @@ const styles = StyleSheet.create({
 
   stepHero: { alignItems: "center", marginBottom: 16 },
 
-  welcomeTop: { paddingTop: 60, paddingHorizontal: 20, alignItems: "flex-end" },
-  langChip: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 99, paddingHorizontal: 12, paddingVertical: 7 },
-  langText: { fontSize: 12, color: T.sub, fontFamily: FONTS.bodyMed },
+  /* the empty band at the top of the welcome screen. The language chip lived
+     here; the space stays so the mark doesn't ride up into the status bar. */
+  welcomeTop: { paddingTop: 60, paddingHorizontal: 20, height: 94 },
   welcomeBody: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 28 },
   welcomeTitle: { fontSize: 32, color: T.text, fontFamily: FONTS.heading, textAlign: "center", lineHeight: 38 },
   welcomeSub: { fontSize: 14.5, color: T.sub, fontFamily: FONTS.body, textAlign: "center", marginTop: 14, lineHeight: 21 },
   welcomeFooter: { padding: 24, paddingBottom: 44 },
   signInText: { fontSize: 13, color: T.sub, fontFamily: FONTS.body },
-
-  overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", alignItems: "center", justifyContent: "center", padding: 28 },
-  langCard: { width: "100%", backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 22, padding: 20 },
-  langCardTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.heading, marginBottom: 14 },
-  langRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 13, paddingHorizontal: 14, borderRadius: 12, marginBottom: 4 },
-  langRowOn: { backgroundColor: T.greenBg },
-  langRowText: { fontSize: 14.5, color: T.text, fontFamily: FONTS.body },
 
   /* sex tiles — side by side, because two options in a column looks like the
      start of a longer list */
