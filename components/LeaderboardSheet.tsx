@@ -18,22 +18,11 @@
 // it. An earlier version printed the number once per group and left the rest
 // blank, which looked tidier and answered the wrong question: someone
 // forty-ninth in a tied group scrolls to their own name to find out where they
-// stand, and a blank margin tells them nothing. The number belongs to each
-// person, not to the group.
+// stand, and a blank margin tells them nothing.
 //
-// AND THE PERCENTILE STILL COUNTS PEOPLE. "#2 · top 51%" reads oddly for a
-// second and is two true things: second-best score, half the board above you.
-//
-// FIFTY AT A TIME, because a board can hold every user and someone at position
-// 4,318 should still be able to scroll to themselves.
-//
-// THE CROWN COLUMN — one box, same for every row. SeasonCrown's reveal renders
-// in a box 2.1× its size with the crown centred; the still version is exactly
-// its size. Four attempts to COMPENSATE for that difference each moved the
-// crown without aligning it, so nothing compensates any more.
-//
-// THE STAR BURST CAPS AT 20, in SeasonCrown rather than here.
-import { ChevronLeft, ChevronRight, Crosshair, HelpCircle, X } from "lucide-react-native";
+// NO REGION SET? The Regional board can't show anything — but it now offers
+// the fix rather than only naming the problem. See the empty state below.
+import { ChevronLeft, ChevronRight, Crosshair, HelpCircle, MapPin, X } from "lucide-react-native";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Dimensions, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useApp } from "../constants/AppState";
@@ -133,12 +122,16 @@ function demoRows(scope: BoardScope): BoardRow[] {
 }
 
 export default function LeaderboardSheet({
-  visible, scope, onScope, onClose,
+  visible, scope, onScope, onClose, onSetRegion,
 }: {
   visible: boolean;
   scope: BoardScope;
   onScope: (s: BoardScope) => void;
   onClose: () => void;
+  /** closes the sheet and lands them on Profile's country picker. Passed in
+      rather than routed from here, because this is a component and the tab
+      navigation belongs to the screen that owns it. */
+  onSetRegion: () => void;
 }) {
   const { T, userId, profile, devMode, streakDays, freeLocked } = useApp();
   const s = styles(T);
@@ -159,6 +152,11 @@ export default function LeaderboardSheet({
 
   const list = useRef<FlatList<BoardRow>>(null);
   const season = currentSeason();
+
+  /* no region means the Regional board can't exist for them — checked here
+     rather than relying on the error string, so the empty state can be
+     specific about the fix */
+  const noRegion = !devMode && scope === "regional" && !profile.region;
 
   /* ---------- the first page ---------- */
   const loadFirst = useCallback(async () => {
@@ -194,7 +192,13 @@ export default function LeaderboardSheet({
       return;
     }
 
-    if (!userId) { setLoading(false); return; }
+    /* nothing to fetch without a region — the empty state handles it */
+    if (!userId || noRegion) {
+      setRows([]);
+      setStanding(null);
+      setLoading(false);
+      return;
+    }
 
     const [{ rows: r, error }, { standing: st }] = await Promise.all([
       loadBoard({ scope, region: profile.region, offset: 0, meId: userId }),
@@ -207,7 +211,7 @@ export default function LeaderboardSheet({
     setOffset(r.length);
     setHasMore(r.length === PAGE_SIZE);
     setLoading(false);
-  }, [scope, userId, profile.region, devMode]);
+  }, [scope, userId, profile.region, devMode, noRegion]);
 
   useEffect(() => {
     if (visible) loadFirst();
@@ -411,7 +415,7 @@ export default function LeaderboardSheet({
 
                   {/* WHERE YOU STAND — the rank and the percentile together,
                       because the second is what makes the first bearable. */}
-                  {standing && (
+                  {standing && !noRegion && (
                     <View style={s.standing}>
                       <View style={{ flex: 1 }}>
                         <Text style={s.standingRank}>
@@ -450,6 +454,30 @@ export default function LeaderboardSheet({
                       <IsoMGlow size={72} />
                       <Text style={s.loadingText}>Working out the standings…</Text>
                     </View>
+                  ) : noRegion ? (
+                    /* ---------- NO REGION, AND A WAY OUT ----------
+                       This used to say "No region set on your profile yet" and
+                       stop there — naming the problem and leaving them to find
+                       the fix themselves, in a settings screen they may never
+                       have opened. The button closes the sheet and lands them
+                       ON the country picker. */
+                    <View style={s.loadingWrap}>
+                      <View style={s.regionIcon}>
+                        <MapPin size={26} color={T.green} />
+                      </View>
+                      <Text style={s.emptyTitle}>You haven't set your region</Text>
+                      <Text style={s.emptyText}>
+                        The Regional board ranks you against people in your own country — so MOTION
+                        needs to know which one. It takes a second, and your General and Total ranks
+                        don't change.
+                      </Text>
+
+                      <Tap onPress={() => { H.tap(); onSetRegion(); }} style={{ width: "100%", maxWidth: 260 }}>
+                        <View style={s.regionBtn}>
+                          <Text style={s.regionBtnText}>Set my region</Text>
+                        </View>
+                      </Tap>
+                    </View>
                   ) : problem ? (
                     <View style={s.loadingWrap}>
                       <Text style={s.emptyText}>{problem}</Text>
@@ -458,7 +486,7 @@ export default function LeaderboardSheet({
                     <View style={s.loadingWrap}>
                       <Text style={s.emptyText}>
                         {scope === "regional"
-                          ? "Nobody's logged in your country yet this season. Log a meal and you're first on the board."
+                          ? `Nobody's logged in ${profile.region} yet this season. Log a meal and you're first on the board.`
                           : "Nothing logged yet this season. Log a meal and you're on the board."}
                       </Text>
                     </View>
@@ -517,9 +545,7 @@ export default function LeaderboardSheet({
     EVERY ROW CARRIES ITS OWN RANK AND ITS OWN TIE COUNT. An earlier version
     printed the rank once per group and left the rest blank — tidier margin,
     wrong answer: someone forty-ninth in a tied group scrolls to their name to
-    find out where they stand, and a blank tells them nothing. Same for the tie
-    count: you should be able to see "1 · 50 tied here" against YOUR name
-    without scrolling up to find the top of the group.
+    find out where they stand, and a blank tells them nothing.
 
     THE NAME GLOWS IN THAT PERSON'S OWN TIER, not their rank's — someone can
     sit high on points and still be Red-hot because they skipped yesterday. */
@@ -626,7 +652,20 @@ const styles = (T: any) =>
 
     loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingHorizontal: 30 },
     loadingText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
+    emptyTitle: { fontSize: 16, color: T.text, fontFamily: FONTS.heading, textAlign: "center" },
     emptyText: { fontSize: 12.5, color: T.micro, fontFamily: FONTS.body, textAlign: "center", lineHeight: 19 },
+
+    /* the no-region state */
+    regionIcon: {
+      width: 58, height: 58, borderRadius: 19,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      alignItems: "center", justifyContent: "center",
+    },
+    regionBtn: {
+      backgroundColor: T.green, borderRadius: 13,
+      paddingVertical: 13, alignItems: "center", marginTop: 4,
+    },
+    regionBtnText: { fontSize: 14, color: T.ink, fontFamily: FONTS.headingMed },
 
     row: {
       flexDirection: "row", alignItems: "center", gap: 9,

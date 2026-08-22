@@ -7,7 +7,7 @@
 // scattered across screens because two dev controls that can disagree is
 // worse than none: the tier chips used to overwrite the real streak while the
 // calendar kept drawing real tiles, and neither screen looked obviously wrong.
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
   LogOut, Palette, Ruler, Scale, Shield, Vibrate, Watch,
@@ -87,6 +87,26 @@ export default function Profile() {
   const [view, setView] = useState<View_>(null);
   const [logoutOpen, setLogoutOpen] = useState(false);
 
+  /* ---------- ARRIVING FROM SOMEWHERE ELSE ----------
+     The leaderboard sends `?open=region` when someone has no region set and so
+     can't appear on the Regional board. It lands them on the country picker
+     itself rather than on a settings list to hunt through — the message that
+     names a problem should also carry the fix.
+
+     CLEARED IMMEDIATELY after reading: without that, every later tap on the
+     Profile tab would reopen the picker, because the stale parameter is still
+     sitting in the route. Same trap Stats hit with ?view=weight. */
+  const params = useLocalSearchParams<{ open?: string }>();
+  const [accountSub, setAccountSub] = useState<"main" | "region">("main");
+
+  useEffect(() => {
+    if (params.open === "region") {
+      setAccountSub("region");
+      setView("account");
+      router.setParams({ open: undefined });
+    }
+  }, [params.open]);
+
   /* dev seeding — `seedMsg` reports what happened, because these buttons write
      to the database and a silent button that touched real rows is unnerving */
   const [seedBusy, setSeedBusy] = useState(false);
@@ -121,6 +141,7 @@ export default function Profile() {
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
     setView(null);
+    setAccountSub("main");
     setLoading(false);
     setThemeOpen(false);
     setLogoutOpen(false);
@@ -313,7 +334,17 @@ export default function Profile() {
   }
 
   /* ---------- sub-screens ---------- */
-  if (view === "account") return <View style={s.screen}><AccountScreen onBack={back} /></View>;
+  if (view === "account") {
+    return (
+      <View style={s.screen}>
+        <AccountScreen
+          /* normally "main"; "region" when the leaderboard sent them here */
+          initialSub={accountSub}
+          onBack={() => { setAccountSub("main"); back(); }}
+        />
+      </View>
+    );
+  }
   if (view === "goal") return <View style={s.screen}><GoalScreen onBack={back} /></View>;
   if (view === "calories") return <View style={s.screen}><CaloriesScreen onBack={back} /></View>;
   if (view === "targetweight") return <View style={s.screen}><TargetWeightScreen onBack={back} /></View>;
@@ -511,9 +542,9 @@ export default function Profile() {
         {/* ================= DEV ONLY =================
             ONE master switch for every piece of fake data in the app. Turning
             it on shows a scripted streak here AND the demo history on the
-            calendar, so the whole app tells one consistent story — which is
-            what you need when showing someone the tier colours without them
-            logging for three weeks first.
+            calendar and Stats, so the whole app tells one consistent story —
+            which is what you need when showing someone the tier colours
+            without them logging for three weeks first.
 
             Turning it OFF is also the pre-launch check: if the app looks right
             with this off, nothing fake is left anywhere.

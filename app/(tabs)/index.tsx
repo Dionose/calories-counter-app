@@ -225,7 +225,7 @@ export default function Home() {
   const burned = 320;
 
   /* The base target from your plan, plus what you burned IF you asked for that
-     in onboarding. Showing only the sum made the hero look wrong after a
+     in Profile. Showing only the sum made the hero look wrong after a
      rebuild — the breakdown below the number is what makes it legible. */
   const base = plan.calories;
   const goal = base + (plan.addBurned ? burned : 0);
@@ -592,6 +592,18 @@ export default function Home() {
         scope={scope}
         onScope={setScope}
         onClose={() => setBoardOpen(false)}
+        /* ---------- NO REGION? GO AND SET ONE ----------
+           The sheet's empty state offers this. The NAVIGATION lives here
+           rather than inside the sheet, because the sheet is a component and
+           the tabs belong to this screen — and because a country picker opened
+           inside a modal over Home is one modal too many.
+
+           The delay lets the sheet finish closing first; without it the two
+           animations overlap and the picker appears mid-dismiss. */
+        onSetRegion={() => {
+          setBoardOpen(false);
+          setTimeout(() => router.push("/(tabs)/profile?open=region"), 220);
+        }}
       />
 
       {/* ---------- ONE MEAL, OPENED ----------
@@ -752,7 +764,7 @@ export default function Home() {
                     {plan.addBurned && (
                       <Text style={s.burnedNote}>
                         You asked MOTION to add burned calories back, so training days give you more to
-                        eat. Turn it off in Profile → Goals.
+                        eat. Turn it off in Profile → Daily calories.
                       </Text>
                     )}
                   </ScrollView>

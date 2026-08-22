@@ -2,11 +2,19 @@
 // Everything behind the Profile identity card: the account overview and its
 // six editors. Grouped in one file because they only exist for each other —
 // splitting them into seven would spread one flow across seven places.
+//
+// ⚠️ THE COUNTRY LIST LIVES IN constants/regions.ts NOW, not here. It used to
+// be a local array of thirty-five, and onboarding grew its own way of setting
+// a region from the phone's locale — which stored an ISO code ("CA") while
+// this screen stored a name ("Canada"). The leaderboard groups on that exact
+// string, so two people in the same country landed on two different Regional
+// boards depending on which path set their region. One list, one format.
 import { Check, Crown, Eye, EyeOff, Globe, Lock, Search } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
+import { COUNTRIES } from "../constants/regions";
 import { FONTS, ULT_COLORS, tierForStreak } from "../constants/theme";
 import AtSymbol from "./AtSymbol";
 import Avatar from "./Avatar";
@@ -21,18 +29,6 @@ export type AccountSub = "main" | "name" | "username" | "email" | "password" | "
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-/* A short list for now — the real one arrives with the backend, since region
-   decides which Regional leaderboard you're ranked on. */
-const COUNTRIES = [
-  "Canada", "United States", "United Kingdom", "Ireland", "Australia",
-  "New Zealand", "Nigeria", "Ghana", "Kenya", "South Africa",
-  "India", "Pakistan", "Bangladesh", "Philippines", "Indonesia",
-  "Germany", "France", "Spain", "Italy", "Netherlands",
-  "Sweden", "Norway", "Denmark", "Poland", "Portugal",
-  "Brazil", "Mexico", "Argentina", "Colombia", "Chile",
-  "Japan", "South Korea", "China", "Singapore", "UAE",
-];
 
 /* ---------- the Pro gate ---------- */
 function ProGate({ title, line, onBack }: { title: string; line: string; onBack: () => void }) {
@@ -132,7 +128,15 @@ function EditScreen({
   );
 }
 
-/* ---------- password ---------- */
+/* ---------- password ----------
+   ⚠️ THIS DOES NOT CHANGE THE PASSWORD YET. It validates, shows "saved" and
+   returns — nothing reaches Supabase Auth, so the password you sign in with is
+   unchanged.
+
+   The danger isn't someone breaking in; it's the FALSE ASSURANCE. Somebody who
+   thinks they've changed their password after sharing it, or after losing a
+   phone, is more exposed than somebody who knows they haven't. On the list to
+   fix, and it must not ship like this. */
 function PasswordScreen({ onBack }: { onBack: () => void }) {
   const { T } = useApp();
   const s = styles(T);
@@ -343,7 +347,12 @@ function DobScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-/* ---------- region ---------- */
+/* ---------- region ----------
+   The list comes from constants/regions.ts — the same array onboarding
+   converts the phone's locale through, so the two can't disagree. It's
+   alphabetical and covers the world; it used to be thirty-five countries in a
+   guessed-at popularity order, which meant anyone in Vietnam or Egypt had no
+   region at all and no way to set one. */
 function RegionScreen({ current, onBack, onSave }: { current: string; onBack: () => void; onSave: (v: string) => void }) {
   const { T } = useApp();
   const s = styles(T);
@@ -385,7 +394,11 @@ function RegionScreen({ current, onBack, onSave }: { current: string; onBack: ()
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 40 }}>
+      <ScrollView
+        contentContainerStyle={{ padding: 16, paddingTop: 12, paddingBottom: 40 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
         <View style={s.group}>
           {list.map((c, i) => {
             const on = c === sel;
@@ -410,9 +423,19 @@ function RegionScreen({ current, onBack, onSave }: { current: string; onBack: ()
 }
 
 /* ================= the account overview ================= */
-export default function AccountScreen({ onBack }: { onBack: () => void }) {
+export default function AccountScreen({
+  onBack, initialSub = "main",
+}: {
+  onBack: () => void;
+  /* which editor to open on. Normally "main" — the leaderboard passes
+     "region" when someone with no region set taps through from a Regional
+     board they can't appear on, landing them exactly where they need to be
+     rather than on a settings list to hunt through. A message that names a
+     problem should carry the fix with it. */
+  initialSub?: AccountSub;
+}) {
   const { T, freeLocked, profile, updateProfile, streakDays } = useApp();
-  const [sub, setSub] = useState<AccountSub>("main");
+  const [sub, setSub] = useState<AccountSub>(initialSub);
   const [photoOpen, setPhotoOpen] = useState(false);
   const s = styles(T);
 
@@ -476,7 +499,9 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
   if (sub === "region") {
     return (
       <RegionScreen
-        current={profile.region || "Canada"}
+        /* no default country — an empty region should look empty, so the user
+           picks their own rather than silently sitting on Canada's board */
+        current={profile.region || ""}
         onBack={back}
         onSave={(v) => updateProfile({ region: v })}
       />
@@ -501,7 +526,9 @@ export default function AccountScreen({ onBack }: { onBack: () => void }) {
     { anim: "email", label: "Email", value: profile.email || "—", to: "email" },
     { anim: "password", label: "Password", value: "••••••••••", mono: true, to: "password" },
     { anim: "cake", label: "Date of birth", value: dobLabel, note: "birthday", to: "dob" },
-    { anim: "region", label: "Region", value: profile.region || "—", note: "leaderboards", to: "region" },
+    /* "Not set" rather than a dash — a missing region means no Regional
+       leaderboard at all, which is worth prompting rather than shrugging at */
+    { anim: "region", label: "Region", value: profile.region || "Not set", note: "leaderboards", to: "region" },
   ];
 
   return (

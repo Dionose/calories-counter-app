@@ -25,8 +25,7 @@
 // BIRTHDAY WHEEL solid — a TouchableWithoutFeedback covering the screen claims
 // the touch before any ScrollView inside it can, and the outer handler always
 // wins. Tapping the background already dismisses the keyboard on its own:
-// that's what keyboardShouldPersistTaps="handled" does. The wrapper was
-// solving a problem that didn't exist and created a real one.
+// that's what keyboardShouldPersistTaps="handled" does.
 import { useRouter } from "expo-router";
 import { AlertTriangle, Check, ChevronLeft, Crown, Eye, EyeOff, Sparkles } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +36,7 @@ import IsoM, { IsoMGlow } from "../components/IsoM";
 import TravelBorder from "../components/TravelBorder";
 import { useApp } from "../constants/AppState";
 import { signIn, signUp } from "../constants/auth";
+import { nameForIso } from "../constants/regions";
 import { DARK, FONTS } from "../constants/theme";
 
 const T = DARK;
@@ -136,6 +136,13 @@ const HEARD_CHOICES: Choice[] = [
    groups on, and asking a question the phone can already answer is exactly
    the kind of screen this pass exists to remove.
 
+   ⚠️ RETURNS A COUNTRY NAME, NOT A CODE. The first version stored the phone's
+   raw ISO code — "CA" — while Profile → Region stored "Canada". The
+   leaderboard groups on the exact string, so two people in the same country
+   ended up on two DIFFERENT Regional boards depending on which path set their
+   region. Invisible with one test user; broken the moment real people arrive
+   on both paths. Both sides now go through constants/regions.ts.
+
    ⚠️ NO EXTRA PACKAGE, and that's deliberate. expo-localization is the obvious
    tool and it FAILED here: it ships a native module, and a native module only
    exists in the app after a full EAS rebuild. Installing it gave
@@ -158,8 +165,12 @@ function deviceRegion(): string | null {
     /* "en_CA" → CA, "en-GB" → GB */
     const parts = String(raw).replace("-", "_").split("_");
     const code = parts.length > 1 ? parts[1] : null;
+    if (!code || code.length !== 2) return null;
 
-    return code && code.length === 2 ? code.toUpperCase() : null;
+    /* and CA → "Canada". NULL for a country not on the list, so they pick one
+       in Profile rather than being filed under a region nobody else can be
+       in. */
+    return nameForIso(code);
   } catch {
     return null;
   }
@@ -314,6 +325,8 @@ export default function Onboarding() {
         paceRate: PACE_RATE[answers.pace] || 0.5,
         goalWeeks: tl.weeks,
         activity: answers.activity,
+        /* a COUNTRY NAME — see deviceRegion above. Undefined when the phone's
+           country isn't on our list, so Profile prompts for it. */
         region: region || undefined,
         heardFrom: answers.heard,
         isPro: pro,
@@ -619,8 +632,7 @@ function UnitToggle({ options, value, onPick, compact }: { options: string[]; va
 
    NO returnKeyType ON THE NUMBER FIELDS. It was briefly set to "done", which
    put a bulky Done key on a numeric keypad — not something iOS apps do, and
-   it looked wrong. keyboardDismissMode="on-drag" covers it instead: start
-   scrolling and the keyboard gets out of the way. */
+   it looked wrong. keyboardDismissMode="on-drag" covers it instead. */
 function BodyStep({ value, onChange, onNext }: any) {
   const v = value || { hUnit: "cm", cm: "", ft: "", inch: "", wUnit: "kg", weight: "" };
   const set = (patch: any) => onChange({ ...v, ...patch });
