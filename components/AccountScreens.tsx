@@ -9,16 +9,18 @@
 // this screen stored a name ("Canada"). The leaderboard groups on that exact
 // string, so two people in the same country landed on two different Regional
 // boards depending on which path set their region. One list, one format.
-import { Check, Crown, Eye, EyeOff, Globe, Lock, Search } from "lucide-react-native";
+import { AlertTriangle, Check, Crown, Eye, EyeOff, Globe, Lock, Search } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useApp } from "../constants/AppState";
 import * as H from "../constants/haptics";
+import { deleteAvatar, uploadAvatar } from "../constants/photos";
 import { COUNTRIES } from "../constants/regions";
 import { FONTS, ULT_COLORS, tierForStreak } from "../constants/theme";
 import AtSymbol from "./AtSymbol";
 import Avatar from "./Avatar";
 import BackRow from "./BackRow";
+import CameraSheet from "./CameraSheet";
 import GradientText from "./GradientText";
 import Icon, { IconName } from "./Icon";
 import PhotoSheet from "./PhotoSheet";
@@ -434,9 +436,22 @@ export default function AccountScreen({
      problem should carry the fix with it. */
   initialSub?: AccountSub;
 }) {
-  const { T, freeLocked, profile, updateProfile, streakDays } = useApp();
+  const { T, freeLocked, profile, updateProfile, streakDays, userId, setAvatar, clearAvatar } = useApp();
   const [sub, setSub] = useState<AccountSub>(initialSub);
   const [photoOpen, setPhotoOpen] = useState(false);
+
+  /* ---------- THE PROFILE PHOTO ----------
+     The camera opens from the TOP and front-facing — you hold the phone up to
+     photograph your own face, so a preview pinned near the bottom would mean
+     watching one part of the screen while your face is framed in another.
+
+     Uploading is the slow part, so it gets its own visible state. A silent
+     pause after the shutter, with the old picture still showing, reads as the
+     photo having failed. */
+  const [camOpen, setCamOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [photoErr, setPhotoErr] = useState<string | null>(null);
+
   const s = styles(T);
 
   const tier = tierForStreak(streakDays);
@@ -445,6 +460,42 @@ export default function AccountScreen({
 
   const handle = profile.handle || "you";
   const back = () => setSub("main");
+
+  /** shared by the camera and the library — both hand back a local file */
+  const saveNewPhoto = async (uri?: string) => {
+    setCamOpen(false);
+    if (!uri || !userId) return;
+
+    setPhotoErr(null);
+    setUploading(true);
+
+    const { path, error } = await uploadAvatar(userId, uri);
+
+    setUploading(false);
+
+    if (error || !path) {
+      /* say so rather than silently keeping the old picture — someone who
+         just took a photo and sees no change assumes the app is broken */
+      setPhotoErr(error || "Couldn't save that photo. Try again?");
+      H.warn();
+      return;
+    }
+
+    /* the local file shows INSTANTLY while the signed URL is fetched — see
+       setAvatar in AppState. Without it there's a visible gap where the old
+       photo, or initials, sits there after a successful upload. */
+    setAvatar(path, uri);
+    H.success();
+  };
+
+  /* removing deletes the FILE as well as the reference. Leaving the image in
+     the bucket after someone asked for it to be gone isn't "removed" in any
+     sense they'd recognise. */
+  const removePhoto = async () => {
+    clearAvatar();
+    if (userId) await deleteAvatar(userId);
+    H.tick();
+  };
 
   if (sub === "name") {
     return (
@@ -539,6 +590,22 @@ export default function AccountScreen({
         <View style={s.headWrap}>
           <Avatar size={72} badge accent={accent} onPress={() => { H.tap(); setPhotoOpen(true); }} />
 
+          {/* the upload, said out loud. It's a second or two on a good
+              connection and much longer on a bad one. */}
+          {uploading && (
+            <View style={s.uploadRow}>
+              <ActivityIndicator size="small" color={T.green} />
+              <Text style={s.uploadText}>Saving your photo…</Text>
+            </View>
+          )}
+
+          {photoErr && !uploading && (
+            <View style={s.photoErrRow}>
+              <AlertTriangle size={13} color={T.gold} />
+              <Text style={s.photoErrText}>{photoErr}</Text>
+            </View>
+          )}
+
           {isUlt && !freeLocked ? (
             <View style={{ marginTop: 12 }}>
               <GradientText text={`@${handle}`} colors={ULT_COLORS} fontSize={20} fontFamily={FONTS.heading} />
@@ -592,10 +659,29 @@ export default function AccountScreen({
         <Text style={s.memberSince}>Member since {profile.memberSince || "today"}</Text>
       </ScrollView>
 
+      {/* the chooser. It closes itself before calling any of these, which is
+          what keeps the camera from opening on top of it — two modals at once
+          leaves iOS half-presenting the second, and the invisible one swallows
+          every tap on the screen behind. */}
       <PhotoSheet
         visible={photoOpen}
         onClose={() => setPhotoOpen(false)}
-        onRemove={() => updateProfile({ photoUri: null })}
+        onTakePhoto={() => setCamOpen(true)}
+        /* the library goes through the SAME camera widget, which already knows
+           how to open the picker — a second copy of that code here would be
+           two places to fix when the picker API next changes */
+        onPickLibrary={() => setCamOpen(true)}
+        onRemove={removePhoto}
+      />
+
+      <CameraSheet
+        visible={camOpen}
+        caption="Take a photo"
+        /* TOP, and front-facing. You hold the phone up at your own face. */
+        anchor="top"
+        startFacing="front"
+        onClose={() => setCamOpen(false)}
+        onCapture={saveNewPhoto}
       />
     </View>
   );
@@ -609,6 +695,15 @@ const styles = (T: any) =>
     bigHandle: { fontSize: 20, fontFamily: FONTS.heading, marginTop: 12 },
     privateRow: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 4 },
     privateText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
+
+    uploadRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
+    uploadText: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
+    photoErrRow: {
+      flexDirection: "row", alignItems: "center", gap: 7, marginTop: 12,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
+      borderColor: `${T.gold}55`, borderRadius: 11, paddingVertical: 8, paddingHorizontal: 11,
+    },
+    photoErrText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
 
     group: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, overflow: "hidden" },
     divider: { height: 1, backgroundColor: T.border, marginLeft: 56 },

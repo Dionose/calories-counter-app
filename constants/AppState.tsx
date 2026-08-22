@@ -4,6 +4,7 @@
 //   - theme               (dark / light)
 //   - openPaywall()       (any screen can call this to show the paywall)
 //   - plan + profile      (the user's calorie target, macros, weight, goal)
+//   - photoUrl            (a VIEWABLE url for the stored profile photo)
 //   - streakDays          (drives the M colour, the flame, the Home streak chip
 //                          and the calendar tiers from one value)
 //   - settings            (the Profile toggles)
@@ -20,6 +21,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { currentUser } from "./auth";
 import { currentStreak } from "./meals";
+import { avatarUrl, isStoragePath } from "./photos";
 import { loadProfile, saveProfile } from "./profile";
 import { supabase } from "./supabase";
 import { DARK, LIGHT } from "./theme";
@@ -46,7 +48,18 @@ export type UserProfile = {
   email: string;
   region: string;        // decides which Regional leaderboard they're on
   memberSince: string;
-  photoUri: string | null;   // profile picture, once they set one
+
+  /* ⚠️ THIS HOLDS A BUCKET PATH, not a URL — "<user-id>/avatar.jpg".
+
+     The storage bucket is private, so the only displayable form is a signed
+     URL, and those expire. Storing one here would mean a database full of
+     links that stop working, and a profile photo that silently becomes
+     initials a week later.
+
+     So the PATH is what persists, and `photoUrl` below is what gets rendered.
+     Anything reading this for display is a bug — see Avatar.tsx. */
+  photoUri: string | null;
+
   sex: "male" | "female";    // the BMR formula's constant differs by ~166 cal
   dobDay: number;
   dobMonth: number;      // 0-indexed, matching Date
@@ -198,6 +211,17 @@ type AppStateShape = {
   setDailyCalories: (calories: number) => void;          // Profile → Daily calories
   resetToRecommended: () => void;                        // Profile → "Reset to recommended"
   recommendedCalories: number;                           // what onboarding worked out
+
+  /* ---------- THE PROFILE PHOTO ----------
+     `photoUrl` is what Avatar renders. It's a signed URL minted from the path
+     in profile.photoUri, and it's kept here rather than resolved inside Avatar
+     because Avatar appears in five places at once — five components each
+     signing the same file on every render would be absurd. */
+  photoUrl: string | null;
+  /** after a new photo is uploaded: the stored path, plus the local file to
+      show immediately while the signed URL is fetched */
+  setAvatar: (path: string, localUri?: string) => void;
+  clearAvatar: () => void;
 };
 
 const AppStateContext = createContext<AppStateShape | null>(null);
@@ -237,6 +261,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
   // what onboarding originally recommended — so "reset to recommended" can undo edits
   const [recommended, setRecommended] = useState<Plan>(DEFAULT_PLAN);
+
+  /* the displayable form of profile.photoUri — see the type above */
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   /* ---------- LOAD ON LAUNCH ----------
      Ask Supabase who's signed in — the session came back from AsyncStorage, so
@@ -280,6 +307,31 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  /* ---------- RESOLVE THE PROFILE PHOTO ----------
+     A stored bucket path is not displayable; it has to be signed first. This
+     runs whenever the path changes — on load, and again after a new upload.
+
+     A value that's ALREADY displayable (a local file straight from the camera,
+     or a URL) is passed through untouched. That's what makes a new photo
+     appear instantly: setAvatar puts the local file here, and the signed URL
+     quietly replaces it a moment later. */
+  useEffect(() => {
+    const stored = profile.photoUri;
+
+    if (!stored) { setPhotoUrl(null); return; }
+    if (!isStoragePath(stored)) { setPhotoUrl(stored); return; }
+
+    let cancelled = false;
+    (async () => {
+      /* cache-busted: the filename never changes, so without this a replaced
+         photo keeps rendering the old one */
+      const { url } = await avatarUrl(stored, true);
+      if (!cancelled && url) setPhotoUrl(url);
+    })();
+
+    return () => { cancelled = true; };
+  }, [profile.photoUri]);
+
   /* ---------- THE STREAK ----------
      COMPUTED from logged days, never stored. A stored counter has to be
      updated correctly on every save, every delete, and every timezone edge —
@@ -315,8 +367,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
      sign-out → sign-in cycle nothing re-fetched, and the app showed
      placeholder numbers while the real row sat in the database.
 
-     SIGNING OUT clears back to defaults — leaving the last user's weight
-     visible for whoever signs in next would be a genuine privacy leak. */
+     SIGNING OUT clears back to defaults — leaving the last user's weight or
+     FACE visible for whoever signs in next would be a genuine privacy leak. */
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
       const id = session?.user?.id ?? null;
@@ -326,6 +378,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         setProfile(DEFAULT_PROFILE);
         setPlan(DEFAULT_PLAN);
         setRecommended(DEFAULT_PLAN);
+        setPhotoUrl(null);
         setIsPro(false);
         setRealStreak(0);
         return;
@@ -400,6 +453,29 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     });
   }, [userId]);
 
+  /* ---------- A NEW PROFILE PHOTO ----------
+     The PATH is what's saved; the local file is shown immediately so the face
+     appears the instant the camera closes rather than after a round trip. The
+     effect above then swaps in the signed URL, which is the same image — so
+     there's nothing to see. */
+  const setAvatar = useCallback((path: string, localUri?: string) => {
+    if (localUri) setPhotoUrl(localUri);
+    setProfile((p) => {
+      const next = { ...p, photoUri: path };
+      if (userId) saveProfile(userId, next);
+      return next;
+    });
+  }, [userId]);
+
+  const clearAvatar = useCallback(() => {
+    setPhotoUrl(null);
+    setProfile((p) => {
+      const next = { ...p, photoUri: null };
+      if (userId) saveProfile(userId, next);
+      return next;
+    });
+  }, [userId]);
+
   /* Toggle a plan flag without touching the calorie target. `addBurned` is the
      only one so far — flipped from Profile → Daily calories, and read by Home
      to decide whether today's goal includes what you burned.
@@ -466,8 +542,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       setDailyCalories,
       resetToRecommended,
       recommendedCalories: recommended.calories,
+      photoUrl,
+      setAvatar,
+      clearAvatar,
     }),
-    [userId, loading, devMode, toggleDevMode, isPro, themeMode, T, paywallOpen, paywallVariant, streakDays, refreshStreak, settings, tabResetKey, plan, profile, recommended, togglePro, toggleTheme, openPaywall, closePaywall, setSetting, resetTab, savePlan, updateProfile, updatePlanFlag, setDailyCalories, resetToRecommended]
+    [userId, loading, devMode, toggleDevMode, isPro, themeMode, T, paywallOpen, paywallVariant, streakDays, refreshStreak, settings, tabResetKey, plan, profile, recommended, photoUrl, setAvatar, clearAvatar, togglePro, toggleTheme, openPaywall, closePaywall, setSetting, resetTab, savePlan, updateProfile, updatePlanFlag, setDailyCalories, resetToRecommended]
   );
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;

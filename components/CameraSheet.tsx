@@ -1,8 +1,19 @@
 // components/CameraSheet.tsx
 // The capture widget. NOT a full screen — a card that rises over whatever
-// screen opened it, sitting ~20% up from the bottom with the hub still visible
-// behind. Used everywhere in the app that needs a camera: meal logging,
-// barcode scanning, and the profile photo.
+// screen opened it, with the app still visible behind. Used everywhere in the
+// app that needs a camera: meal logging, barcode scanning, and now the profile
+// photo.
+//
+// WHERE IT SITS DEPENDS ON WHAT IT'S POINTING AT. `anchor` decides:
+//
+//   "bottom" (the default) — a plate on a table. You hold the phone over the
+//     food and look down, so the widget sits low and your thumb reaches the
+//     shutter without shifting your grip.
+//
+//   "top" — your own face. You hold the phone UP and look at it straight on,
+//     and a preview pinned near the bottom means watching one part of the
+//     screen while your face is framed in another. It also gets a taller
+//     preview, because a portrait needs vertical room that a plate doesn't.
 //
 // THE CAMERA IS REAL NOW. expo-camera needs a development build, which is why
 // this was a gradient placeholder for so long. Three ways in:
@@ -26,7 +37,12 @@ import Tap from "./Tap";
 import TravelBorder from "./TravelBorder";
 
 const { height: SCREEN_H } = Dimensions.get("window");
+
 const PREVIEW_H = 300;
+/* TALLER FOR A FACE. A plate is wide and shallow; a head and shoulders needs
+   vertical room, and 300px crops people at the chin on a phone held at arm's
+   length. */
+const PREVIEW_H_TALL = 380;
 
 /* the formats worth reading. Food packaging is EAN-13 almost everywhere and
    UPC-A in North America; the rest are here because they cost nothing to
@@ -133,7 +149,9 @@ function RecDot({ T }: { T: any }) {
 }
 
 export default function CameraSheet({
-  visible, mode = "photo", caption, locked, showFreeBar, onClose, onCapture, onBarcode,
+  visible, mode = "photo", caption, locked, showFreeBar,
+  anchor = "bottom", startFacing = "back", hideGallery,
+  onClose, onCapture, onBarcode,
 }: {
   visible: boolean;
   mode?: "photo" | "barcode";
@@ -143,6 +161,17 @@ export default function CameraSheet({
   locked?: boolean;
   /** the amber "1 photo left" bar, shown to free users BEFORE they shoot */
   showFreeBar?: boolean;
+  /** where the widget sits, and how tall the preview is — see the note at the
+      top of this file. Default is bottom, which is every existing caller. */
+  anchor?: "bottom" | "top";
+  /** which camera to open on. A profile photo wants the front one; opening on
+      the back camera means everyone's first sight of this screen is their own
+      ceiling, followed by hunting for the flip button. */
+  startFacing?: "back" | "front";
+  /** hide the gallery button. The profile flow offers "choose from library"
+      as its own option on the sheet before this opens, so showing it again
+      here is a second door to the same room. */
+  hideGallery?: boolean;
   onClose: () => void;
   /** the captured or picked image's URI */
   onCapture: (uri?: string) => void;
@@ -150,12 +179,13 @@ export default function CameraSheet({
   onBarcode?: (code: string) => void;
 }) {
   const { T, openPaywall } = useApp();
-  const s = styles(T);
+  const top = anchor === "top";
+  const s = styles(T, top);
   const barcode = mode === "barcode";
 
   const [permission, requestPermission] = useCameraPermissions();
   const camRef = useRef<CameraView>(null);
-  const [facing, setFacing] = useState<"back" | "front">("back");
+  const [facing, setFacing] = useState<"back" | "front">(startFacing);
   const [taking, setTaking] = useState(false);
 
   /* one scan per opening. Without this the scanner fires continuously while
@@ -173,7 +203,12 @@ export default function CameraSheet({
       useNativeDriver: true,
     }).start();
 
-    if (visible) scanned.current = false;
+    if (visible) {
+      scanned.current = false;
+      /* back to the requested camera each time — someone who flipped to the
+         front last time shouldn't have their next meal photo be a selfie */
+      setFacing(startFacing);
+    }
   }, [visible]);
 
   /* Ask at the moment the camera opens, not on mount. Requesting access to
@@ -185,7 +220,12 @@ export default function CameraSheet({
     }
   }, [visible, permission?.granted]);
 
-  const translateY = rise.interpolate({ inputRange: [0, 1], outputRange: [SCREEN_H * 0.5, 0] });
+  /* a top-anchored widget drops DOWN into place; a bottom one rises up. Coming
+     from the wrong direction reads as the animation being broken. */
+  const translateY = rise.interpolate({
+    inputRange: [0, 1],
+    outputRange: [top ? -SCREEN_H * 0.4 : SCREEN_H * 0.5, 0],
+  });
   const scale = rise.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
 
   /* THE REAL SHUTTER. quality 0.9 rather than 1: the difference is invisible
@@ -257,6 +297,7 @@ export default function CameraSheet({
   };
 
   const canShowCamera = permission?.granted && !locked;
+  const showGallery = !hideGallery;
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -371,9 +412,15 @@ export default function CameraSheet({
                   </>
                 ) : (
                   <>
-                    <Pressable onPress={pickFromGallery} style={s.sideBtn}>
-                      <ImageIcon size={19} color="#FFFFFF" />
-                    </Pressable>
+                    {showGallery ? (
+                      <Pressable onPress={pickFromGallery} style={s.sideBtn}>
+                        <ImageIcon size={19} color="#FFFFFF" />
+                      </Pressable>
+                    ) : (
+                      /* keeps the shutter centred when the gallery is hidden —
+                         an off-centre shutter looks like a layout fault */
+                      <View style={s.sideBtn} />
+                    )}
 
                     <Shutter onPress={shoot} busy={taking || !canShowCamera} />
 
@@ -432,16 +479,18 @@ const s0 = StyleSheet.create({
   },
 });
 
-const styles = (T: any) =>
+const styles = (T: any, top: boolean) =>
   StyleSheet.create({
-    /* the widget floats over a dimmed screen, 20% up from the bottom */
+    /* the widget floats over a dimmed screen — low for a plate, high for a
+       face. See the note at the top of the file. */
     backdropWrap: {
       flex: 1,
       backgroundColor: "rgba(0,0,0,0.55)",
       alignItems: "center",
-      justifyContent: "flex-end",
+      justifyContent: top ? "flex-start" : "flex-end",
       paddingHorizontal: 18,
-      paddingBottom: SCREEN_H * 0.2,
+      paddingTop: top ? SCREEN_H * 0.07 : 0,
+      paddingBottom: top ? 0 : SCREEN_H * 0.2,
     },
     widgetWrap: { width: "100%", maxWidth: 344 },
     inner: { borderRadius: 23, overflow: "hidden", backgroundColor: "#000000" },
@@ -462,7 +511,10 @@ const styles = (T: any) =>
     freeBarText: { flex: 1, fontSize: 10.5, color: "rgba(255,255,255,0.92)", fontFamily: FONTS.body, lineHeight: 14.5 },
     freeBarCta: { fontSize: 10.5, color: T.gold, fontFamily: FONTS.headingMed },
 
-    preview: { height: PREVIEW_H, backgroundColor: "#000000", overflow: "hidden", position: "relative" },
+    preview: {
+      height: top ? PREVIEW_H_TALL : PREVIEW_H,
+      backgroundColor: "#000000", overflow: "hidden", position: "relative",
+    },
 
     permBtn: {
       backgroundColor: T.green, borderRadius: 11,
