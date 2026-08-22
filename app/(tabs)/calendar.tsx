@@ -11,6 +11,7 @@ import StreakReel from "../../components/StreakReel";
 import StreakWarnCard from "../../components/StreakWarnCard";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
+import ViewTransition from "../../components/ViewTransition";
 import { useApp } from "../../constants/AppState";
 import { loadDay, loadDayTotals, Meal } from "../../constants/meals";
 import { signedUrls } from "../../constants/photos";
@@ -209,6 +210,16 @@ export default function Calendar() {
   const [month, setMonth] = useState(TODAY_M);
   const [day, setDay] = useState<number | null>(null);
 
+  /* ---------- WHICH WAY ARE WE GOING? ----------
+     1 opening a day, -1 coming back to the month. Without it the animation
+     runs the same direction both ways, and a back tap that slides forward
+     says you've gone deeper when you haven't. */
+  const [dir, setDir] = useState(1);
+  /* these only move the SELECTION and the direction. openDay() further down
+     is the one that also fetches the day's meals — it calls this first. */
+  const selectDay = (d: number) => { setDir(1); setDay(d); };
+  const closeDay = () => { setDir(-1); setDay(null); };
+
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pY, setPY] = useState(TODAY_Y);
   const [pM, setPM] = useState(TODAY_M);
@@ -320,7 +331,7 @@ export default function Calendar() {
 
   /* open a day — the demo answers instantly, real data takes a query */
   const openDay = async (d: number) => {
-    setDay(d);
+    selectDay(d);
     setPhotoUrls({});
     if (devMode) { setDayMeals([]); return; }
     await loadDayMeals(d);
@@ -337,12 +348,12 @@ export default function Calendar() {
   }, [day, loadDayMeals, loadHistory, refreshStreak]);
 
   const prevMonth = () => {
-    setDay(null);
+    closeDay();
     if (month === 0) { setMonth(11); setYear((y) => y - 1); }
     else setMonth((m) => m - 1);
   };
   const nextMonth = () => {
-    setDay(null);
+    closeDay();
     if (month === 11) { setMonth(0); setYear((y) => y + 1); }
     else setMonth((m) => m + 1);
   };
@@ -367,14 +378,14 @@ export default function Calendar() {
     if (logged.has(key(pY, pM, d)) && !isFuture(pY, pM, d)) {
       setTimeout(() => openDay(d), 0);
     } else {
-      setDay(null);
+      closeDay();
     }
   };
 
   const jumpToday = () => {
     setYear(TODAY_Y);
     setMonth(TODAY_M);
-    setDay(null);
+    closeDay();
     setPickerOpen(false);
   };
 
@@ -496,10 +507,34 @@ export default function Calendar() {
     const total = rows.reduce((sum, m) => sum + m.cal, 0);
     const diff = goal - total;
 
+    /* ---------- THE DAY'S MACROS ----------
+       Summed from every ITEM of every meal, not from the meal rows above —
+       those carry calories only.
+
+       The day card showed calories and nothing else, while every individual
+       meal sheet showed protein, carbs and fat. So the breakdown existed
+       everywhere except the one place you'd look to compare a whole day
+       against your plan. */
+    const dayMacros = (dayLoading ? [] : dayMeals).reduce(
+      (acc, m) => {
+        m.items.forEach((it) => {
+          acc.p += it.protein || 0;
+          acc.c += it.carbs || 0;
+          acc.f += it.fat || 0;
+        });
+        return acc;
+      },
+      { p: 0, c: 0, f: 0 }
+    );
+
     return (
       <View style={s.screen}>
+        {/* ⚠️ THE DAY VIEW ISN'T A ROUTE — it's this same screen with a date
+            selected, so the router has nothing to animate and it used to snap
+            into place. See components/ViewTransition.tsx. */}
+        <ViewTransition viewKey={`day-${day}`} direction={dir}>
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-          <Pressable onPress={() => setDay(null)} style={s.backRow} hitSlop={10}>
+          <Pressable onPress={closeDay} style={s.backRow} hitSlop={10}>
             <ChevronLeft size={22} color={T.text} />
             <Text style={s.backTitle}>{MSHORT[month]} {day}, {year}</Text>
           </Pressable>
@@ -622,9 +657,30 @@ export default function Calendar() {
                   {Math.abs(diff)} {diff >= 0 ? "under" : "over"}
                 </Text>
               </View>
+
+              {/* AGAINST THE PLAN'S TARGETS, not bare grams. "63g carbs" says
+                  nothing on its own; "63 / 210 g" is the whole point of having
+                  a target. Only shown once something is logged — three zeros
+                  over three targets is noise on an empty day. */}
+              {total > 0 && (
+                <View style={s.macroRow}>
+                  {[
+                    { label: "Protein", v: dayMacros.p, t: plan.protein, c: T.green },
+                    { label: "Carbs", v: dayMacros.c, t: plan.carbs, c: T.gold },
+                    { label: "Fat", v: dayMacros.f, t: plan.fat, c: T.orange },
+                  ].map((m) => (
+                    <View key={m.label} style={s.macroTile}>
+                      <Text style={[s.macroNum, { color: m.c }]}>{Math.round(m.v)}g</Text>
+                      <Text style={s.macroTarget}>of {m.t}g</Text>
+                      <Text style={s.macroLabel}>{m.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
           </TravelBorder>
         </ScrollView>
+        </ViewTransition>
 
         {/* one meal, opened — same sheet Home uses */}
         <MealSheet
@@ -643,6 +699,9 @@ export default function Calendar() {
 
   return (
     <View style={s.screen}>
+      {/* the month gets one too, so coming BACK from a day slides in from the
+          left rather than snapping */}
+      <ViewTransition viewKey="month" direction={dir}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
         <PageHeader
           title="Calendar"
@@ -733,6 +792,7 @@ export default function Calendar() {
           <StreakWarnCard daysLeft={daysLeft} fadeDate={fadeDate} onTap={() => setReelOpen(true)} />
         )}
       </ScrollView>
+      </ViewTransition>
 
       <StreakReel visible={reelOpen} onClose={() => setReelOpen(false)} />
 
@@ -893,6 +953,16 @@ const styles = (T: any) =>
       borderTopWidth: 1, borderTopColor: T.border,
     },
     openText: { fontSize: 10.5, color: T.green, fontFamily: FONTS.headingMed },
+
+    macroRow: { flexDirection: "row", gap: 8, marginTop: 16 },
+    macroTile: {
+      flex: 1, alignItems: "center",
+      backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border,
+      borderRadius: 12, paddingVertical: 11,
+    },
+    macroNum: { fontSize: 16, fontFamily: FONTS.heading },
+    macroTarget: { fontSize: 9.5, color: T.micro, fontFamily: FONTS.body, marginTop: 1 },
+    macroLabel: { fontSize: 9, color: T.sub, fontFamily: FONTS.body, marginTop: 3, textTransform: "uppercase", letterSpacing: 0.5 },
 
     totalRow: { flexDirection: "row", alignItems: "baseline", gap: 8, marginTop: 6 },
     totalBig: { fontSize: 34, color: T.text, fontFamily: FONTS.heading },

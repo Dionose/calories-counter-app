@@ -32,6 +32,7 @@ import { IsoMGlow } from "../../components/IsoM";
 import PageHeader from "../../components/PageHeader";
 import Tap from "../../components/Tap";
 import TravelBorder from "../../components/TravelBorder";
+import ViewTransition from "../../components/ViewTransition";
 import WeighInSheet from "../../components/WeighInSheet";
 import WeightChart from "../../components/WeightChart";
 import { useApp } from "../../constants/AppState";
@@ -140,6 +141,14 @@ export default function Stats() {
   const params = useLocalSearchParams<{ view?: string }>();
   const [view, setView] = useState<View_>(params.view === "weight" ? "weight" : null);
 
+  /* ---------- WHICH WAY ARE WE GOING? ----------
+     1 opening a detail view, -1 back to the summary. Without it the animation
+     runs the same direction both ways, and a back tap that slides forward
+     says you've gone deeper when you haven't. */
+  const [dir, setDir] = useState(1);
+  const go = (v: View_) => { setDir(1); setView(v); };
+  const back = () => { setDir(-1); setView(null); };
+
   /* The tab may already be mounted from an earlier visit, in which case the
      useState above never runs again — so react to the parameter arriving too.
      It's CLEARED straight after: without that, every later tap on the Stats
@@ -147,6 +156,7 @@ export default function Stats() {
      sitting in the route. */
   useEffect(() => {
     if (params.view === "weight") {
+      setDir(1);
       setView("weight");
       router.setParams({ view: undefined });
     }
@@ -300,6 +310,7 @@ export default function Stats() {
   const didMount = useRef(false);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
+    setDir(-1);
     setView(null);
     setWeighOpen(false);
   }, [tabResetKey]);
@@ -518,8 +529,12 @@ export default function Stats() {
     if (!connected) {
       return (
         <View style={s.screen}>
+          {/* ⚠️ THESE AREN'T ROUTES — Stats swaps a `view` value and
+              re-renders, so the router has nothing to animate and every detail
+              view used to snap into place. See components/ViewTransition.tsx. */}
+          <ViewTransition viewKey="steps-connect" direction={dir}>
           <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-            <BackHead title="Steps" onBack={() => setView(null)} />
+            <BackHead title="Steps" onBack={back} />
             <ConnectPrompt
               T={T}
               s={s}
@@ -529,6 +544,7 @@ export default function Stats() {
               onConnect={connectHealth}
             />
           </ScrollView>
+          </ViewTransition>
         </View>
       );
     }
@@ -537,8 +553,9 @@ export default function Stats() {
 
     return (
       <View style={s.screen}>
+        <ViewTransition viewKey="steps" direction={dir}>
         <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
-          <BackHead title={`Steps · this ${rangeWord}`} onBack={() => setView(null)} />
+          <BackHead title={`Steps · this ${rangeWord}`} onBack={back} />
 
           <View style={s.summaryRow}>
             <View style={s.summaryCard}>
@@ -588,6 +605,7 @@ export default function Stats() {
               : `About ${stepsPerDay.toLocaleString()} steps a day across the ${rangeWord}. This includes days before you installed MOTION — your phone was already counting.`}
           </Text>
         </ScrollView>
+        </ViewTransition>
       </View>
     );
   }
@@ -595,22 +613,25 @@ export default function Stats() {
   /* ================= CALORIES DETAIL ================= */
   if (view === "calories") {
     return (
-      <CaloriesView
+      <ViewTransition viewKey="calories" direction={dir}>
+        <CaloriesView
         T={T}
         s={s}
         goal={goal}
         dayTotals={dayTotals}
         freeLocked={freeLocked}
-        onBack={() => setView(null)}
-        onGoPro={() => openPaywall("subscribe")}
-      />
+        onBack={back}
+          onGoPro={() => openPaywall("subscribe")}
+        />
+      </ViewTransition>
     );
   }
 
   /* ================= WEIGHT DETAIL ================= */
   if (view === "weight") {
     return (
-      <WeightView
+      <ViewTransition viewKey="weight" direction={dir}>
+        <WeightView
         T={T}
         s={s}
         unit={unit as "kg" | "lbs"}
@@ -620,19 +641,23 @@ export default function Stats() {
         paceKgPerWeek={paceKg}
         signupDate={signupDate}
         range={range}
-        onBack={() => setView(null)}
+        onBack={back}
         onLog={() => setWeighOpen(true)}
         weighOpen={weighOpen}
         closeWeigh={() => setWeighOpen(false)}
         onSaved={() => setWeighTick((k) => k + 1)}
-        lastKg={currentKg}
-      />
+          lastKg={currentKg}
+        />
+      </ViewTransition>
     );
   }
 
   /* ================= MAIN ================= */
   return (
     <View style={s.screen}>
+      {/* the summary gets one too, so coming BACK from a detail view slides in
+          from the left rather than snapping */}
+      <ViewTransition viewKey="root" direction={dir}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 60, paddingBottom: 40 }}>
         <PageHeader title="Stats" />
 
@@ -645,7 +670,7 @@ export default function Stats() {
         </View>
 
         {/* WIDGET 1 — STEPS */}
-        <Tap onPress={() => setView("steps")}>
+        <Tap onPress={() => go("steps")}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={20}>
             <View style={{ padding: 18 }}>
               <View style={s.rowBetween}>
@@ -748,7 +773,7 @@ export default function Stats() {
         </Tap>
 
         {/* WIDGET 2 — CALORIES VS GOAL */}
-        <Tap onPress={() => setView("calories")} style={{ marginTop: 12 }}>
+        <Tap onPress={() => go("calories")} style={{ marginTop: 12 }}>
           <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={18}>
             <View style={{ padding: 16 }}>
               <View style={[s.rowBetween, { marginBottom: 4 }]}>
@@ -816,7 +841,7 @@ export default function Stats() {
 
           <View style={{ flex: 1 }}>
             <BlurLock label="Weight" locked={freeLocked} radius={16} compact>
-              <Tap onPress={() => setView("weight")}>
+              <Tap onPress={() => go("weight")}>
                 <TravelBorder color={T.green} cardBg={T.card} borderColor={T.border} radius={16}>
                   <View style={s.smallCard}>
                     <View style={s.rowBetween}>
@@ -880,7 +905,10 @@ export default function Stats() {
           </TravelBorder>
         </View>
       </ScrollView>
+      </ViewTransition>
 
+      {/* OUTSIDE the transition — a sheet sliding in with the screen behind it
+          would animate twice, and it isn't part of the view swap */}
       <WeighInSheet
         visible={weighOpen}
         onClose={() => setWeighOpen(false)}

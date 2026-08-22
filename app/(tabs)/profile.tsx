@@ -7,6 +7,13 @@
 // scattered across screens because two dev controls that can disagree is
 // worse than none: the tier chips used to overwrite the real streak while the
 // calendar kept drawing real tiles, and neither screen looked obviously wrong.
+//
+// ⚠️ THE SUB-SCREENS AREN'T ROUTES. Everything below — Goal, Support, the whole
+// account section — is this same screen with a different `view` value. That's
+// the right pattern for detail views that belong to their tab, but it means the
+// router has nothing to animate, so every one of them used to SNAP into place.
+// <ViewTransition> animates the swap ourselves, and `dir` is what makes going
+// back look like going back.
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
@@ -25,6 +32,7 @@ import Tap from "../../components/Tap";
 import ThemePicker from "../../components/ThemePicker";
 import Toggle from "../../components/Toggle";
 import TravelBorder from "../../components/TravelBorder";
+import ViewTransition from "../../components/ViewTransition";
 import { useApp } from "../../constants/AppState";
 import { signOut } from "../../constants/auth";
 import * as H from "../../constants/haptics";
@@ -88,6 +96,18 @@ export default function Profile() {
   const [view, setView] = useState<View_>(null);
   const [logoutOpen, setLogoutOpen] = useState(false);
 
+  /* ---------- WHICH WAY ARE WE GOING? ----------
+     1 opening a sub-screen, -1 coming back. Without this the animation runs
+     the same direction both ways, and a back tap that slides forward feels
+     more wrong than no animation at all — it says you've gone deeper when you
+     haven't. */
+  const [dir, setDir] = useState(1);
+
+  /** open a sub-screen, sliding forward */
+  const go = (v: View_) => { setDir(1); setView(v); };
+  /** back to the settings list, sliding back */
+  const back = () => { setDir(-1); setView(null); };
+
   /* ---------- ARRIVING FROM SOMEWHERE ELSE ----------
      The leaderboard sends `?open=region` when someone has no region set and so
      can't appear on the Regional board. It lands them on the country picker
@@ -103,6 +123,7 @@ export default function Profile() {
   useEffect(() => {
     if (params.open === "region") {
       setAccountSub("region");
+      setDir(1);
       setView("account");
       router.setParams({ open: undefined });
     }
@@ -140,6 +161,7 @@ export default function Profile() {
   const didMount = useRef(false);
   useEffect(() => {
     if (!didMount.current) { didMount.current = true; return; }
+    setDir(-1);
     setView(null);
     setAccountSub("main");
     setLoading(false);
@@ -155,7 +177,7 @@ export default function Profile() {
     setLoading(true);
     setTimeout(() => {
       setLoading(false);
-      setView("account");
+      go("account");
     }, 1300);
   };
 
@@ -321,9 +343,10 @@ export default function Profile() {
     </View>
   );
 
-  const back = () => setView(null);
-
-  /* ---------- the account loading state ---------- */
+  /* ---------- the account loading state ----------
+     No transition on this one deliberately: it's a brief pause rather than a
+     destination, and sliding into a spinner then sliding again into the real
+     screen is two animations where the user asked for one. */
   if (loading) {
     return (
       <View style={[s.screen, { alignItems: "center", justifyContent: "center", gap: 20 }]}>
@@ -333,308 +356,359 @@ export default function Profile() {
     );
   }
 
-  /* ---------- sub-screens ---------- */
+  /* ---------- sub-screens ----------
+     Each wrapped so it slides in rather than appearing. `viewKey` is the view's
+     own name, so switching between two sub-screens animates too — not just
+     going in and out from the root. */
   if (view === "account") {
     return (
       <View style={s.screen}>
-        <AccountScreen
-          /* normally "main"; "region" when the leaderboard sent them here */
-          initialSub={accountSub}
-          onBack={() => { setAccountSub("main"); back(); }}
-        />
+        <ViewTransition viewKey="account" direction={dir}>
+          <AccountScreen
+            /* normally "main"; "region" when the leaderboard sent them here */
+            initialSub={accountSub}
+            onBack={() => { setAccountSub("main"); back(); }}
+          />
+        </ViewTransition>
       </View>
     );
   }
-  if (view === "goal") return <View style={s.screen}><GoalScreen onBack={back} /></View>;
-  if (view === "calories") return <View style={s.screen}><CaloriesScreen onBack={back} /></View>;
-  if (view === "targetweight") return <View style={s.screen}><TargetWeightScreen onBack={back} /></View>;
-  if (view === "units") return <View style={s.screen}><UnitsScreen onBack={back} /></View>;
-  if (view === "privacy") return <View style={s.screen}><PrivacyScreen onBack={back} /></View>;
-  if (view === "supportchat") return <View style={s.screen}><SupportChat onBack={() => setView("support")} /></View>;
+  if (view === "goal") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="goal" direction={dir}><GoalScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
+  if (view === "calories") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="calories" direction={dir}><CaloriesScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
+  if (view === "targetweight") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="targetweight" direction={dir}><TargetWeightScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
+  if (view === "units") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="units" direction={dir}><UnitsScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
+  if (view === "privacy") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="privacy" direction={dir}><PrivacyScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
+  if (view === "supportchat") {
+    return (
+      <View style={s.screen}>
+        {/* back here goes to Support, not the root — so it's a step BACK from
+            the chat's point of view and slides that way */}
+        <ViewTransition viewKey="supportchat" direction={dir}>
+          <SupportChat onBack={() => { setDir(-1); setView("support"); }} />
+        </ViewTransition>
+      </View>
+    );
+  }
   if (view === "support") {
     return (
       <View style={s.screen}>
-        <SupportScreen onBack={back} onChat={() => setView("supportchat")} />
+        <ViewTransition viewKey="support" direction={dir}>
+          <SupportScreen onBack={back} onChat={() => go("supportchat")} />
+        </ViewTransition>
       </View>
     );
   }
 
   return (
     <View style={s.screen}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 56, paddingBottom: 40 }}>
-        {/* header — the M wears your tier */}
-        <View style={s.header}>
-          <View style={{ width: 42 }}>
-            <IsoM size={30} color={markColor} />
+      {/* the ROOT gets one too, so coming back from a sub-screen slides in
+          from the left rather than snapping into place */}
+      <ViewTransition viewKey="root" direction={dir}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingTop: 56, paddingBottom: 40 }}>
+          {/* header — the M wears your tier */}
+          <View style={s.header}>
+            <View style={{ width: 42 }}>
+              <IsoM size={30} color={markColor} />
+            </View>
+            <Text style={s.headerTitle}>PROFILE</Text>
+            <View style={{ width: 42 }} />
           </View>
-          <Text style={s.headerTitle}>PROFILE</Text>
-          <View style={{ width: 42 }} />
-        </View>
 
-        {/* IDENTITY — the whole account sits behind this */}
-        <Tap onPress={openAccount}>
-          <TravelBorder
-            {...(!freeLocked && isUlt ? { colors: ULT_COLORS } : { color: accent })}
-            cardBg={T.card}
-            borderColor={T.border}
-            radius={18}
-          >
-            <View style={s.idCard}>
-              <Avatar size={50} accent={accent} />
+          {/* IDENTITY — the whole account sits behind this */}
+          <Tap onPress={openAccount}>
+            <TravelBorder
+              {...(!freeLocked && isUlt ? { colors: ULT_COLORS } : { color: accent })}
+              cardBg={T.card}
+              borderColor={T.border}
+              radius={18}
+            >
+              <View style={s.idCard}>
+                <Avatar size={50} accent={accent} />
 
-              <View style={{ flex: 1, minWidth: 0 }}>
-                {!freeLocked && isUlt ? (
-                  <GradientText text={`@${handle}`} colors={ULT_COLORS} fontSize={16} fontFamily={FONTS.headingMed} />
-                ) : (
-                  <Text style={[s.handle, { color: accent }]}>@{handle}</Text>
-                )}
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  {!freeLocked && isUlt ? (
+                    <GradientText text={`@${handle}`} colors={ULT_COLORS} fontSize={16} fontFamily={FONTS.headingMed} />
+                  ) : (
+                    <Text style={[s.handle, { color: accent }]}>@{handle}</Text>
+                  )}
 
-                <View style={s.emailRow}>
-                  {/* the animated envelope, small — it's a detail line, not a row */}
-                  <Icon name="email" size={14} mode="loop" />
-                  <Text style={s.email} numberOfLines={1}>{email}</Text>
+                  <View style={s.emailRow}>
+                    {/* the animated envelope, small — it's a detail line, not a row */}
+                    <Icon name="email" size={14} mode="loop" />
+                    <Text style={s.email} numberOfLines={1}>{email}</Text>
+                  </View>
+
+                  <View style={[s.streakPill, { backgroundColor: `${accent}1A`, borderColor: `${accent}55` }]}>
+                    {/* the tier's own flame — free users get the plain Spark one */}
+                    <Icon name={freeLocked ? "flameSpark" : flameAnim} size={14} mode="loop" />
+                    <Text style={[s.streakPillText, { color: accent }]}>
+                      {streakDays} {streakDays === 1 ? "day" : "days"}{freeLocked ? "" : ` · ${tier.name}`}
+                    </Text>
+                  </View>
                 </View>
 
-                <View style={[s.streakPill, { backgroundColor: `${accent}1A`, borderColor: `${accent}55` }]}>
-                  {/* the tier's own flame — free users get the plain Spark one */}
-                  <Icon name={freeLocked ? "flameSpark" : flameAnim} size={14} mode="loop" />
-                  <Text style={[s.streakPillText, { color: accent }]}>
-                    {streakDays} {streakDays === 1 ? "day" : "days"}{freeLocked ? "" : ` · ${tier.name}`}
-                  </Text>
-                </View>
+                <ChevronRight size={17} color={T.micro} />
               </View>
-
-              <ChevronRight size={17} color={T.micro} />
-            </View>
-          </TravelBorder>
-        </Tap>
-
-        {/* PRO */}
-        {freeLocked && (
-          <Tap onPress={() => openPaywall("subscribe")} style={{ marginTop: 16 }}>
-            <View style={s.proCard}>
-              <View style={s.proIcon}>
-                <Crown size={20} color={T.gold} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.proTitle}>Upgrade to Pro</Text>
-                <Text style={s.proSub}>Tier colours, full history, leaderboard rank</Text>
-              </View>
-              <ChevronRight size={17} color={T.gold} />
-            </View>
+            </TravelBorder>
           </Tap>
-        )}
 
-        {isPro && (
-          <View style={s.proActive}>
-            <Crown size={15} color={T.gold} />
-            <Text style={s.proActiveText}>MOTION Pro · active</Text>
-          </View>
-        )}
-
-        {/* APPEARANCE — the icon shows WHICH theme you're on: moon for dark,
-            sun for light. More useful than a generic palette. */}
-        <Section title="Appearance">
-          <Row
-            icon={Palette}
-            anim={themeMode === "dark" ? "moonTheme" : "sunTheme"}
-            label="Theme"
-            value={themeMode === "dark" ? "Dark" : "Light"}
-            onPress={() => { H.tap(); setThemeOpen(true); }}
-          />
-        </Section>
-
-        {/* DEVICES — hand-built watch: a heartbeat draws across the face, since
-            this row is health sync rather than a watch setting */}
-        <Section title="Devices">
-          <ToggleRow
-            icon={Watch}
-            anim="watchHealth"
-            label="Connect watch & health"
-            on={settings.watch}
-            onSub="Syncing steps, calories burned & heart rate"
-            offSub="Off — steps & activity won't update"
-            onToggle={() => toggle("watch")}
-          />
-        </Section>
-
-        {/* GOALS */}
-        <Section title="Goals">
-          <Row
-            icon={CircleDot}
-            anim="targetBullseye"
-            label="Goal"
-            value={GOAL_LABEL[profile.goal] || "Not set"}
-            onPress={() => { H.tap(); setView("goal"); }}
-          />
-          <Divider />
-          <Row
-            icon={Flame}
-            anim={freeLocked ? "flameSpark" : flameAnim}
-            label="Daily calories"
-            value={`${plan.calories.toLocaleString()} cal`}
-            onPress={() => { H.tap(); setView("calories"); }}
-          />
-          <Divider />
-          <Row
-            icon={Scale}
-            anim="scale"
-            label="Target weight"
-            value={profile.targetWeight ? `${profile.targetWeight} ${profile.weightUnit}` : "Not set"}
-            onPress={() => { H.tap(); setView("targetweight"); }}
-          />
-          <Divider />
-          <Row
-            icon={Ruler}
-            anim="ruler"
-            label="Units & height"
-            value={heightLabel()}
-            onPress={() => { H.tap(); setView("units"); }}
-          />
-        </Section>
-
-        {/* PREFERENCES — the notification bell is an illustration that sits
-            smaller in its canvas than the line icons, so it renders larger */}
-        <Section title="Preferences">
-          <ToggleRow
-            icon={Bell}
-            anim="notification"
-            animSize={30}
-            label="Notifications"
-            on={settings.notifications}
-            onSub="Milestones, badges & updates"
-            offSub="Off"
-            onToggle={() => toggle("notifications")}
-          />
-          <Divider />
-          <ToggleRow
-            icon={BellRing}
-            anim="reminderBell"
-            label="Reminders"
-            on={settings.reminders}
-            onSub="Nudges to log meals & protect your streak"
-            offSub="Off"
-            onToggle={() => toggle("reminders")}
-          />
-          <Divider />
-          <ToggleRow
-            icon={Vibrate}
-            anim="haptics"
-            label="Haptics"
-            on={settings.haptics}
-            onSub="Buzz on toggles, steppers & saves"
-            offSub="Off"
-            onToggle={() => toggle("haptics")}
-          />
-        </Section>
-
-        {/* ACCOUNT */}
-        <Section title="Account">
-          <Row icon={LifeBuoy} anim="support" label="Support" onPress={() => { H.tap(); setView("support"); }} />
-          <Divider />
-          <Row icon={Shield} anim="privacy" label="Privacy" onPress={() => { H.tap(); setView("privacy"); }} />
-          <Divider />
-          <Row icon={LogOut} anim="logout" label="Log out" danger onPress={() => { H.tap(); setLogoutOpen(true); }} />
-        </Section>
-
-        {/* ⚠️ FORMATTED, and derived from created_at rather than signup_date.
-            signup_date has no default from the app, so Postgres fills it with
-            the SERVER's date — and Postgres runs in UTC. Signing up at 19:22
-            in Edmonton is 01:22 the next day in UTC, so it read a day late.
-            See localDateFrom() in constants/profile.ts. */}
-        <Text style={s.memberSince}>Member since {formatMemberSince(profile.memberSince)}</Text>
-
-        {/* ================= DEV ONLY =================
-            ONE master switch for every piece of fake data in the app. Turning
-            it on shows a scripted streak here AND the demo history on the
-            calendar and Stats, so the whole app tells one consistent story —
-            which is what you need when showing someone the tier colours
-            without them logging for three weeks first.
-
-            Turning it OFF is also the pre-launch check: if the app looks right
-            with this off, nothing fake is left anywhere.
-
-            Remove this whole block before launch. */}
-        <View style={s.devPanel}>
-          <Pressable
-            onPress={() => { H.tick(); toggleDevMode(); }}
-            style={[s.devMaster, devMode && s.devMasterOn]}
-          >
-            <View style={[s.devDot, devMode && { backgroundColor: T.gold }]} />
-            <Text style={[s.devMasterText, devMode && { color: T.gold }]}>
-              DEV MODE · {devMode ? "ON — showing demo data" : "OFF — everything real"}
-            </Text>
-          </Pressable>
-
-          {/* the tier chips only exist in dev mode. Outside it they'd be
-              overwriting a real streak with a fake one, which is exactly the
-              confusion this switch was built to remove. */}
-          {devMode && (
-            <>
-              <Text style={s.devHint}>
-                Pick a tier to preview. The calendar switches to demo history at the same time.
-              </Text>
-              <View style={s.tierRow}>
-                {[1, 2, 3, 4, 5].map((i) => {
-                  const t = TIERS[i as 1 | 2 | 3 | 4 | 5];
-                  const days = [2, 6, 10, 14, 20][i - 1];
-                  const on = tier.name === t.name;
-                  const ult = t.color === "ultimate";
-                  const col = ult ? "#A855F7" : t.color;
-                  return (
-                    <Pressable
-                      key={t.name}
-                      onPress={() => { H.tick(); setDemoStreak(days); }}
-                      style={[
-                        s.tierChip,
-                        { borderColor: on ? col : T.border, backgroundColor: on ? `${col}22` : T.card },
-                      ]}
-                    >
-                      <Text style={[s.tierChipText, { color: on ? col : T.sub }]}>{t.name}</Text>
-                    </Pressable>
-                  );
-                })}
+          {/* PRO */}
+          {freeLocked && (
+            <Tap onPress={() => openPaywall("subscribe")} style={{ marginTop: 16 }}>
+              <View style={s.proCard}>
+                <View style={s.proIcon}>
+                  <Crown size={20} color={T.gold} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.proTitle}>Upgrade to Pro</Text>
+                  <Text style={s.proSub}>Tier colours, full history, leaderboard rank</Text>
+                </View>
+                <ChevronRight size={17} color={T.gold} />
               </View>
-
-              {/* WEIGH-IN SEEDING — unlike the tier chips, these write REAL
-                  rows to Supabase. That's the only way to test the chart:
-                  the weigh-in table allows one row per day, so the shape of a
-                  month's readings can't be faked from today alone.
-                  Clearing removes real data with no undo. */}
-              <Text style={s.devHint}>
-                Weight chart test data — these write real rows to your account.
-              </Text>
-              <View style={s.tierRow}>
-                <Pressable
-                  onPress={seedWeighIns}
-                  disabled={seedBusy}
-                  style={[s.tierChip, { borderColor: `${T.green}66`, backgroundColor: `${T.green}18`, opacity: seedBusy ? 0.5 : 1 }]}
-                >
-                  <Text style={[s.tierChipText, { color: T.green }]}>
-                    {seedBusy ? "Working…" : `Seed ${SEED_COUNT} weigh-ins`}
-                  </Text>
-                </Pressable>
-
-                <Pressable
-                  onPress={clearWeighIns}
-                  disabled={seedBusy}
-                  style={[s.tierChip, { borderColor: `${T.red}66`, backgroundColor: "rgba(239,68,68,0.10)", opacity: seedBusy ? 0.5 : 1 }]}
-                >
-                  <Text style={[s.tierChipText, { color: T.red }]}>Clear all weigh-ins</Text>
-                </Pressable>
-              </View>
-
-              {seedMsg && <Text style={s.devResult}>{seedMsg}</Text>}
-            </>
+            </Tap>
           )}
 
-          {/* the Pro flip stays OUTSIDE dev mode — free vs Pro is a real
-              product state, not fake data, and it needs testing either way */}
-          <Pressable onPress={togglePro} style={s.devChip}>
-            <Text style={s.devText}>DEV · {isPro ? "PRO" : "FREE"} · tap to flip</Text>
-          </Pressable>
-        </View>
-      </ScrollView>
+          {isPro && (
+            <View style={s.proActive}>
+              <Crown size={15} color={T.gold} />
+              <Text style={s.proActiveText}>MOTION Pro · active</Text>
+            </View>
+          )}
+
+          {/* APPEARANCE — the icon shows WHICH theme you're on: moon for dark,
+              sun for light. More useful than a generic palette. */}
+          <Section title="Appearance">
+            <Row
+              icon={Palette}
+              anim={themeMode === "dark" ? "moonTheme" : "sunTheme"}
+              label="Theme"
+              value={themeMode === "dark" ? "Dark" : "Light"}
+              onPress={() => { H.tap(); setThemeOpen(true); }}
+            />
+          </Section>
+
+          {/* DEVICES — hand-built watch: a heartbeat draws across the face, since
+              this row is health sync rather than a watch setting */}
+          <Section title="Devices">
+            <ToggleRow
+              icon={Watch}
+              anim="watchHealth"
+              label="Connect watch & health"
+              on={settings.watch}
+              onSub="Syncing steps, calories burned & heart rate"
+              offSub="Off — steps & activity won't update"
+              onToggle={() => toggle("watch")}
+            />
+          </Section>
+
+          {/* GOALS */}
+          <Section title="Goals">
+            <Row
+              icon={CircleDot}
+              anim="targetBullseye"
+              label="Goal"
+              value={GOAL_LABEL[profile.goal] || "Not set"}
+              onPress={() => { H.tap(); go("goal"); }}
+            />
+            <Divider />
+            <Row
+              icon={Flame}
+              anim={freeLocked ? "flameSpark" : flameAnim}
+              label="Daily calories"
+              value={`${plan.calories.toLocaleString()} cal`}
+              onPress={() => { H.tap(); go("calories"); }}
+            />
+            <Divider />
+            <Row
+              icon={Scale}
+              anim="scale"
+              label="Target weight"
+              value={profile.targetWeight ? `${profile.targetWeight} ${profile.weightUnit}` : "Not set"}
+              onPress={() => { H.tap(); go("targetweight"); }}
+            />
+            <Divider />
+            <Row
+              icon={Ruler}
+              anim="ruler"
+              label="Units & height"
+              value={heightLabel()}
+              onPress={() => { H.tap(); go("units"); }}
+            />
+          </Section>
+
+          {/* PREFERENCES — the notification bell is an illustration that sits
+              smaller in its canvas than the line icons, so it renders larger */}
+          <Section title="Preferences">
+            <ToggleRow
+              icon={Bell}
+              anim="notification"
+              animSize={30}
+              label="Notifications"
+              on={settings.notifications}
+              onSub="Milestones, badges & updates"
+              offSub="Off"
+              onToggle={() => toggle("notifications")}
+            />
+            <Divider />
+            <ToggleRow
+              icon={BellRing}
+              anim="reminderBell"
+              label="Reminders"
+              on={settings.reminders}
+              onSub="Nudges to log meals & protect your streak"
+              offSub="Off"
+              onToggle={() => toggle("reminders")}
+            />
+            <Divider />
+            <ToggleRow
+              icon={Vibrate}
+              anim="haptics"
+              label="Haptics"
+              on={settings.haptics}
+              onSub="Buzz on toggles, steppers & saves"
+              offSub="Off"
+              onToggle={() => toggle("haptics")}
+            />
+          </Section>
+
+          {/* ACCOUNT */}
+          <Section title="Account">
+            <Row icon={LifeBuoy} anim="support" label="Support" onPress={() => { H.tap(); go("support"); }} />
+            <Divider />
+            <Row icon={Shield} anim="privacy" label="Privacy" onPress={() => { H.tap(); go("privacy"); }} />
+            <Divider />
+            <Row icon={LogOut} anim="logout" label="Log out" danger onPress={() => { H.tap(); setLogoutOpen(true); }} />
+          </Section>
+
+          {/* ⚠️ FORMATTED, and derived from created_at rather than signup_date.
+              signup_date has no default from the app, so Postgres fills it with
+              the SERVER's date — and Postgres runs in UTC. Signing up at 19:22
+              in Edmonton is 01:22 the next day in UTC, so it read a day late.
+              See localDateFrom() in constants/profile.ts. */}
+          <Text style={s.memberSince}>Member since {formatMemberSince(profile.memberSince)}</Text>
+
+          {/* ================= DEV ONLY =================
+              ONE master switch for every piece of fake data in the app. Turning
+              it on shows a scripted streak here AND the demo history on the
+              calendar and Stats, so the whole app tells one consistent story —
+              which is what you need when showing someone the tier colours
+              without them logging for three weeks first.
+
+              Turning it OFF is also the pre-launch check: if the app looks right
+              with this off, nothing fake is left anywhere.
+
+              Remove this whole block before launch. */}
+          <View style={s.devPanel}>
+            <Pressable
+              onPress={() => { H.tick(); toggleDevMode(); }}
+              style={[s.devMaster, devMode && s.devMasterOn]}
+            >
+              <View style={[s.devDot, devMode && { backgroundColor: T.gold }]} />
+              <Text style={[s.devMasterText, devMode && { color: T.gold }]}>
+                DEV MODE · {devMode ? "ON — showing demo data" : "OFF — everything real"}
+              </Text>
+            </Pressable>
+
+            {/* the tier chips only exist in dev mode. Outside it they'd be
+                overwriting a real streak with a fake one, which is exactly the
+                confusion this switch was built to remove. */}
+            {devMode && (
+              <>
+                <Text style={s.devHint}>
+                  Pick a tier to preview. The calendar switches to demo history at the same time.
+                </Text>
+                <View style={s.tierRow}>
+                  {[1, 2, 3, 4, 5].map((i) => {
+                    const t = TIERS[i as 1 | 2 | 3 | 4 | 5];
+                    const days = [2, 6, 10, 14, 20][i - 1];
+                    const on = tier.name === t.name;
+                    const ult = t.color === "ultimate";
+                    const col = ult ? "#A855F7" : t.color;
+                    return (
+                      <Pressable
+                        key={t.name}
+                        onPress={() => { H.tick(); setDemoStreak(days); }}
+                        style={[
+                          s.tierChip,
+                          { borderColor: on ? col : T.border, backgroundColor: on ? `${col}22` : T.card },
+                        ]}
+                      >
+                        <Text style={[s.tierChipText, { color: on ? col : T.sub }]}>{t.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {/* WEIGH-IN SEEDING — unlike the tier chips, these write REAL
+                    rows to Supabase. That's the only way to test the chart:
+                    the weigh-in table allows one row per day, so the shape of a
+                    month's readings can't be faked from today alone.
+                    Clearing removes real data with no undo. */}
+                <Text style={s.devHint}>
+                  Weight chart test data — these write real rows to your account.
+                </Text>
+                <View style={s.tierRow}>
+                  <Pressable
+                    onPress={seedWeighIns}
+                    disabled={seedBusy}
+                    style={[s.tierChip, { borderColor: `${T.green}66`, backgroundColor: `${T.green}18`, opacity: seedBusy ? 0.5 : 1 }]}
+                  >
+                    <Text style={[s.tierChipText, { color: T.green }]}>
+                      {seedBusy ? "Working…" : `Seed ${SEED_COUNT} weigh-ins`}
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={clearWeighIns}
+                    disabled={seedBusy}
+                    style={[s.tierChip, { borderColor: `${T.red}66`, backgroundColor: "rgba(239,68,68,0.10)", opacity: seedBusy ? 0.5 : 1 }]}
+                  >
+                    <Text style={[s.tierChipText, { color: T.red }]}>Clear all weigh-ins</Text>
+                  </Pressable>
+                </View>
+
+                {seedMsg && <Text style={s.devResult}>{seedMsg}</Text>}
+              </>
+            )}
+
+            {/* the Pro flip stays OUTSIDE dev mode — free vs Pro is a real
+                product state, not fake data, and it needs testing either way */}
+            <Pressable onPress={togglePro} style={s.devChip}>
+              <Text style={s.devText}>DEV · {isPro ? "PRO" : "FREE"} · tap to flip</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </ViewTransition>
 
       <ThemePicker visible={themeOpen} onClose={() => setThemeOpen(false)} />
       <LogoutSheet visible={logoutOpen} onCancel={() => setLogoutOpen(false)} onConfirm={doLogout} />
