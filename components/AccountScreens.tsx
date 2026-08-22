@@ -9,10 +9,16 @@
 // this screen stored a name ("Canada"). The leaderboard groups on that exact
 // string, so two people in the same country landed on two different Regional
 // boards depending on which path set their region. One list, one format.
-import { AlertTriangle, Check, Crown, Eye, EyeOff, Globe, Lock, Search } from "lucide-react-native";
+//
+// ⚠️ EMAIL AND PASSWORD DON'T LIVE IN THE PROFILE ROW. They belong to Supabase
+// Auth, and both screens here used to write to the profile table instead — so
+// "Password updated" appeared and the password you sign in with never changed.
+// Both now go through constants/auth.ts. See PasswordScreen and EmailScreen.
+import { AlertTriangle, Check, Crown, Eye, EyeOff, Globe, Lock, Mail, Search } from "lucide-react-native";
 import React, { useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useApp } from "../constants/AppState";
+import { requestEmailChange, updatePassword } from "../constants/auth";
 import * as H from "../constants/haptics";
 import { deleteAvatar, uploadAvatar } from "../constants/photos";
 import { COUNTRIES } from "../constants/regions";
@@ -61,16 +67,17 @@ function ProGate({ title, line, onBack }: { title: string; line: string; onBack:
   );
 }
 
-/* ---------- a single-field editor ---------- */
+/* ---------- a single-field editor ----------
+   For things that live in the PROFILE ROW and save instantly. Email is
+   deliberately not one of these — see EmailScreen. */
 function EditScreen({
-  title, label, initial, hint, note, keyboard, autoCapitalize, glowColor, ultimate, anim, onBack, onSave,
+  title, label, initial, hint, note, autoCapitalize, glowColor, ultimate, anim, onBack, onSave,
 }: {
   title: string;
   label: string;
   initial: string;
   hint?: string;
   note?: string;
-  keyboard?: "email-address" | "default";
   autoCapitalize?: "none" | "words";
   glowColor?: string;
   ultimate?: boolean;
@@ -118,7 +125,6 @@ function EditScreen({
         value={v}
         onChangeText={setV}
         style={s.input}
-        keyboardType={keyboard || "default"}
         autoCapitalize={autoCapitalize || "none"}
         autoCorrect={false}
         placeholderTextColor={T.micro}
@@ -130,22 +136,165 @@ function EditScreen({
   );
 }
 
-/* ---------- password ----------
-   ⚠️ THIS DOES NOT CHANGE THE PASSWORD YET. It validates, shows "saved" and
-   returns — nothing reaches Supabase Auth, so the password you sign in with is
-   unchanged.
+/* ================= EMAIL =================
+   ⚠️ THIS DOESN'T CHANGE ANYTHING IMMEDIATELY, and saying so is most of the
+   screen's job.
 
-   The danger isn't someone breaking in; it's the FALSE ASSURANCE. Somebody who
-   thinks they've changed their password after sharing it, or after losing a
-   phone, is more exposed than somebody who knows they haven't. On the list to
-   fix, and it must not ship like this. */
+   Supabase sends a confirmation link to the NEW address and only completes the
+   change once it's clicked. That's worth keeping rather than working around: a
+   typo in an email would otherwise lock someone out of their own account for
+   good — they couldn't sign in with the old address because it had been
+   replaced, and couldn't receive a reset at the new one because it doesn't
+   exist.
+
+   Which means the button can't say "Saved". It says a link is on its way, and
+   it says plainly that the OLD address still works until they click it —
+   without that line, someone signs out expecting the new one to work and
+   can't get back in. */
+function EmailScreen({ current, onBack }: { current: string; onBack: () => void }) {
+  const { T } = useApp();
+  const s = styles(T);
+  const [v, setV] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const clean = v.trim().toLowerCase();
+  const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
+  const changed = clean !== current.trim().toLowerCase();
+  const ready = looksLikeEmail && changed && !busy;
+
+  const send = async () => {
+    if (!ready) return;
+    setErr(null);
+    setBusy(true);
+
+    const { error } = await requestEmailChange(clean);
+
+    setBusy(false);
+
+    if (error) { setErr(error); H.warn(); return; }
+
+    H.success();
+    setSent(true);
+  };
+
+  if (sent) {
+    return (
+      <ScrollView contentContainerStyle={s.page}>
+        <BackRow title="Email" onBack={onBack} />
+
+        <View style={s.sentWrap}>
+          <View style={s.sentIcon}>
+            <Mail size={26} color={T.green} />
+          </View>
+          <Text style={s.sentTitle}>Check your new inbox</Text>
+          <Text style={s.sentBody}>
+            We've sent a confirmation link to {clean}. Your email changes once you open that link.
+          </Text>
+
+          {/* the line that stops someone locking themselves out */}
+          <View style={s.sentNote}>
+            <AlertTriangle size={13} color={T.gold} />
+            <Text style={s.sentNoteText}>
+              Until then, keep signing in with {current} — it still works, and the new address
+              won't until you've confirmed it.
+            </Text>
+          </View>
+
+          <Tap onPress={onBack} style={{ width: "100%", marginTop: 22 }}>
+            <View style={s.primaryBtn}>
+              <Text style={s.primaryBtnText}>Done</Text>
+            </View>
+          </Tap>
+        </View>
+      </ScrollView>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+      <BackRow title="Email" onBack={onBack} />
+
+      <View style={s.editHeroIcon}>
+        <Icon name="email" size={54} mode="loop" />
+      </View>
+
+      <Text style={s.note}>
+        This is what you sign in with. Change it and we'll send a confirmation link to the new
+        address — nothing changes until you open it.
+      </Text>
+
+      <Text style={s.fieldLabel}>New email address</Text>
+      <TextInput
+        value={v}
+        onChangeText={(t) => { setV(t); setErr(null); }}
+        style={s.input}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="name@email.com"
+        placeholderTextColor={T.micro}
+      />
+
+      {v.trim().length > 0 && !looksLikeEmail && (
+        <Text style={s.mismatch}>That doesn't look like an email address.</Text>
+      )}
+
+      {err ? (
+        <View style={s.errRow}>
+          <AlertTriangle size={13} color={T.red} />
+          <Text style={s.errText}>{err}</Text>
+        </View>
+      ) : null}
+
+      <Tap onPress={send} style={{ marginTop: 22 }}>
+        <View style={[s.primaryBtn, !ready && s.btnDisabled]}>
+          {busy ? (
+            <ActivityIndicator size="small" color={T.ink} />
+          ) : (
+            <Text style={[s.primaryBtnText, !ready && { color: T.micro }]}>
+              Send confirmation link
+            </Text>
+          )}
+        </View>
+      </Tap>
+
+      {!changed && v.trim().length > 0 && (
+        <Text style={s.hint}>That's already your email.</Text>
+      )}
+    </ScrollView>
+  );
+}
+
+/* ================= PASSWORD =================
+   ⚠️ IT ASKS FOR THE CURRENT ONE, and that isn't bureaucracy.
+
+   Supabase's updateUser({ password }) verifies nothing — it changes the
+   password of whoever holds the session. Without this field, an unlocked phone
+   left on a table is enough for someone to change the password, sign in
+   elsewhere, and lock the owner out of their own account.
+
+   This screen previously wrote to the profile row and showed "Password
+   updated" while changing nothing at all. The risk there wasn't a break-in; it
+   was the FALSE ASSURANCE — someone who thinks they've secured an account
+   after sharing a password is worse off than someone who knows they haven't.
+
+   ALL THREE FIELDS SHOW THE EYE. Two of them didn't at first, which is worse
+   than none: revealing one field and finding the next still hidden reads as a
+   broken toggle rather than a partial one. It matters most on the CURRENT
+   password, which is typed from memory — a typo there comes back as "that's
+   not your current password", which sounds like you've forgotten it. */
 function PasswordScreen({ onBack }: { onBack: () => void }) {
   const { T } = useApp();
   const s = styles(T);
+  const [cur, setCur] = useState("");
   const [pw, setPw] = useState("");
   const [cf, setCf] = useState("");
   const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   const rules = [
     { label: "8+ characters", ok: pw.length >= 8 },
@@ -156,12 +305,22 @@ function PasswordScreen({ onBack }: { onBack: () => void }) {
   ];
   const allOk = rules.every((r) => r.ok);
   const match = cf.length > 0 && cf === pw;
-  const ready = allOk && match;
+  const ready = allOk && match && cur.length > 0 && !busy;
 
-  const save = () => {
+  const save = async () => {
+    if (!ready) return;
+    setErr(null);
+    setBusy(true);
+
+    const { error } = await updatePassword(cur, pw);
+
+    setBusy(false);
+
+    if (error) { setErr(error); H.warn(); return; }
+
     H.success();
     setSaved(true);
-    setTimeout(onBack, 750);
+    setTimeout(onBack, 900);
   };
 
   return (
@@ -172,11 +331,37 @@ function PasswordScreen({ onBack }: { onBack: () => void }) {
         <Icon name="password" size={54} mode="loop" />
       </View>
 
-      <Text style={s.fieldLabel}>New password</Text>
+      <Text style={s.note}>
+        You'll stay signed in on this phone. Anywhere else you're signed in stays signed in too —
+        this changes what you type next time, not your current session.
+      </Text>
+
+      {/* THE CHECK. First field, because it's the one that makes the rest
+          safe — putting it last would read as an afterthought. */}
+      <Text style={s.fieldLabel}>Your current password</Text>
+      <View style={s.pwWrap}>
+        <TextInput
+          value={cur}
+          onChangeText={(t) => { setCur(t); setErr(null); }}
+          secureTextEntry={!show}
+          placeholder="The one you sign in with now"
+          placeholderTextColor={T.micro}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[s.input, { flex: 1, marginBottom: 0, paddingRight: 44 }]}
+        />
+        <Pressable onPress={() => setShow((x) => !x)} hitSlop={10} style={s.pwEye}>
+          {show ? <EyeOff size={17} color={T.sub} /> : <Eye size={17} color={T.sub} />}
+        </Pressable>
+      </View>
+
+      <View style={s.divider} />
+
+      <Text style={[s.fieldLabel, { marginTop: 20 }]}>New password</Text>
       <View style={s.pwWrap}>
         <TextInput
           value={pw}
-          onChangeText={setPw}
+          onChangeText={(t) => { setPw(t); setErr(null); }}
           secureTextEntry={!show}
           placeholder="Create a strong password"
           placeholderTextColor={T.micro}
@@ -201,22 +386,54 @@ function PasswordScreen({ onBack }: { onBack: () => void }) {
       </View>
 
       <Text style={s.fieldLabel}>Confirm password</Text>
-      <TextInput
-        value={cf}
-        onChangeText={setCf}
-        secureTextEntry={!show}
-        placeholder="Type it again"
-        placeholderTextColor={T.micro}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={[
-          s.input,
-          cf.length > 0 && { borderColor: match ? T.greenBorder : "rgba(239,68,68,0.5)" },
-        ]}
-      />
+      <View style={s.pwWrap}>
+        <TextInput
+          value={cf}
+          onChangeText={(t) => { setCf(t); setErr(null); }}
+          secureTextEntry={!show}
+          placeholder="Type it again"
+          placeholderTextColor={T.micro}
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={[
+            s.input,
+            { flex: 1, marginBottom: 0, paddingRight: 44 },
+            cf.length > 0 && { borderColor: match ? T.greenBorder : "rgba(239,68,68,0.5)" },
+          ]}
+        />
+        <Pressable onPress={() => setShow((x) => !x)} hitSlop={10} style={s.pwEye}>
+          {show ? <EyeOff size={17} color={T.sub} /> : <Eye size={17} color={T.sub} />}
+        </Pressable>
+      </View>
+
       {cf.length > 0 && !match && <Text style={s.mismatch}>Those don't match yet.</Text>}
 
-      <SaveBtn saved={saved} disabled={!ready} label="Update password" savedLabel="Password updated" onPress={save} />
+      {err ? (
+        <View style={s.errRow}>
+          <AlertTriangle size={13} color={T.red} />
+          <Text style={s.errText}>{err}</Text>
+        </View>
+      ) : null}
+
+      <Tap onPress={save} style={{ marginTop: 22 }}>
+        <View style={[
+          s.primaryBtn,
+          !ready && !saved && s.btnDisabled,
+          saved && { backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder },
+        ]}>
+          {busy ? (
+            <ActivityIndicator size="small" color={T.ink} />
+          ) : (
+            <Text style={[
+              s.primaryBtnText,
+              !ready && !saved && { color: T.micro },
+              saved && { color: T.green },
+            ]}>
+              {saved ? "Password updated ✓" : "Update password"}
+            </Text>
+          )}
+        </View>
+      </Tap>
     </ScrollView>
   );
 }
@@ -351,10 +568,7 @@ function DobScreen({ onBack }: { onBack: () => void }) {
 
 /* ---------- region ----------
    The list comes from constants/regions.ts — the same array onboarding
-   converts the phone's locale through, so the two can't disagree. It's
-   alphabetical and covers the world; it used to be thirty-five countries in a
-   guessed-at popularity order, which meant anyone in Vietnam or Egypt had no
-   region at all and no way to set one. */
+   converts the phone's locale through, so the two can't disagree. */
 function RegionScreen({ current, onBack, onSave }: { current: string; onBack: () => void; onSave: (v: string) => void }) {
   const { T } = useApp();
   const s = styles(T);
@@ -406,7 +620,7 @@ function RegionScreen({ current, onBack, onSave }: { current: string; onBack: ()
             const on = c === sel;
             return (
               <View key={c}>
-                {i > 0 && <View style={s.divider} />}
+                {i > 0 && <View style={s.rowDivider} />}
                 <Tap onPress={() => pick(c)}>
                   <View style={s.countryRow}>
                     <Globe size={15} color={on ? T.green : T.micro} />
@@ -431,9 +645,8 @@ export default function AccountScreen({
   onBack: () => void;
   /* which editor to open on. Normally "main" — the leaderboard passes
      "region" when someone with no region set taps through from a Regional
-     board they can't appear on, landing them exactly where they need to be
-     rather than on a settings list to hunt through. A message that names a
-     problem should carry the fix with it. */
+     board they can't appear on. A message that names a problem should carry
+     the fix with it. */
   initialSub?: AccountSub;
 }) {
   const { T, freeLocked, profile, updateProfile, streakDays, userId, setAvatar, clearAvatar } = useApp();
@@ -441,13 +654,19 @@ export default function AccountScreen({
   const [photoOpen, setPhotoOpen] = useState(false);
 
   /* ---------- THE PROFILE PHOTO ----------
-     The camera opens from the TOP and front-facing — you hold the phone up to
-     photograph your own face, so a preview pinned near the bottom would mean
-     watching one part of the screen while your face is framed in another.
+     The camera is the tall one — nearly full screen, so your face is in frame
+     while the shutter stays under your thumb.
 
      Uploading is the slow part, so it gets its own visible state. A silent
      pause after the shutter, with the old picture still showing, reads as the
-     photo having failed. */
+     photo having failed.
+
+     ⚠️ REPLACING A PHOTO NEEDS AN UPDATE POLICY ON THE BUCKET. Meal photos use
+     a new filename every time and only ever INSERT; the avatar uses one fixed
+     name, so a second photo is an UPDATE. Without that policy Supabase refused
+     it with "new row violates row-level security policy" — the first photo
+     saved, every one after silently didn't, and the app kept a path pointing
+     at a file that had never changed. */
   const [camOpen, setCamOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [photoErr, setPhotoErr] = useState<string | null>(null);
@@ -482,8 +701,7 @@ export default function AccountScreen({
     }
 
     /* the local file shows INSTANTLY while the signed URL is fetched — see
-       setAvatar in AppState. Without it there's a visible gap where the old
-       photo, or initials, sits there after a successful upload. */
+       setAvatar in AppState. */
     setAvatar(path, uri);
     H.success();
   };
@@ -530,21 +748,8 @@ export default function AccountScreen({
     );
   }
 
-  if (sub === "email") {
-    return (
-      <EditScreen
-        title="Email"
-        label="Email address"
-        initial={profile.email || ""}
-        keyboard="email-address"
-        anim="email"
-        note="Update this if you've lost access to your old email — we'll send a confirmation link."
-        onBack={back}
-        onSave={(v) => updateProfile({ email: v })}
-      />
-    );
-  }
-
+  /* NOT an EditScreen — it doesn't save, it sends a link. See EmailScreen. */
+  if (sub === "email") return <EmailScreen current={profile.email || ""} onBack={back} />;
   if (sub === "password") return <PasswordScreen onBack={back} />;
   if (sub === "dob") return <DobScreen onBack={back} />;
   if (sub === "region") {
@@ -623,7 +828,7 @@ export default function AccountScreen({
         <View style={s.group}>
           {rows.map((r, i) => (
             <View key={r.to}>
-              {i > 0 && <View style={s.divider} />}
+              {i > 0 && <View style={s.rowDivider} />}
               <Tap onPress={() => { H.tap(); setSub(r.to); }}>
                 <View style={s.accRow}>
                   <View style={s.rowIcon}>
@@ -677,7 +882,7 @@ export default function AccountScreen({
       <CameraSheet
         visible={camOpen}
         caption="Take a photo"
-        /* TOP, and front-facing. You hold the phone up at your own face. */
+        /* the tall one, front-facing — your face in frame, shutter in reach */
         anchor="top"
         startFacing="front"
         onClose={() => setCamOpen(false)}
@@ -706,7 +911,9 @@ const styles = (T: any) =>
     photoErrText: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body },
 
     group: { backgroundColor: T.card, borderWidth: 1, borderColor: T.border, borderRadius: 14, overflow: "hidden" },
-    divider: { height: 1, backgroundColor: T.border, marginLeft: 56 },
+    rowDivider: { height: 1, backgroundColor: T.border, marginLeft: 56 },
+    /* the plain rule between the two halves of the password form */
+    divider: { height: 1, backgroundColor: T.border, marginTop: 20 },
 
     accRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 11, paddingHorizontal: 13 },
     rowIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: T.greenBg, alignItems: "center", justifyContent: "center" },
@@ -729,6 +936,33 @@ const styles = (T: any) =>
     note: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 18.5, marginBottom: 16 },
     glowPreview: { alignItems: "center", marginBottom: 18 },
     glowText: { fontSize: 24, fontFamily: FONTS.heading },
+
+    primaryBtn: { backgroundColor: T.green, borderRadius: 14, paddingVertical: 15, alignItems: "center" },
+    primaryBtnText: { fontSize: 14.5, color: T.ink, fontFamily: FONTS.headingMed },
+    btnDisabled: { backgroundColor: T.cardHi, borderWidth: 1, borderColor: T.border },
+
+    errRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 14,
+      backgroundColor: "rgba(239,68,68,0.10)", borderWidth: 1,
+      borderColor: "rgba(239,68,68,0.35)", borderRadius: 12, padding: 12,
+    },
+    errText: { flex: 1, fontSize: 12.5, color: T.red, fontFamily: FONTS.body, lineHeight: 18 },
+
+    /* the email-sent state */
+    sentWrap: { alignItems: "center", paddingHorizontal: 8, paddingTop: 20 },
+    sentIcon: {
+      width: 62, height: 62, borderRadius: 20,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      alignItems: "center", justifyContent: "center", marginBottom: 18,
+    },
+    sentTitle: { fontSize: 20, color: T.text, fontFamily: FONTS.heading, textAlign: "center", marginBottom: 8 },
+    sentBody: { fontSize: 13, color: T.sub, fontFamily: FONTS.body, textAlign: "center", lineHeight: 19.5 },
+    sentNote: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 18,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
+      borderColor: `${T.gold}55`, borderRadius: 13, padding: 13,
+    },
+    sentNoteText: { flex: 1, fontSize: 12, color: "#FBBF24", fontFamily: FONTS.body, lineHeight: 17.5 },
 
     pwWrap: { flexDirection: "row", alignItems: "center" },
     pwEye: { position: "absolute", right: 14 },
