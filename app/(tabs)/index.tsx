@@ -33,6 +33,7 @@ const SCREEN_H = Dimensions.get("window").height;
 const HERO_H = Math.round(SCREEN_H * 0.62);
 
 const MSHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const DAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /** "2026-08-19" → "Aug 19". Split by hand rather than with new Date(string),
     which reads a bare date as UTC and can land a day out — the same trap
@@ -315,6 +316,24 @@ export default function Home() {
         ? `You last weighed ${lastShown.toFixed(1)} ${unit} on ${lastOn}`
         : "Tap to see how this is worked out";
 
+  /* ---------- WHAT DAY IS IT ----------
+     ⚠️ THIS WAS THE STRING "Tue Aug 9", hardcoded, and it survived the entire
+     backend build — an app whose whole job is tracking days, telling everyone
+     it was the ninth of August.
+
+     Computed on every render rather than held in state: Home re-renders every
+     time you come back to it, so crossing midnight with the app open corrects
+     itself the next time you look.
+
+     "Good morning" runs to noon and "good afternoon" to 5pm, which is roughly
+     where English speakers put them. 1am counts as morning — it's the ordinary
+     way to greet someone at that hour, and "good night" would sound like a
+     farewell rather than a greeting. */
+  const now = new Date();
+  const hour = now.getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const todayLabel = `${DAYS_SHORT[now.getDay()]} ${MSHORT[now.getMonth()]} ${now.getDate()}`;
+
   const s = styles(T);
 
   /* THE MEAL TRAVELS WITH THE TAP. Tapping "Add snacks" has to open the camera
@@ -398,7 +417,7 @@ export default function Home() {
           }
         />
 
-        <Text style={s.greeting}>Good evening, {profile.name} · Tue Aug 9</Text>
+        <Text style={s.greeting}>{greeting}, {profile.name} · {todayLabel}</Text>
 
         {/* CALORIE HERO */}
         <Tap onPress={openHero} style={{ marginTop: 16 }}>

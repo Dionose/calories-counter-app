@@ -28,6 +28,7 @@ import TravelBorder from "../../components/TravelBorder";
 import { useApp } from "../../constants/AppState";
 import { signOut } from "../../constants/auth";
 import * as H from "../../constants/haptics";
+import { formatMemberSince } from "../../constants/profile";
 import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 import { deleteWeighIn, loadWeighIns, saveWeighIn, toKg } from "../../constants/weight";
 
@@ -126,7 +127,6 @@ export default function Profile() {
   // crashing — onboarding doesn't supply all of these
   const handle = profile.handle || profile.name?.toLowerCase() || "you";
   const email = profile.email || "—";
-  const memberSince = profile.memberSince || "today";
   const heightCm = profile.heightCm || 0;
 
   // keep the haptics module in step with the toggle, so every buzz in the app
@@ -537,7 +537,12 @@ export default function Profile() {
           <Row icon={LogOut} anim="logout" label="Log out" danger onPress={() => { H.tap(); setLogoutOpen(true); }} />
         </Section>
 
-        <Text style={s.memberSince}>Member since {memberSince}</Text>
+        {/* ⚠️ FORMATTED, and derived from created_at rather than signup_date.
+            signup_date has no default from the app, so Postgres fills it with
+            the SERVER's date — and Postgres runs in UTC. Signing up at 19:22
+            in Edmonton is 01:22 the next day in UTC, so it read a day late.
+            See localDateFrom() in constants/profile.ts. */}
+        <Text style={s.memberSince}>Member since {formatMemberSince(profile.memberSince)}</Text>
 
         {/* ================= DEV ONLY =================
             ONE master switch for every piece of fake data in the app. Turning

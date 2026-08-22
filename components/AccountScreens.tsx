@@ -21,6 +21,7 @@ import { useApp } from "../constants/AppState";
 import { requestEmailChange, updatePassword } from "../constants/auth";
 import * as H from "../constants/haptics";
 import { deleteAvatar, uploadAvatar } from "../constants/photos";
+import { formatMemberSince } from "../constants/profile";
 import { COUNTRIES } from "../constants/regions";
 import { FONTS, ULT_COLORS, tierForStreak } from "../constants/theme";
 import AtSymbol from "./AtSymbol";
@@ -861,7 +862,12 @@ export default function AccountScreen({
           ))}
         </View>
 
-        <Text style={s.memberSince}>Member since {profile.memberSince || "today"}</Text>
+        {/* ⚠️ FORMATTED, and derived from created_at rather than signup_date.
+            signup_date has no default from the app, so Postgres fills it with
+            the SERVER's date — and Postgres runs in UTC. Signing up at 19:22
+            in Edmonton is 01:22 the next day in UTC, so it read a day late.
+            See localDateFrom() in constants/profile.ts. */}
+        <Text style={s.memberSince}>Member since {formatMemberSince(profile.memberSince)}</Text>
       </ScrollView>
 
       {/* the chooser. It closes itself before calling any of these, which is

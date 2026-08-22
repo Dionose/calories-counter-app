@@ -31,6 +31,10 @@ export type Profile = {
   workouts?: string;
   heardFrom?: string;
   isPro?: boolean;
+  /** ALWAYS "YYYY-MM-DD", never a friendly string — the expected-weight maths
+      parses it by splitting on the dashes, and a formatted date would silently
+      fall back to today and start the whole projection from the wrong day.
+      Use formatMemberSince() to show it to anyone. */
   memberSince?: string;
 };
 
@@ -56,6 +60,43 @@ function fromDbDate(s?: string | null) {
   if (!s) return {};
   const [y, m, d] = s.split("-").map(Number);
   return { dobYear: y, dobMonth: m - 1, dobDay: d };
+}
+
+/* ---------- WHEN DID THEY ACTUALLY JOIN? ----------
+   ⚠️ NOT signup_date. That column has no default from the app — Postgres fills
+   it with the server's own date, and Postgres runs in UTC. Dion signed up at
+   19:22 on August 18th in Edmonton, which is 01:22 on the 19th in UTC, so the
+   column says the 19th. His own calendar shows food logged on the 18th, and
+   the two disagreed by a day.
+
+   created_at is a full timestamp rather than a bare date, so the moment
+   survives and can be converted. new Date() on it gives a real point in time,
+   and getFullYear/getMonth/getDate then read it in the PHONE's timezone —
+   which is the only timezone the user has ever cared about.
+
+   Same trap todayLocal() exists for in meals.ts, in a new place. Anywhere a
+   bare date comes back from Postgres, assume UTC and check. */
+function localDateFrom(timestamp?: string | null): string | undefined {
+  if (!timestamp) return undefined;
+
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) return undefined;
+
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-08-18" → "18 Aug 2026", for showing a human.
+
+    Parsed by hand rather than with new Date(string): a bare date string is
+    read as UTC, which can land a day out — the very bug this file just
+    fixed. */
+export function formatMemberSince(iso?: string): string {
+  if (!iso) return "today";
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return "today";
+  return `${d} ${MONTHS_SHORT[m - 1]} ${y}`;
 }
 
 /** Write the profile. Used at the end of onboarding and by every Profile
@@ -84,6 +125,9 @@ export async function saveProfile(userId: string, p: Profile, plan?: Plan) {
     workouts: p.workouts,
     heard_from: p.heardFrom,
     is_pro: p.isPro,
+    /* memberSince is deliberately NOT written. It's derived from created_at,
+       which the database owns — letting the app write it would mean two
+       sources for one fact, and the app's would eventually be wrong. */
   };
 
   if (plan) {
@@ -136,7 +180,10 @@ export async function loadProfile(userId: string) {
     workouts: data.workouts ?? undefined,
     heardFrom: data.heard_from ?? undefined,
     isPro: data.is_pro ?? false,
-    memberSince: data.signup_date ?? undefined,
+    /* created_at first, converted to the phone's timezone. signup_date is the
+       fallback for any old row that predates this — off by a day for anyone
+       who signed up in the evening west of UTC, but better than nothing. */
+    memberSince: localDateFrom(data.created_at) ?? data.signup_date ?? undefined,
     ...fromDbDate(data.dob),
   };
 
