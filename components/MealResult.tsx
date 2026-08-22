@@ -37,6 +37,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { AlertTriangle, Camera, Check, ChevronRight, CircleHelp, EyeOff, Mic, Plus, Sparkles, X } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { addIngredients } from "../constants/addIngredient";
 import { useApp } from "../constants/AppState";
 import { colorFor } from "../constants/foodColors";
 import { Amount } from "../constants/foods";
@@ -97,8 +98,22 @@ export default function MealResult({
   const [items, setItems] = useState<Row[]>(() => initialItems.map((i) => toRow(i)));
   const [editing, setEditing] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
-  /* which dish's ingredients are on screen, by uid */
+  /* which row's ingredients are on screen, by uid. EVERY row can open this
+     now, not just dishes — see holdRow. */
   const [showing, setShowing] = useState<number | null>(null);
+
+  /* ---------- ADDING ONE FORGOTTEN INGREDIENT ----------
+     Separate from the whole-plate voice below. `addingTo` is the uid of the
+     row being added to; the rest is that one call's state.
+
+     WHY THIS EXISTS. Dion described a meal at length and one item — a scotch
+     bonnet — didn't survive into the result. Re-describing an entire plate to
+     add one pepper is absurd, and forgetting something is the ordinary case
+     rather than the edge case. */
+  const [addingTo, setAddingTo] = useState<number | null>(null);
+  const [partBusy, setPartBusy] = useState(false);
+  const [partNote, setPartNote] = useState<string | null>(null);
+  const [partErr, setPartErr] = useState<string | null>(null);
 
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [fixing, setFixing] = useState(false);
@@ -113,6 +128,18 @@ export default function MealResult({
   const counted = items.filter((r) => !r.setAside);
   const aside = items.filter((r) => r.setAside);
   const totals = mealTotals(counted);
+
+  /* WHICH voice sheet is open, if any — see the single VoiceCapture at the
+     bottom of this file for why this can never be two things at once.
+     `addingTo` wins if both are somehow set, because it's the more specific
+     action and the one the user just asked for. */
+  const voiceFor: "plate" | "part" | null =
+    addingTo != null ? "part" : voiceOpen ? "plate" : null;
+
+  const closeVoice = () => {
+    setVoiceOpen(false);
+    setAddingTo(null);
+  };
 
   const editingRow = editing != null ? items.find((r) => r.uid === editing) : null;
   const showingRow = showing != null ? items.find((r) => r.uid === showing) : null;
@@ -207,9 +234,96 @@ export default function MealResult({
     ]);
   };
 
-  const holdDish = (uid: number) => {
+  /* HOLD WORKS ON EVERY ROW, dish or not.
+
+     It used to be dishes only, which meant a plain row of rice had no way to
+     gain the butter it was fried in — and nothing on screen suggested holding
+     would do anything. Now any row opens its ingredients: a dish shows what's
+     already in it, a plain row shows an empty sheet and a mic. */
+  const holdRow = (uid: number) => {
     H.tap();
+    setPartNote(null);
+    setPartErr(null);
     setShowing(uid);
+  };
+
+  /* ---------- WHAT THEY SAID WAS MISSING ----------
+     ADDS ON TOP. Every ingredient already on the dish keeps exactly the
+     calories it had — Dion's rule, and the right one: re-estimating the whole
+     dish would be more "accurate" in theory while quietly moving figures the
+     user had already read and accepted. The new thing simply joins the total.
+
+     A PLAIN ROW BECOMES A DISH by gaining its first ingredient. That's what
+     `parts` means, so the row turns gold and starts advertising its own
+     breakdown — a visible signal that the words landed. */
+  const onPartTranscript = async (text: string) => {
+    const uid = addingTo;
+    setAddingTo(null);
+    if (uid == null) return;
+
+    const row = items.find((r) => r.uid === uid);
+    if (!row) return;
+
+    setPartNote(null);
+    setPartErr(null);
+    setPartBusy(true);
+
+    const { parts: added, note, error } = await addIngredients(row.name, text);
+
+    setPartBusy(false);
+
+    /* BACK TO THE SHEET EITHER WAY. They opened it, spoke into it, and the
+       answer belongs there — dropping them on the plate with a changed number
+       and no explanation would be the same failure as a silent save. */
+    const reopen = () => setTimeout(() => setShowing(uid), 260);
+
+    if (error) { setPartErr(error); H.warn(); reopen(); return; }
+
+    if (!added.length) {
+      /* the model understood the request and found nothing to add — its own
+         wording is more useful here than a generic failure */
+      setPartErr(note || "MOTION couldn't tell what to add from that.");
+      H.warn();
+      reopen();
+      return;
+    }
+
+    const gained = added.reduce(
+      (t, p) => ({
+        cal: t.cal + p.calories,
+        pr: t.pr + p.protein,
+        cb: t.cb + p.carbs,
+        ft: t.ft + p.fat,
+        g: t.g + p.grams,
+      }),
+      { cal: 0, pr: 0, cb: 0, ft: 0, g: 0 }
+    );
+
+    setItems((list) =>
+      list.map((r) =>
+        r.uid !== uid
+          ? r
+          : {
+              ...r,
+              parts: [...(r.parts || []), ...added],
+              calories: r.calories + gained.cal,
+              protein: r.protein + gained.pr,
+              carbs: r.carbs + gained.cb,
+              fat: r.fat + gained.ft,
+              grams: r.grams + gained.g,
+              /* the user put this here by hand — voice corrections to the
+                 whole plate must not overwrite it later */
+              manual: true,
+              justChanged: true,
+              /* and it's no longer only the photo's guess */
+              sure: "high",
+            }
+      )
+    );
+
+    setPartNote(note || `Added ${added.length === 1 ? added[0].name : `${added.length} ingredients`}.`);
+    H.success();
+    reopen();
   };
 
   /* ---------- the set-aside answers ---------- */
@@ -429,6 +543,15 @@ export default function MealResult({
             {item.amountLabel} · about {item.grams} g
           </Text>
 
+          {/* ADVERTISE THE HOLD ON PLAIN ROWS TOO. The dish tag above already
+              says "hold to see"; a plain row said nothing, so the gesture may
+              as well not have existed. A hidden gesture is only fair when it's
+              announced — and this is the only place the per-item mic can be
+              discovered from. */}
+          {!hasParts ? (
+            <Text style={s.holdHint}>Hold to add something MOTION missed</Text>
+          ) : null}
+
           {shaky && !item.justChanged && !hasParts ? (
             <Text style={s.shakyNote}>{SHAKY.note}</Text>
           ) : null}
@@ -446,7 +569,8 @@ export default function MealResult({
     return (
       <Tap
         onPress={() => { H.tap(); setEditing(item.uid); }}
-        onLongPress={hasParts ? () => holdDish(item.uid) : undefined}
+        /* EVERY row holds now — a plain one to add what was forgotten */
+        onLongPress={() => holdRow(item.uid)}
       >
         {hasParts ? (
           /* the traveling gold light — the app's own shine, so the dish row
@@ -686,31 +810,117 @@ export default function MealResult({
                     </Pressable>
                   </View>
 
-                  <ScrollView style={{ maxHeight: 320 }} showsVerticalScrollIndicator={false}>
-                    {showingRow.parts!.map((p, n) => (
-                      <View key={`${showingRow.uid}-${n}`} style={s.partRow}>
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={s.partName} numberOfLines={1}>{p.name}</Text>
-                          {p.amountLabel ? (
-                            <Text style={s.partAmount} numberOfLines={1}>{p.amountLabel}</Text>
-                          ) : null}
-                        </View>
-                        <Text style={s.partCal}>{p.calories} cal</Text>
-                      </View>
-                    ))}
-                  </ScrollView>
+                  {showingRow.parts?.length ? (
+                    <>
+                      <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+                        {showingRow.parts.map((p, n) => (
+                          <View key={`${showingRow.uid}-${n}`} style={s.partRow}>
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text style={s.partName} numberOfLines={1}>{p.name}</Text>
+                              {p.amountLabel ? (
+                                <Text style={s.partAmount} numberOfLines={1}>{p.amountLabel}</Text>
+                              ) : null}
+                            </View>
+                            <Text style={s.partCal}>{p.calories} cal</Text>
+                          </View>
+                        ))}
+                      </ScrollView>
 
-                  <View style={s.partsTotalRow}>
-                    <Text style={s.partsTotalLabel}>These add up to</Text>
-                    <Text style={s.partsTotalCal}>
-                      {Math.round(partsTotal(showingRow.parts).calories)} cal
-                    </Text>
-                  </View>
+                      <View style={s.partsTotalRow}>
+                        <Text style={s.partsTotalLabel}>These add up to</Text>
+                        <Text style={s.partsTotalCal}>
+                          {Math.round(partsTotal(showingRow.parts).calories)} cal
+                        </Text>
+                      </View>
+                    </>
+                  ) : (
+                    /* A PLAIN ROW HAS NO BREAKDOWN YET, and that's a normal
+                       state rather than an empty list to apologise for — this
+                       sheet is now reachable from every row, and most of them
+                       are a single food with nothing inside them. */
+                    <View style={s.partsEmpty}>
+                      <Text style={s.partsEmptyText}>
+                        Nothing listed inside this one yet. If you cooked it with something the
+                        photo couldn't see — oil, butter, a spice — say so below and it gets
+                        counted.
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* ---------- ADD WHAT WAS FORGOTTEN ----------
+                      THE MIC IS GREEN IN A GOLD FRAME. Lottie colours are baked
+                      into the file — the five separate flame files exist for
+                      exactly that reason — so a gold mic would mean a new
+                      export. The frame carries the gold instead, which is how
+                      gold works everywhere else in the app anyway: it's the
+                      surround that means "this is exact", not the glyph. */}
+                  {partBusy ? (
+                    <View style={s.addPartBusy}>
+                      <ActivityIndicator size="small" color={T.gold} />
+                      <Text style={s.addPartBusyText}>Working out what that costs…</Text>
+                    </View>
+                  ) : (
+                    <Tap
+                      onPress={() => {
+                        /* ⚠️ CLOSE THIS SHEET BEFORE OPENING THE VOICE ONE.
+                           NEVER STACK MODALS. This sheet is a Modal, and so is
+                           VoiceCapture — opening the second while the first is
+                           up left iOS half-presenting it: the voice screen
+                           never appeared, and the stuck modal sat over
+                           everything swallowing taps. The logging screen went
+                           completely dead while the other tabs carried on
+                           working, which is exactly what that looks like.
+
+                           The delay lets the dismissal finish; without it the
+                           two animations overlap and it fails the same way. */
+                        H.tap();
+                        setPartErr(null);
+                        setPartNote(null);
+                        const uid = showingRow.uid;
+                        setShowing(null);
+                        setTimeout(() => setAddingTo(uid), 280);
+                      }}
+                      style={{ marginTop: 14 }}
+                    >
+                      <View style={s.addPartBtn}>
+                        <View style={s.addPartMic}>
+                          <Icon name="mic" size={22} mode="loop" />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          {/* SAYS TAP, because it isn't obvious. Getting here
+                              took a long-press on the row, so hold is the
+                              natural guess — and a mic that does nothing when
+                              held reads as broken rather than as the wrong
+                              gesture. */}
+                          <Text style={s.addPartTitle}>Tap to add something you forgot</Text>
+                          <Text style={s.addPartSub}>
+                            Say it out loud and you'll see the words as you talk. It joins this
+                            dish — nothing else on the plate changes.
+                          </Text>
+                        </View>
+                      </View>
+                    </Tap>
+                  )}
+
+                  {/* what just happened, said once. A number changing with no
+                      explanation is how a working feature looks broken. */}
+                  {partNote ? (
+                    <View style={s.partOkRow}>
+                      <Check size={13} color={T.green} />
+                      <Text style={s.partOkText}>{partNote}</Text>
+                    </View>
+                  ) : null}
+
+                  {partErr ? (
+                    <View style={s.partErrRow}>
+                      <AlertTriangle size={13} color={T.gold} />
+                      <Text style={s.partErrText}>{partErr}</Text>
+                    </View>
+                  ) : null}
 
                   <Text style={s.partsNote}>
-                    Scaled to the portion you ate, not the whole pot. To change any of it, describe
-                    the dish again — or tap the row to adjust how much you had, and everything here
-                    moves with it.
+                    Scaled to the portion you ate, not the whole pot. Tap the row itself to adjust
+                    how much you had, and everything here moves with it.
                   </Text>
                 </View>
               </TravelBorder>
@@ -751,15 +961,34 @@ export default function MealResult({
         onPick={addPicked}
       />
 
-      {/* "improve", not "describe" — the plate is already on screen, so the
-          question is what the photo COULDN'T see */}
-      <VoiceCapture
-        visible={voiceOpen}
-        meal={meal}
-        mode="improve"
-        onClose={() => setVoiceOpen(false)}
-        onTranscript={onTranscript}
-      />
+      {/* ---------- EXACTLY ONE VOICE SHEET, EVER ----------
+          ⚠️ THIS WAS TWO COMPONENTS AND IT FROZE THE SCREEN.
+
+          expo-speech-recognition's events are GLOBAL — every mounted
+          VoiceCapture receives every event, not just the visible one. With two
+          mounted, finishing a sentence fired BOTH handlers: the per-item add
+          priced an ingredient while the whole-plate handler simultaneously ran
+          fixMealWithVoice and rewrote the entire list. Two AI calls racing to
+          change the same rows, each instance's cleanup aborting the other's
+          session — a log full of "Speech recognition aborted" and a logging
+          screen that stopped responding while the rest of the app was fine.
+
+          So there is one instance, mounted only while it's needed, and which
+          handler runs depends on what opened it. Adding a third voice entry
+          point later means extending `voiceFor`, never adding a component.
+
+          "improve", not "describe": there's already a plate on screen, so
+          asking "say what you ate" would be asking them to repeat what MOTION
+          just told them. */}
+      {voiceFor && (
+        <VoiceCapture
+          visible
+          meal={meal}
+          mode="improve"
+          onClose={closeVoice}
+          onTranscript={voiceFor === "plate" ? onTranscript : onPartTranscript}
+        />
+      )}
     </View>
   );
 }
@@ -889,6 +1118,52 @@ const styles = (T: any) =>
     partsTotalRow: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", marginTop: 14 },
     partsTotalLabel: { fontSize: 12, color: T.sub, fontFamily: FONTS.body },
     partsTotalCal: { fontSize: 20, color: T.gold, fontFamily: FONTS.heading },
+    /* the hold hint under a plain row */
+    holdHint: { fontSize: 10, color: T.micro, fontFamily: FONTS.body, marginTop: 5 },
+
+    /* a row with nothing inside it yet */
+    partsEmpty: {
+      backgroundColor: T.card, borderWidth: 1, borderColor: T.border,
+      borderRadius: 14, padding: 14, marginTop: 4,
+    },
+    partsEmptyText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body, lineHeight: 18.5 },
+
+    /* GREEN MIC, GOLD FRAME — see the note where this is used */
+    addPartBtn: {
+      flexDirection: "row", alignItems: "center", gap: 12,
+      backgroundColor: "rgba(251,191,36,0.10)",
+      borderWidth: 1, borderColor: `${T.gold}77`,
+      borderRadius: 15, padding: 13,
+    },
+    addPartMic: {
+      width: 40, height: 40, borderRadius: 13,
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}55`,
+      alignItems: "center", justifyContent: "center",
+    },
+    addPartTitle: { fontSize: 14, color: T.gold, fontFamily: FONTS.headingMed },
+    addPartSub: { fontSize: 11.5, color: T.sub, fontFamily: FONTS.body, marginTop: 2, lineHeight: 16 },
+
+    addPartBusy: {
+      flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
+      backgroundColor: T.card, borderWidth: 1, borderColor: `${T.gold}44`,
+      borderRadius: 15, paddingVertical: 16, marginTop: 14,
+    },
+    addPartBusyText: { fontSize: 12.5, color: T.sub, fontFamily: FONTS.body },
+
+    partOkRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 10,
+      backgroundColor: T.greenBg, borderWidth: 1, borderColor: T.greenBorder,
+      borderRadius: 12, padding: 11,
+    },
+    partOkText: { flex: 1, fontSize: 12, color: T.green, fontFamily: FONTS.body, lineHeight: 17 },
+
+    partErrRow: {
+      flexDirection: "row", alignItems: "flex-start", gap: 8, marginTop: 10,
+      backgroundColor: "rgba(251,191,36,0.10)", borderWidth: 1,
+      borderColor: `${T.gold}55`, borderRadius: 12, padding: 11,
+    },
+    partErrText: { flex: 1, fontSize: 12, color: T.sub, fontFamily: FONTS.body, lineHeight: 17 },
+
     partsNote: { fontSize: 10.5, color: T.micro, fontFamily: FONTS.body, lineHeight: 15.5, marginTop: 12 },
 
     /* set aside — visible, uncounted, undecided */
