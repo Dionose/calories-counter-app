@@ -8,22 +8,23 @@
 // worse than none: the tier chips used to overwrite the real streak while the
 // calendar kept drawing real tiles, and neither screen looked obviously wrong.
 //
-// ⚠️ THE SUB-SCREENS AREN'T ROUTES. Everything below — Goal, Support, the whole
-// account section — is this same screen with a different `view` value. That's
-// the right pattern for detail views that belong to their tab, but it means the
-// router has nothing to animate, so every one of them used to SNAP into place.
-// <ViewTransition> animates the swap ourselves, and `dir` is what makes going
-// back look like going back.
+// ⚠️ THE SUB-SCREENS AREN'T ROUTES. Everything below — Goal, Diet, Support, the
+// whole account section — is this same screen with a different `view` value.
+// That's the right pattern for detail views that belong to their tab, but it
+// means the router has nothing to animate, so every one of them used to SNAP
+// into place. <ViewTransition> animates the swap ourselves, and `dir` is what
+// makes going back look like going back.
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   Bell, BellRing, ChevronRight, CircleDot, Crown, Flame, LifeBuoy,
-  LogOut, Palette, Ruler, Scale, Shield, Vibrate, Watch,
+  LogOut, Palette, Ruler, Salad, Scale, Shield, Vibrate, Watch,
 } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { LogoutSheet, PrivacyScreen, SupportChat, SupportScreen } from "../../components/AccountExtras";
 import AccountScreen from "../../components/AccountScreens";
 import Avatar from "../../components/Avatar";
+import DietScreen from "../../components/DietScreen";
 import { CaloriesScreen, GoalScreen, TargetWeightScreen, UnitsScreen } from "../../components/GoalScreens";
 import GradientText from "../../components/GradientText";
 import Icon, { IconName } from "../../components/Icon";
@@ -41,13 +42,25 @@ import { FONTS, TIERS, ULT_COLORS, tierForStreak } from "../../constants/theme";
 import { deleteWeighIn, loadWeighIns, saveWeighIn, toKg } from "../../constants/weight";
 
 type View_ =
-  | null | "account" | "goal" | "calories" | "targetweight" | "units"
+  | null | "account" | "goal" | "calories" | "targetweight" | "units" | "diet"
   | "support" | "supportchat" | "privacy";
 
 const GOAL_LABEL: Record<string, string> = {
   lose: "Lose weight",
   maintain: "Maintain",
   gain: "Gain weight",
+};
+
+/* what the Diet row shows as its value. The keys match components/DietScreen. */
+const DIET_LABEL: Record<string, string> = {
+  none: "No specific diet",
+  balanced: "Balanced",
+  wholefood: "Wholefood",
+  lowcarb: "Low carb",
+  keto: "Keto",
+  vegetarian: "Vegetarian",
+  vegan: "Vegan",
+  pescatarian: "Pescatarian",
 };
 
 /** the flame animation for a tier — a dedicated file per tier reads far better
@@ -401,6 +414,13 @@ export default function Profile() {
       </View>
     );
   }
+  if (view === "diet") {
+    return (
+      <View style={s.screen}>
+        <ViewTransition viewKey="diet" direction={dir}><DietScreen onBack={back} /></ViewTransition>
+      </View>
+    );
+  }
   if (view === "privacy") {
     return (
       <View style={s.screen}>
@@ -563,6 +583,18 @@ export default function Profile() {
               label="Units & height"
               value={heightLabel()}
               onPress={() => { H.tap(); go("units"); }}
+            />
+            <Divider />
+            {/* ⚠️ MOVED HERE FROM ONBOARDING, where it was one of thirteen
+                screens cut. Nothing reads profile.diet yet — the screen itself
+                says so rather than pretending otherwise. It lives here because
+                the artwork is real and cost real time; here it costs nobody
+                anything, since only people who go looking ever see it. */}
+            <Row
+              icon={Salad}
+              label="Diet"
+              value={DIET_LABEL[profile.diet || "none"]}
+              onPress={() => { H.tap(); go("diet"); }}
             />
           </Section>
 
